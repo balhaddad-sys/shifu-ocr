@@ -60,11 +60,12 @@ FEATURE_NAMES = (
     [f'hcross_{i}' for i in range(6)] +
     [f'vcross_{i}' for i in range(6)] +
     ['endpoints', 'junctions'] +
-    # v2: discriminative features for l/i/t and a/o confusion
+    # v2: geometric/topological features — pure displacement geometry
+    # No heuristics. Landscapes learn what these mean from evidence.
     ['aspect_ratio', 'ink_density',
      'top_third_density', 'mid_third_density', 'bot_third_density',
      'stroke_width_mean', 'stroke_width_var',
-     'has_dot', 'has_crossbar',
+     'top_disconnection', 'mid_horizontal_extent',
      'ascender_ratio', 'descender_ratio',
      'left_edge_straightness', 'right_edge_straightness',
      'top_openness', 'bot_openness',
@@ -173,46 +174,30 @@ def extract_features(br):
     bot_d = float(br[2*t3:, :].mean()) if t3 > 0 else 0
     feats.extend([top_d, mid_d, bot_d])
 
-    # Stroke width: mean and variance of horizontal run lengths
-    run_lengths = []
-    for row in range(h):
-        in_run = False
-        run_len = 0
-        for col in range(w):
-            if br[row, col] > 0:
-                if not in_run:
-                    in_run = True
-                    run_len = 1
-                else:
-                    run_len += 1
-            else:
-                if in_run:
-                    run_lengths.append(run_len)
-                    in_run = False
-                    run_len = 0
-        if in_run:
-            run_lengths.append(run_len)
-    if run_lengths:
-        feats.append(float(np.mean(run_lengths) / max(w, 1)))  # stroke_width_mean
-        feats.append(float(np.std(run_lengths) / max(w, 1)))   # stroke_width_var
+    # Stroke width: mean and variance of horizontal run lengths (vectorized)
+    diffs = np.diff(np.pad(br, ((0, 0), (1, 1)), constant_values=0), axis=1)
+    starts = np.where(diffs == 1)
+    ends = np.where(diffs == -1)
+    if len(starts[0]) > 0 and len(starts[0]) == len(ends[0]):
+        run_lengths = ends[1] - starts[1]
+        feats.append(float(run_lengths.mean() / max(w, 1)))
+        feats.append(float(run_lengths.std() / max(w, 1)))
     else:
         feats.extend([0.0, 0.0])
 
-    # Dot detection: isolated component in top quarter (separates i from l)
+    # Top disconnection: ratio of connected components in top quarter vs whole
+    # Continuous measure — 'i' has high disconnection (dot separated from body),
+    # 'l' has low (one connected piece). The landscape learns what values mean.
     top_quarter = br[:max(h // 4, 1), :]
-    bot_three_quarter = br[max(h // 4, 1):, :]
-    top_labels, top_n = ndimage.label(top_quarter)
-    bot_labels, bot_n = ndimage.label(bot_three_quarter)
-    has_dot = 1.0 if (top_n >= 1 and bot_n >= 1 and
-                       top_quarter.sum() < ink_pixels * 0.3) else 0.0
-    feats.append(has_dot)
+    _, top_n = ndimage.label(top_quarter)
+    _, whole_n = ndimage.label(br)
+    feats.append(float(top_n / max(whole_n, 1)))  # top_disconnection
 
-    # Crossbar detection: horizontal stroke in middle third (separates t from l)
+    # Mid horizontal extent: how wide is the ink in the middle third relative to total width
+    # Continuous — 't' has wide middle extent (crossbar), 'l' has narrow.
     mid_slice = br[t3:2*t3, :] if t3 > 0 else br
-    mid_h_proj = mid_slice.mean(axis=0)  # average ink per column in middle
-    crossbar_width = (mid_h_proj > 0.3).sum() / max(w, 1)
-    has_crossbar = 1.0 if crossbar_width > 0.5 else 0.0
-    feats.append(has_crossbar)
+    mid_col_ink = (mid_slice.sum(axis=0) > 0).sum()
+    feats.append(float(mid_col_ink / max(w, 1)))  # mid_horizontal_extent
 
     # Ascender/descender ratio: how much ink is in top/bottom vs middle
     # l has high ascender, a doesn't
@@ -222,17 +207,14 @@ def extract_features(br):
     else:
         feats.extend([0.33, 0.33])
 
-    # Edge straightness: vertical edges that are straight = l, curved = o/a
-    left_edge = []
-    right_edge = []
-    for row in range(h):
-        cols_with_ink = np.where(br[row, :] > 0)[0]
-        if len(cols_with_ink) > 0:
-            left_edge.append(cols_with_ink[0])
-            right_edge.append(cols_with_ink[-1])
-    if len(left_edge) >= 3:
-        feats.append(1.0 - float(np.std(left_edge) / max(w, 1)))   # left_edge_straightness
-        feats.append(1.0 - float(np.std(right_edge) / max(w, 1)))  # right_edge_straightness
+    # Edge straightness: vectorized contour geometry
+    row_has_ink = br.any(axis=1)
+    if row_has_ink.sum() >= 3:
+        ink_rows = np.where(row_has_ink)[0]
+        left_edge = np.array([np.where(br[r, :] > 0)[0][0] for r in ink_rows])
+        right_edge = np.array([np.where(br[r, :] > 0)[0][-1] for r in ink_rows])
+        feats.append(1.0 - float(np.std(left_edge) / max(w, 1)))
+        feats.append(1.0 - float(np.std(right_edge) / max(w, 1)))
     else:
         feats.extend([0.5, 0.5])
 
