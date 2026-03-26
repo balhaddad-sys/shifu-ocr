@@ -320,6 +320,7 @@ class ShifuOCR:
 
     def __init__(self):
         self.landscapes = {}
+        self.templates = {}       # {label: {'sum': np.array, 'n': int}}
         self.total_predictions = 0
         self.total_correct = 0
         self.version = "1.0.0"
@@ -338,6 +339,43 @@ class ShifuOCR:
             thresh = 128
         binary = (grayscale_image < thresh).astype(np.uint8)
         return morphology.remove_small_objects(binary.astype(bool), min_size=5).astype(np.uint8)
+
+    # --- Template matching (independent ensemble branch) ---
+
+    _TEMPLATE_SIZE = (32, 32)
+
+    def _normalize_to_template(self, grayscale_image):
+        """Binarize and normalize a grayscale image to a 32x32 binary template.
+        This is deliberately independent from FLAIR: it operates purely on
+        binarized pixel patterns, not perturbation/displacement features."""
+        binary = self._fast_binarize(grayscale_image)
+        region = extract_region(binary)
+        img = Image.fromarray((region * 255).astype(np.uint8)).resize(
+            self._TEMPLATE_SIZE, Image.BILINEAR)
+        return (np.array(img, dtype=np.float64) / 255.0)
+
+    def _template_match_score(self, grayscale_image):
+        """Compute cosine similarity between the input image and each stored
+        class template (mean binary image).  Returns {label: similarity}."""
+        if not self.templates:
+            return {}
+        query = self._normalize_to_template(grayscale_image).ravel()
+        q_norm = np.linalg.norm(query)
+        if q_norm < 1e-12:
+            return {label: 0.0 for label in self.templates}
+
+        scores = {}
+        for label, tdata in self.templates.items():
+            if tdata['n'] == 0:
+                scores[label] = 0.0
+                continue
+            template = (tdata['sum'] / tdata['n']).ravel()
+            t_norm = np.linalg.norm(template)
+            if t_norm < 1e-12:
+                scores[label] = 0.0
+            else:
+                scores[label] = float(np.dot(query, template) / (q_norm * t_norm))
+        return scores
 
     # --- Training ---
 
@@ -365,6 +403,13 @@ class ShifuOCR:
             self.landscapes[label] = Landscape(label)
         self.landscapes[label].absorb(fv)
 
+        # Accumulate template (running sum for mean binary image)
+        tpl = self._normalize_to_template(grayscale_image)
+        if label not in self.templates:
+            self.templates[label] = {'sum': np.zeros(self._TEMPLATE_SIZE, dtype=np.float64), 'n': 0}
+        self.templates[label]['sum'] += tpl
+        self.templates[label]['n'] += 1
+
     def train_from_fonts(self, characters, font_paths, font_size=80, img_size=(100, 100)):
         """Train on rendered characters across multiple fonts."""
         for char in characters:
@@ -376,7 +421,12 @@ class ShifuOCR:
     # --- Prediction ---
 
     def predict_character(self, grayscale_image, top_k=5):
-        """Predict a single character from a grayscale image."""
+        """Predict a single character from a grayscale image.
+
+        Ensemble: combines FLAIR landscape scores (rank-based) with
+        template cosine-similarity scores (rank-based).
+        final_score = 0.6 * flair_rank_score + 0.4 * template_rank_score
+        """
         fv = self._extract_unified_features(grayscale_image)
 
         # Compute global variance across all class means for discriminative scoring
@@ -388,27 +438,59 @@ class ShifuOCR:
             else:
                 self._global_var = None
 
-        scores = [(label, land.fit(fv, self._global_var)) for label, land in self.landscapes.items()]
-        scores.sort(key=lambda x: x[1], reverse=True)
+        # --- FLAIR landscape scores ---
+        flair_scores = [(label, land.fit(fv, self._global_var))
+                        for label, land in self.landscapes.items()]
+        flair_scores.sort(key=lambda x: x[1], reverse=True)
 
-        if len(scores) < 2:
-            return {'predicted': scores[0][0] if scores else '?', 'confidence': 0, 'candidates': scores}
+        if len(flair_scores) < 2:
+            return {'predicted': flair_scores[0][0] if flair_scores else '?',
+                    'confidence': 0, 'candidates': flair_scores}
 
-        best_score = scores[0][1]
-        second_score = scores[1][1]
-        margin = best_score - second_score
-        # Confidence: how much better is best vs second, relative to second vs third
-        third_score = scores[2][1] if len(scores) > 2 else second_score - 1
-        local_range = max(abs(second_score - third_score), 0.01)
+        # --- Template matching scores (independent feature space) ---
+        template_sim = self._template_match_score(grayscale_image)
+
+        # --- Rank-based fusion ---
+        # Convert each scorer's ranking into a normalised rank score in [0, 1].
+        # Rank 0 (best) -> score 1.0,  rank N-1 (worst) -> score ~0.
+        n_classes = len(flair_scores)
+
+        flair_rank = {}
+        for rank, (label, _) in enumerate(flair_scores):
+            flair_rank[label] = 1.0 - rank / max(n_classes - 1, 1)
+
+        if template_sim:
+            tpl_sorted = sorted(template_sim.items(), key=lambda x: x[1], reverse=True)
+            tpl_rank = {}
+            for rank, (label, _) in enumerate(tpl_sorted):
+                tpl_rank[label] = 1.0 - rank / max(len(tpl_sorted) - 1, 1)
+        else:
+            tpl_rank = {}
+
+        # Combine: 0.6 FLAIR + 0.4 template
+        all_labels = set(flair_rank.keys()) | set(tpl_rank.keys())
+        combined = []
+        for label in all_labels:
+            f_score = flair_rank.get(label, 0.0)
+            t_score = tpl_rank.get(label, 0.0)
+            combined.append((label, 0.6 * f_score + 0.4 * t_score))
+        combined.sort(key=lambda x: x[1], reverse=True)
+
+        # --- Confidence from original FLAIR margin (unchanged logic) ---
+        best_flair = flair_scores[0][1]
+        second_flair = flair_scores[1][1]
+        margin = best_flair - second_flair
+        third_flair = flair_scores[2][1] if len(flair_scores) > 2 else second_flair - 1
+        local_range = max(abs(second_flair - third_flair), 0.01)
         confidence = max(0, min(margin / (local_range + margin + 0.01), 1.0))
 
         self.total_predictions += 1
 
         return {
-            'predicted': scores[0][0],
+            'predicted': combined[0][0],
             'confidence': confidence,
             'margin': margin,
-            'candidates': scores[:top_k],
+            'candidates': combined[:top_k],
             'features': fv,
         }
 
@@ -917,11 +999,19 @@ class ShifuOCR:
 
     def save(self, path):
         """Save trained model to JSON."""
+        # Serialise templates: store sum as nested list and count
+        tpl_data = {}
+        for label, td in self.templates.items():
+            tpl_data[label] = {
+                'sum': td['sum'].tolist(),
+                'n': td['n'],
+            }
         data = {
             'version': self.version,
             'total_predictions': self.total_predictions,
             'total_correct': self.total_correct,
             'landscapes': {k: v.to_dict() for k, v in self.landscapes.items()},
+            'templates': tpl_data,
         }
         with open(path, 'w') as f:
             json.dump(data, f, indent=2)
@@ -937,6 +1027,12 @@ class ShifuOCR:
         engine.total_correct = data.get('total_correct', 0)
         for label, ld in data.get('landscapes', {}).items():
             engine.landscapes[label] = Landscape.from_dict(ld)
+        # Restore templates
+        for label, td in data.get('templates', {}).items():
+            engine.templates[label] = {
+                'sum': np.array(td['sum'], dtype=np.float64),
+                'n': td['n'],
+            }
         return engine
 
     # --- Stats ---
