@@ -450,6 +450,11 @@ function correctWord(rawWord, options = {}) {
   const secondIsMed = topCandidates.length > 1 && meds.has(topCandidates[1].word);
 
   let confidence = top.score;
+  // Near-exact matches (edit distance ≤ 1) deserve a confidence floor —
+  // they're obvious OCR typos regardless of how many signals fired
+  if (editDistToTop <= 1 && confidence < 0.6) {
+    confidence = Math.max(confidence, 0.6);
+  }
   let flag;
   // Only flag medication ambiguity when the top match is NOT an obvious OCR typo
   // (edit distance > 1). Single-char fixes like levetiracelam→levetiracetam are safe.
