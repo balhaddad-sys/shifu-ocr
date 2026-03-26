@@ -10,6 +10,7 @@ __pycache__/
 .ingested/
 .tmp_feedback_blank_confirm/
 .tmp_review/
+.tmp_check_*/
 
 # IDE & Editor
 .vscode/
