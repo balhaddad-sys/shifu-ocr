@@ -292,6 +292,48 @@ class ShifuEnsemble:
             'agreement': np.mean([r.agreement for r in results]) if results else 0,
         }
 
+    def read_page(self, grayscale_image, space_threshold=None):
+        """
+        Read a full page using the ensemble for character recognition.
+        Uses the topology engine for line/character segmentation,
+        then runs each character through all engines for voting.
+        """
+        # Use topology engine for segmentation (it has segment_lines)
+        segmenter = None
+        for name, engine in self.engines.items():
+            if hasattr(engine, 'segment_lines'):
+                segmenter = engine
+                break
+
+        if segmenter is None:
+            return {'text': '', 'lines': [], 'confidence': 0}
+
+        line_segments = segmenter.segment_lines(grayscale_image)
+        if not line_segments:
+            return {'text': '', 'lines': [], 'confidence': 0}
+
+        all_lines = []
+        all_confidences = []
+
+        for seg in line_segments:
+            line_result = self.read_line(seg['image'], space_threshold)
+            text = line_result.get('text', '').strip()
+            if text:
+                # Filter noise: mostly non-alphanumeric = grid remnants
+                alnum = sum(1 for c in text if c.isalnum())
+                if alnum >= max(len(text) * 0.15, 1):
+                    all_lines.append(text)
+                    all_confidences.append(line_result.get('confidence', 0))
+
+        full_text = '\n'.join(all_lines)
+        avg_conf = float(np.mean(all_confidences)) if all_confidences else 0
+
+        return {
+            'text': full_text,
+            'lines': all_lines,
+            'confidence': avg_conf,
+        }
+
     def get_stats(self):
         """Return per-engine and ensemble statistics."""
         acc = self.total_correct / self.total_predictions * 100 if self.total_predictions > 0 else 0
@@ -311,24 +353,32 @@ class ShifuEnsemble:
         }
 
 
-def create_ensemble(engines_to_use=None):
+def create_ensemble(engines_to_use=None, model_path=None):
     """
     Factory function to create a ShifuEnsemble with standard engines.
 
     Args:
         engines_to_use: list of engine names to include.
-            Options: 'topology', 'fluid', 'perturbation', 'theory_revision', 'codefining'
+            Options: 'topology', 'fluid', 'perturbation', 'theory_revision'
             Default: all engines.
+        model_path: path to trained_model.json. If provided, loads the trained
+            topology engine and shares its landscapes with other engines.
 
     Returns:
-        ShifuEnsemble with engines registered (untrained — call train on each).
+        ShifuEnsemble with engines registered.
     """
+    import os
     available = engines_to_use or ['topology', 'fluid', 'perturbation', 'theory_revision']
     ensemble = ShifuEnsemble()
 
+    # Load trained topology engine (primary — has segmentation + trained landscapes)
     if 'topology' in available:
         from .engine import ShifuOCR
-        ensemble.register('topology', ShifuOCR(), weight=1.0)
+        if model_path and os.path.exists(model_path):
+            topo = ShifuOCR.load(model_path)
+        else:
+            topo = ShifuOCR()
+        ensemble.register('topology', topo, weight=1.0)
 
     if 'fluid' in available:
         from .fluid import FluidEngine
@@ -336,7 +386,6 @@ def create_ensemble(engines_to_use=None):
 
     if 'perturbation' in available:
         from .perturbation import MRI_OCR
-        # MRI_OCR uses recognize() which returns list of (label, score)
         ensemble.register('perturbation', MRI_OCR(), weight=0.8)
 
     if 'theory_revision' in available:

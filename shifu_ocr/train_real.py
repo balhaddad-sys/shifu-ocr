@@ -96,9 +96,13 @@ def align_segments_to_label(segments, label):
 def train():
     model_path = os.path.join(os.path.dirname(__file__), 'trained_model.json')
 
-    # Start fresh
-    ocr = ShifuOCR()
-    print('Starting training from real images')
+    # Resume if model exists, otherwise start fresh
+    if os.path.exists(model_path):
+        ocr = ShifuOCR.load(model_path)
+        print(f'Resuming from existing model: {ocr.get_stats()["characters"]} landscapes')
+    else:
+        ocr = ShifuOCR()
+        print('Starting training from real images')
 
     # Load training list
     train_list = os.path.join(TRAINING_DIR, 'train_list.txt')
@@ -119,27 +123,26 @@ def train():
     total_skipped = 0
     start = time.time()
 
+    import gc
+
     for ei, (img_path, label) in enumerate(entries):
         try:
             img = Image.open(img_path)
-            # Convert to grayscale
             if img.mode != 'L':
                 img = img.convert('L')
             arr = np.array(img)
+            img.close()  # Free image memory immediately
 
-            # Segment into characters
             segments = ocr.segment_characters(arr, min_char_width=2)
             if not segments:
                 total_skipped += 1
                 continue
 
-            # Align segments to label
             pairs = align_segments_to_label(segments, label)
             if not pairs:
                 total_skipped += 1
                 continue
 
-            # Train each aligned character
             for seg, char_label in pairs:
                 try:
                     ocr.train_character(char_label, seg['image'])
@@ -147,6 +150,9 @@ def train():
                     total_aligned += 1
                 except:
                     pass
+
+            # Free segment images
+            del segments, pairs, arr
 
         except Exception as e:
             total_skipped += 1
@@ -157,7 +163,13 @@ def train():
             rate = total_chars / max(elapsed, 1)
             print(f'  [{ei+1}/{len(entries)}] chars: {total_chars}, '
                   f'aligned: {total_aligned}, skipped: {total_skipped}, '
-                  f'{rate:.0f} chars/sec, {elapsed:.0f}s')
+                  f'{rate:.0f} chars/sec, {elapsed:.0f}s', flush=True)
+
+        # Checkpoint + GC every 5k images
+        if (ei + 1) % 5000 == 0:
+            ocr.save(model_path)
+            gc.collect()
+            print(f'  ** Checkpoint saved at {ei+1} images **', flush=True)
 
     elapsed = time.time() - start
     stats = ocr.get_stats()
