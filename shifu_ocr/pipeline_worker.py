@@ -61,25 +61,12 @@ def read_image(image_path):
     if img.mode in ('RGB', 'RGBA'):
         arr = np.array(img.convert('RGB')).astype(float)
         # CONTINUITY PRINCIPLE:
-        # - Backgrounds are HOMOGENEOUS (continuous, uniform color regions)
-        # - Grid lines are CONTINUOUS (long unbroken runs)
-        # - Text is DISCONTINUOUS (small varied marks that break local uniformity)
-        #
-        # Use local contrast: text pixels differ sharply from their neighbors,
-        # background/grid pixels match their neighbors.
-        from scipy.ndimage import uniform_filter
-        gray = np.array(img.convert('L')).astype(float)
-
-        # Local mean in a window around each pixel
-        local_mean = uniform_filter(gray, size=15)
-        # Text = pixels significantly darker than their local neighborhood
-        # This automatically handles ANY background color (white, green, red, yellow)
-        # because the local mean adapts to whatever the background is.
-        contrast = local_mean - gray  # positive = darker than surroundings = text
-
-        # Convert to grayscale: high contrast = dark (text), low contrast = white (background)
-        result = np.where(contrast > 15, gray, 255).astype(np.uint8)
-        return result
+        # Text pixels are dark AND discontinuous (small clusters).
+        # Backgrounds are homogeneous (continuous uniform regions).
+        # Step 1: Use brightness to isolate dark pixels (text candidates).
+        brightness = arr.mean(axis=2)
+        gray = np.where(brightness < 80, brightness, 255).astype(np.uint8)
+        return gray
 
     return np.array(img.convert('L'))
 
@@ -96,7 +83,7 @@ def ocr_with_shifu(image_path, model_path, page_mode=True):
             'backend': 'shifu',
             'text': result['text'],
             'lines': result.get('lines', []),
-            'confidence': float(result['confidence']),
+            'confidence': float(result.get('confidence', 0)),
         }
 
     result = ocr.read_line(img)

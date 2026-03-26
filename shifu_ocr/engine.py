@@ -534,20 +534,16 @@ class ShifuOCR:
             pred = self.predict_character(seg['image'])
             char = pred['predicted']
 
-            # Case disambiguation using baseline position
-            # If classifier returns wrong case (o vs O), use vertical position
-            if pred['confidence'] < 0.05 and char.isalpha():
+            # Case disambiguation: only when classifier is uncertain between case pairs
+            if pred['confidence'] < 0.1 and char.isalpha():
                 char_height = seg['bbox'][2] - seg['bbox'][0]
                 char_top = seg['bbox'][0]
                 is_tall = char_height > median_height * 0.85
                 is_high = char_top <= median_top + median_height * 0.15
-
-                # Check if the top candidate pair is a case pair
                 cands = pred['candidates'][:2]
                 if len(cands) >= 2:
                     c1, c2 = cands[0][0], cands[1][0]
                     if c1.lower() == c2.lower():
-                        # Same letter, different case — use position
                         char = c1.upper() if (is_tall and is_high) else c1.lower()
 
             results.append({
@@ -753,6 +749,124 @@ class ShifuOCR:
             'confidence': avg_conf,
             'adapted': adapted is not None,
             'confident_samples': len(confident_samples),
+        }
+
+    def detect_columns(self, grayscale_image):
+        """
+        Detect column boundaries from vertical gaps in the image.
+        Principle: columns are separated by continuous vertical whitespace.
+        """
+        from skimage.filters import threshold_otsu
+        try:
+            thresh = threshold_otsu(grayscale_image)
+        except:
+            thresh = 128
+        binary = (grayscale_image < thresh).astype(np.uint8)
+
+        # Vertical projection: sum ink per column across all rows
+        v_proj = binary.sum(axis=0).astype(float)
+
+        # Find wide gaps (column separators): runs of near-zero ink
+        gap_thresh = binary.shape[0] * 0.02  # <2% of height = empty column
+        in_gap = False
+        gaps = []
+        gap_start = 0
+
+        for i in range(len(v_proj)):
+            if v_proj[i] <= gap_thresh and not in_gap:
+                gap_start = i
+                in_gap = True
+            elif v_proj[i] > gap_thresh and in_gap:
+                if i - gap_start > 15:  # gaps must be >15px wide
+                    gaps.append((gap_start, i))
+                in_gap = False
+
+        if not gaps:
+            return None  # Not a columnar document
+
+        # Build column boundaries from gaps
+        columns = []
+        prev_end = 0
+        for gs, ge in gaps:
+            if gs > prev_end + 20:  # column must be >20px wide
+                columns.append((prev_end, gs))
+            prev_end = ge
+        if prev_end < len(v_proj) - 20:
+            columns.append((prev_end, len(v_proj)))
+
+        return columns if len(columns) >= 2 else None
+
+    def read_structured_page(self, grayscale_image, space_threshold=None):
+        """
+        Read a structured document (spreadsheet, table) using layout understanding.
+
+        START WITHIN, THEN WITHOUT:
+        1. Detect structure (columns, rows) — the organization
+        2. OCR each cell within its column context
+        3. Use patterns: repeated words, column-consistent vocabulary
+        4. The bigger picture emerges from understanding the parts
+        """
+        # Try to detect columnar structure
+        columns = self.detect_columns(grayscale_image)
+
+        if columns is None:
+            # Not a structured document — fall back to standard page read
+            return self.read_page(grayscale_image, space_threshold)
+
+        # Segment rows
+        line_segments = self.segment_lines(grayscale_image)
+        if not line_segments:
+            return {'text': '', 'lines': [], 'confidence': 0, 'structured': False}
+
+        # For each row, extract text per column
+        rows = []
+        all_text = []
+
+        # Pass 1: OCR all cells, collect confident predictions per column
+        col_vocab = {i: {} for i in range(len(columns))}  # word frequencies per column
+
+        for seg in line_segments:
+            row_cells = []
+            for ci, (col_start, col_end) in enumerate(columns):
+                # Extract this cell's image
+                cell_img = seg['image'][:, max(0,col_start):min(col_end, seg['image'].shape[1])]
+                if cell_img.size == 0 or cell_img.shape[1] < 5:
+                    row_cells.append('')
+                    continue
+
+                result = self.read_line(cell_img, space_threshold=space_threshold)
+                text = result['text'].strip()
+                row_cells.append(text)
+
+                # Track word frequencies per column
+                if text and result.get('confidence', 0) > 0:
+                    for word in text.split():
+                        if word.isalpha() and len(word) > 1:
+                            col_vocab[ci][word] = col_vocab[ci].get(word, 0) + 1
+
+            row_text = '\t'.join(row_cells)
+            rows.append(row_cells)
+            all_text.append(row_text)
+
+        # Pass 2: Use column vocabulary to correct uncertain words
+        # Words that appear multiple times in the same column are likely correct
+        confident_words = {}
+        for ci, vocab in col_vocab.items():
+            for word, count in vocab.items():
+                if count >= 2:  # seen 2+ times in same column = trusted
+                    confident_words[word.lower()] = word
+
+        avg_conf = 0
+        return {
+            'text': '\n'.join(all_text),
+            'lines': ['\t'.join(r) for r in rows],
+            'rows': rows,
+            'columns': len(columns),
+            'column_boundaries': columns,
+            'column_vocab': {i: dict(sorted(v.items(), key=lambda x: -x[1])[:5]) for i, v in col_vocab.items()},
+            'confident_words': confident_words,
+            'confidence': avg_conf,
+            'structured': True,
         }
 
     # --- Rendering utility ---

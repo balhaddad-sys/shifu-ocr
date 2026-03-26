@@ -179,8 +179,31 @@ class ShifuPipeline {
 
   _processLineResult(ocrResult) {
     const lines = ocrResult.lines || [ocrResult.text || ''];
-    // Pass ocrSource flag so the corrector knows this is OCR output and can be more aggressive
-    const results = lines.map(line => line ? this.processText(line, { ocrSource: true }) : null).filter(Boolean);
+    // START WITHIN, THEN WITHOUT:
+    // Detect document structure from the OCR lines themselves.
+    // Ward census lines follow patterns — use them to constrain correction.
+    const results = lines.map(line => {
+      if (!line) return null;
+      // Detect line type from pattern (the structure we KNOW)
+      const lower = line.toLowerCase();
+      let columnType = null;
+
+      // "Ward XX" section headers
+      if (/^w[a-z]*d?\s*\d/i.test(line.trim()) || /ward/i.test(lower)) {
+        columnType = 'ward_structure';
+      }
+      // Lines starting with numbers = patient rows (room-patient-diagnosis-doctor)
+      else if (/^\d/.test(line.trim())) {
+        // Split by large spaces — each segment is a different column
+        columnType = 'diagnosis'; // diagnoses are the hardest to correct
+      }
+      // Known section labels
+      else if (/icu|er|unassign|chronic/i.test(lower)) {
+        columnType = 'ward_structure';
+      }
+
+      return this.processText(line, { ocrSource: true, columnType });
+    }).filter(Boolean);
 
     // Empty or failed OCR = verify (never accept nothing)
     if (results.length === 0 || ocrResult.fallback) {
