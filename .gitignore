@@ -14,6 +14,7 @@ __pycache__/
 # IDE & Editor
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
@@ -35,7 +36,11 @@ raw_scans/
 seed_bank/
 pretrained/
 logs/
+training/vault/
 *.zip
+
+# Debug images
+_d*.png
 
 # Secrets & credentials
 .env
