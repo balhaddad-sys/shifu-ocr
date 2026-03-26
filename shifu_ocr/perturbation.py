@@ -74,6 +74,47 @@ def pulse_distance(binary):
         return (dist / dist.max() > 0.3).astype(np.uint8)
     return binary
 
+def pulse_dilate_heavy(binary, radius=2):
+    """Heavy dilation pulse: how much does the character spread at larger scale?"""
+    return morphology.dilation(binary, morphology.disk(radius)).astype(np.uint8)
+
+def pulse_row_shift(binary):
+    """Row-shift perturbation: shift even rows +1px and odd rows -1px.
+    Reveals asymmetry — symmetric characters are less affected."""
+    result = np.zeros_like(binary)
+    for r in range(binary.shape[0]):
+        if r % 2 == 0:
+            # Shift right by 1
+            if binary.shape[1] > 1:
+                result[r, 1:] = binary[r, :-1]
+        else:
+            # Shift left by 1
+            if binary.shape[1] > 1:
+                result[r, :-1] = binary[r, 1:]
+    return result.astype(np.uint8)
+
+def pulse_invert(binary):
+    """Contrast inversion perturbation: flip ink and background.
+    Reveals enclosed spaces — 'O' becomes a filled ring, 'C' stays open."""
+    inverted = 1 - binary
+    # Crop to the bounding box of the original character region to keep it comparable
+    coords = np.argwhere(binary)
+    if len(coords) < 2:
+        return inverted.astype(np.uint8)
+    r0, c0 = coords.min(axis=0)
+    r1, c1 = coords.max(axis=0)
+    # Pad by 1 pixel so the inverted region has context
+    r0 = max(r0 - 1, 0)
+    c0 = max(c0 - 1, 0)
+    r1 = min(r1 + 2, binary.shape[0])
+    c1 = min(c1 + 2, binary.shape[1])
+    return inverted[r0:r1, c0:c1].astype(np.uint8)
+
+def pulse_erode_heavy(binary, radius=3):
+    """Aggressive erosion (radius 3): reveals the deep skeleton faster.
+    Only the thickest strokes survive — distinguishes heavy vs thin characters."""
+    return morphology.erosion(binary, morphology.disk(radius)).astype(np.uint8)
+
 
 # =============================================================================
 # RELAXATION MEASUREMENT: How does the character respond?
@@ -82,22 +123,34 @@ def pulse_distance(binary):
 def measure_response(binary):
     """
     Quick measurement of a binary image's state.
-    Returns a small feature vector capturing the essential state.
+    Returns a 10-element feature vector capturing the essential state.
+
+    Measurements:
+      0: mass             — fraction of ink pixels
+      1: n_fg             — number of foreground components
+      2: n_holes          — number of enclosed background regions
+      3: vc               — vertical center of mass (normalized)
+      4: hc               — horizontal center of mass (normalized)
+      5: v_sym            — vertical symmetry score
+      6: compactness      — perimeter^2 / area (shape complexity)
+      7: edge_density     — edge pixel fraction
+      8: stroke_width     — mean distance-transform value in ink regions
+      9: n_endpoints      — number of topological endpoints (degree-1 skeleton pixels)
     """
     if binary.size == 0 or binary.sum() == 0:
-        return np.zeros(8)
-    
+        return np.zeros(10)
+
     h, w = binary.shape
-    
+
     # Mass (how much ink)
     mass = binary.sum() / binary.size
-    
+
     # Components and holes
     padded = np.pad(binary, 1, mode='constant', constant_values=0)
     _, n_fg = ndimage.label(padded)
     _, n_bg = ndimage.label(1 - padded)
     n_holes = n_bg - 1
-    
+
     # Center of mass
     total = binary.sum()
     if total > 0 and h > 0 and w > 0:
@@ -107,71 +160,117 @@ def measure_response(binary):
         hc = (binary * cols).sum() / (total * w)
     else:
         vc, hc = 0.5, 0.5
-    
+
     # Symmetry
     v_sym = np.mean(binary == np.fliplr(binary)) if w >= 2 else 1.0
-    
+
     # Compactness (perimeter^2 / area)
     edges = np.abs(np.diff(binary.astype(int), axis=0)).sum() + \
             np.abs(np.diff(binary.astype(int), axis=1)).sum()
     compactness = edges**2 / max(total, 1) / 100
-    
+
+    # Stroke width estimate: mean distance transform value over ink pixels
+    dist = ndimage.distance_transform_edt(binary)
+    ink_mask = binary > 0
+    stroke_width = dist[ink_mask].mean() if ink_mask.any() else 0.0
+    # Normalize by image diagonal so it's scale-invariant
+    diag = np.sqrt(h**2 + w**2)
+    stroke_width = stroke_width / max(diag, 1.0)
+
+    # Number of endpoints: skeletonize, then count pixels with exactly 1 neighbor
+    n_endpoints = 0.0
+    try:
+        skel = morphology.skeletonize(binary.astype(bool)).astype(np.uint8)
+        if skel.sum() > 0:
+            # Count neighbors for each skeleton pixel using convolution
+            kernel = np.array([[1, 1, 1],
+                               [1, 0, 1],
+                               [1, 1, 1]])
+            neighbor_count = ndimage.convolve(skel, kernel, mode='constant', cval=0)
+            # Endpoints are skeleton pixels with exactly 1 neighbor
+            n_endpoints = float(((skel == 1) & (neighbor_count == 1)).sum())
+    except Exception:
+        n_endpoints = 0.0
+
     return np.array([
         mass, float(n_fg), float(n_holes),
-        vc, hc, v_sym, compactness, float(edges) / max(h*w, 1)
+        vc, hc, v_sym, compactness, float(edges) / max(h*w, 1),
+        stroke_width, n_endpoints
     ])
 
 
 def extract_relaxation_signature(binary):
     """
     THE COMPLETE MRI SEQUENCE.
-    
+
     Apply multiple RF pulses. After each, measure the response.
     The concatenation of all responses IS the relaxation signature.
-    
+
     Like an MRI protocol: T1-weighted, T2-weighted, FLAIR, DWI —
     each sequence reveals different tissue properties.
+
+    12 pulses × 10 measurements = 120-dimensional signature.
     """
     if binary.sum() < 2:
-        return np.zeros(8 * 8)  # 8 measurements × 8 pulses
-    
+        return np.zeros(12 * 10)  # 10 measurements × 12 pulses
+
     # Normalize to standard size first
     normed = normalize_char(binary, size=(32, 32))
-    
+
     responses = []
-    
+
     # Pulse 0: Original state (baseline)
     responses.append(measure_response(normed))
-    
+
     # Pulse 1: Light erosion (T1-like: what survives gentle thinning?)
     eroded1 = pulse_erode(normed, 1)
     responses.append(measure_response(eroded1))
-    
+
     # Pulse 2: Heavy erosion (what survives aggressive thinning?)
     eroded2 = pulse_erode(normed, 2)
     responses.append(measure_response(eroded2))
-    
+
     # Pulse 3: Dilation (T2-like: what fills in? what merges?)
     dilated = pulse_dilate(normed, 1)
     responses.append(measure_response(dilated))
-    
+
     # Pulse 4: Blur (diffusion-like: how does structure dissolve?)
     blurred = pulse_blur(normed, sigma=1.5)
     responses.append(measure_response(blurred))
-    
+
     # Pulse 5: Skeleton (topological core)
     skel = pulse_skeleton(normed)
     responses.append(measure_response(skel))
-    
+
     # Pulse 6: Distance core (deep structure)
     dist_core = pulse_distance(normed)
     responses.append(measure_response(dist_core))
-    
+
     # Pulse 7: DELTA — how much changed between original and eroded?
     # This is the KEY: the RATE OF CHANGE under perturbation
     delta = measure_response(normed) - measure_response(eroded1)
     responses.append(delta)
-    
+
+    # Pulse 8: Heavy dilation (radius 2) — how much does the character spread?
+    # Distinguishes open vs closed forms: 'C' spreads outward, 'O' fills inward
+    dilated_heavy = pulse_dilate_heavy(normed, radius=2)
+    responses.append(measure_response(dilated_heavy))
+
+    # Pulse 9: Row-shift perturbation — rotation-like asymmetry probe
+    # Symmetric characters (O, H) are less affected; asymmetric ones (S, Z) shift more
+    row_shifted = pulse_row_shift(normed)
+    responses.append(measure_response(row_shifted))
+
+    # Pulse 10: Contrast inversion — what happens when we flip ink/background?
+    # Characters with enclosed holes (O, D, B) create filled islands when inverted
+    inverted = pulse_invert(normed)
+    responses.append(measure_response(inverted))
+
+    # Pulse 11: Aggressive erosion (radius 3) — deep skeleton probe
+    # Only the thickest junction points survive; thin strokes vanish entirely
+    eroded3 = pulse_erode_heavy(normed, radius=3)
+    responses.append(measure_response(eroded3))
+
     return np.concatenate(responses)
 
 
@@ -320,7 +419,7 @@ def main():
             total_trained += 1
     
     print(f"  Trained {total_trained} characters ({len(engine.landscapes)} unique)")
-    print(f"  Signature size: {8*8} dimensions (8 measurements × 8 pulses)")
+    print(f"  Signature size: {12*10} dimensions (10 measurements × 12 pulses)")
     
     # Show per-char training
     for c in sorted(char_counts.keys()):
@@ -398,9 +497,9 @@ def main():
   Usable:  {usable}/{total_t} ({usable/total_t*100:.0f}%)
   
   Method: MRI relaxation signatures
-    - 8 perturbation pulses per character
-    - 8 measurements per pulse state  
-    - 64-dimensional relaxation fingerprint
+    - 12 perturbation pulses per character
+    - 10 measurements per pulse state
+    - 120-dimensional relaxation fingerprint
     - Fluid landscape classification
     
   The theory: structure → chaos → measure relaxation → identify.
