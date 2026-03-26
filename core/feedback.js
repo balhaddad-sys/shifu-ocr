@@ -246,7 +246,7 @@ class FeedbackLoop {
     if (m.topErrors.length > 0) {
       lines.push(`Top errors:`);
       for (const err of m.topErrors.slice(0, 5)) {
-        lines.push(`  "${err.original}" → proposed "${err.proposed}", correct "${err.confirmed}" (${err.count}x)`);
+        lines.push(`  ${err.pattern} [${err.flag}] ${err.outcome} (${err.count}x)`);
       }
       lines.push(``);
     }

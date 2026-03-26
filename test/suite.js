@@ -882,7 +882,7 @@ assert("#20: correction count = 1", rollShifu.learning.correctionCount === 1);
 // History should have one entry
 const hist = rollShifu.getHistory();
 assert("#20: history has 1 entry", hist.length === 1);
-assert("#20: history entry has confirmedRow", hist[0].confirmedRow.Diagnosis === 'stroke');
+assert("#20: history entry has columns", hist[0].columns && hist[0].columns.includes('Diagnosis'));
 
 // Undo it
 const undone = rollShifu.undo();

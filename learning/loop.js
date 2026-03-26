@@ -651,11 +651,7 @@ class ShifuLearningEngine {
     return this._history.slice(-n).reverse().map(h => ({
       id: h.id,
       timestamp: h.timestamp,
-      // ocrRow/confirmedRow are only available in-memory (stripped from persisted state for PHI safety)
-      ocrRow: h.ocrRow || null,
-      confirmedRow: h.confirmedRow || null,
       columns: h.ocrRow ? Object.keys(h.ocrRow) : (h.columns || []),
-      rejected: h.rejected || null,
       rejectedCount: h.rejectedCount || (h.rejected ? h.rejected.length : 0),
     }));
   }
