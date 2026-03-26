@@ -65,25 +65,33 @@ class ShifuPersistence {
 
     if (!fs.existsSync(corePath) || !fs.existsSync(learningPath)) return null;
 
+    // Parse each file independently — corrupt meta or learning should not
+    // discard valid state from other files
+    let savedCoreState = null;
     try {
-      const savedCoreState = fs.readFileSync(corePath, 'utf-8');
-      const savedLearningState = JSON.parse(fs.readFileSync(learningPath, 'utf-8'));
-
-      // Parse meta separately — corrupt meta should not discard valid learned state
-      let meta = {};
-      try {
-        if (fs.existsSync(path.join(this.stateDir, META_FILE))) {
-          meta = JSON.parse(fs.readFileSync(path.join(this.stateDir, META_FILE), 'utf-8'));
-        }
-      } catch (e) {
-        console.warn(`Corrupt meta.json, ignoring: ${e.message}`);
-      }
-
-      return { savedCoreState, savedLearningState, meta };
+      savedCoreState = fs.readFileSync(corePath, 'utf-8');
     } catch (e) {
-      console.warn(`Failed to load state: ${e.message}`);
+      console.warn(`Failed to load core state: ${e.message}`);
       return null;
     }
+
+    let savedLearningState = null;
+    try {
+      savedLearningState = JSON.parse(fs.readFileSync(learningPath, 'utf-8'));
+    } catch (e) {
+      console.warn(`Corrupt learning_engine.json, restoring core only: ${e.message}`);
+    }
+
+    let meta = {};
+    try {
+      if (fs.existsSync(path.join(this.stateDir, META_FILE))) {
+        meta = JSON.parse(fs.readFileSync(path.join(this.stateDir, META_FILE), 'utf-8'));
+      }
+    } catch (e) {
+      console.warn(`Corrupt meta.json, ignoring: ${e.message}`);
+    }
+
+    return { savedCoreState, savedLearningState, meta };
   }
 
   /**

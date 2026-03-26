@@ -738,7 +738,7 @@ class ShifuLearningEngine {
         return { original: word, corrected: word, confidence: 0.7, flag: 'room_code', candidates: [] };
       }
     }
-    if (wordLower.length <= 2 && !this.vocabulary.isKnown(wordLower)) {
+    if (wordLower.length <= 3 && !this.vocabulary.isKnown(wordLower)) {
       return { original: word, corrected: word, confidence: 0.5, flag: 'short', candidates: [] };
     }
     // ── End guards ─────────────────────────────────────────────────
