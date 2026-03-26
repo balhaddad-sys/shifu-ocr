@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# State & Runtime
+.state/
+.ingested/
+.tmp_feedback_blank_confirm/
+.tmp_review/
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Training artifacts
+training_data/
+raw_scans/
+seed_bank/
+pretrained/
+logs/
+*.zip
+
+# Secrets & credentials
+.env
+*.pem
+*.key
+
+# Generated docs (rebuild with generate_pdf.py)
+Shifu_OCR_Functions_Reference.pdf

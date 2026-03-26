@@ -1,0 +1,12 @@
+# Shifu-OCR Python dependencies
+# Core OCR engine
+numpy>=1.21.0
+Pillow>=9.0.0
+scipy>=1.7.0
+
+# Training pipeline (optional)
+# paddleocr>=2.6.0
+# paddlepaddle>=2.4.0
+
+# PDF generation
+reportlab>=3.6.0

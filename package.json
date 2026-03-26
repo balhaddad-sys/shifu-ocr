@@ -1,0 +1,31 @@
+{
+  "name": "shifu-ocr",
+  "version": "2.0.0",
+  "description": "Medical OCR engine: fluid theory character recognition (Python) + resonance learning, clinical vocabulary, safety flags, and adaptive correction (JavaScript).",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/suite.js && python test/test_engines.py",
+    "test:js": "node test/suite.js",
+    "test:py": "python test/test_engines.py",
+    "test:v2": "node v2/smokeTest.js",
+    "demo": "node test/demo.js",
+    "seed": "python training/bulk_seed.py",
+    "train:prepare": "python training/prepare.py",
+    "train:finetune": "python training/finetune.py"
+  },
+  "keywords": [
+    "ocr",
+    "medical",
+    "clinical",
+    "nlp",
+    "learning",
+    "fluid-theory",
+    "displacement"
+  ],
+  "license": "MIT",
+  "author": "Bader & Claude",
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
