@@ -681,9 +681,11 @@ class ShifuOCR:
     def segment_lines(self, grayscale_image, min_line_height=8, min_gap=3):
         """
         Segment a full page image into individual text line images.
-        Uses horizontal projection to find rows of text.
-        Removes grid lines (spreadsheet borders) before segmentation
-        so the FLAIR perturbation engine gets clean character input.
+
+        NEURAL SYSTEM: trusts the upstream 4D MRI-RF preprocessing
+        to have already stripped backgrounds and grid lines.
+        This layer just finds text rows via horizontal projection.
+        Each layer does ONE thing and trusts the others.
         """
         from skimage.filters import threshold_otsu
 
@@ -693,33 +695,6 @@ class ShifuOCR:
             thresh = 128
 
         binary = (grayscale_image < thresh).astype(np.uint8)
-
-        # CONTINUITY PRINCIPLE for grid removal:
-        # Grid lines = CONTINUOUS runs of ink across the full span.
-        # Text = DISCONTINUOUS clusters with gaps between characters.
-        # Count the longest continuous run in each row/col. If it spans >50%,
-        # it's a grid line (text never has unbroken runs that long).
-        h, w = binary.shape
-        for row in range(h):
-            row_data = binary[row, :]
-            # Find longest continuous run of ink
-            max_run = 0; cur_run = 0
-            for px in row_data:
-                if px: cur_run += 1; max_run = max(max_run, cur_run)
-                else: cur_run = 0
-            # A continuous run > 50% of width = grid line, not text
-            if max_run > w * 0.5:
-                binary[row, :] = 0
-
-        for col in range(w):
-            col_data = binary[:, col]
-            max_run = 0; cur_run = 0
-            for px in col_data:
-                if px: cur_run += 1; max_run = max(max_run, cur_run)
-                else: cur_run = 0
-            if max_run > h * 0.5:
-                binary[:, col] = 0
-
         binary = morphology.remove_small_objects(binary.astype(bool), min_size=10).astype(np.uint8)
 
         # Horizontal projection — sum ink in each row

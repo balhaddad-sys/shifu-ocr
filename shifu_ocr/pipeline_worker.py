@@ -60,36 +60,33 @@ def read_image(image_path):
 
     if img.mode in ('RGB', 'RGBA'):
         from scipy.ndimage import gaussian_filter
-        # MRI-OCR PRINCIPLE: See density, not color. Different RF scales
-        # reveal different structures — just like T1/T2/FLAIR in MRI.
-        gray = np.array(img.convert('L')).astype(float)
+        # 4D MRI-OCR: Run MRI-RF on EACH color channel independently.
+        # Like multi-sequence MRI: T1(R) + T2(G) + FLAIR(B) + DWI(L).
+        # Text = dark in ALL channels (constructive interference).
+        # Colored backgrounds = bright in at least one (destructive interference).
+        arr = np.array(img.convert('RGB')).astype(float)
+        channels = [arr[:,:,0], arr[:,:,1], arr[:,:,2], arr.mean(axis=2)]  # R, G, B, Luminance
 
-        # Wide RF (large kernel): background response — continuous, homogeneous
-        # 90% equal reactivity = that's the background
-        background = gaussian_filter(gray, sigma=25)
+        def mri_rf_channel(gray):
+            background = gaussian_filter(gray, sigma=25)
+            foreground = background - gray
+            line_response = gaussian_filter(foreground, sigma=8)
+            return np.clip(foreground - line_response, 0, None)
 
-        # Subtract background: removes continuous regions, keeps discontinuous marks
-        # This automatically handles ANY colored background (white/green/red/yellow)
-        foreground = background - gray  # positive = darker than background = ink
+        # Run MRI-RF on each channel
+        signals = [mri_rf_channel(ch) for ch in channels]
 
-        # Medium RF: line response — grid borders are medium-scale continuous structures
-        line_response = gaussian_filter(foreground, sigma=8)
+        # COMBINE: minimum across channels (text is dark in ALL = high signal in ALL)
+        # Colored backgrounds have low signal in at least one channel → min suppresses them
+        combined = np.minimum.reduce(signals)
 
-        # Small RF: letter response — subtract lines, keep only small structures (text)
-        text_signal = foreground - line_response
-
-        # The text signal is positive where there are small dark marks (letters)
-        # Map signal to grayscale: strong signal → dark (0), no signal → white (255)
-        text_signal = np.clip(text_signal, 0, None)
-        if text_signal.max() > 0:
-            # Scale so the strongest text signal maps to ~30 (dark) not 0 (black)
-            # This preserves gradients for the FLAIR perturbation engine
-            scaled = text_signal / text_signal.max()
-            normalized = 255 - (scaled * 225)  # range: 30 (text) to 255 (bg)
-            # Suppress very weak signal (noise) back to white
+        # Normalize to grayscale
+        if combined.max() > 0:
+            scaled = combined / combined.max()
+            normalized = 255 - (scaled * 225)
             normalized[scaled < 0.08] = 255
         else:
-            normalized = np.full_like(gray, 255)
+            normalized = np.full(arr.shape[:2], 255.0)
 
         return normalized.astype(np.uint8)
 
@@ -97,13 +94,22 @@ def read_image(image_path):
 
 
 def ocr_with_shifu(image_path, model_path, page_mode=True):
-    """Run our fluid-theory OCR engine on a single image."""
+    """
+    UNIFIED NEURAL PIPELINE:
+    Layer 1: 4D MRI-RF preprocessing (R+G+B+L multi-sequence)
+    Layer 2: Line segmentation (trusts L1 to have cleaned the image)
+    Layer 3: Character segmentation (trusts L2 for clean line images)
+    Layer 4: FLAIR perturbation + template ensemble (character identity)
+    Layer 5: Document adaptation (confident predictions refine the model)
+    Layer 6: JS clinical correction (confusion bridge + vocabulary)
+    Each layer receives from the previous, feeds to the next.
+    """
     ocr = load_shifu_ocr(model_path)
-    img = read_image(image_path)
+    img = read_image(image_path)  # Layer 1: 4D MRI-RF
 
     # Use page mode for larger images (likely full page / screenshot)
     if page_mode and (img.shape[0] > 200 or img.shape[1] > 400):
-        result = ocr.read_page(img)
+        result = ocr.read_page(img)  # Layers 2-5
         return {
             'backend': 'shifu',
             'text': result['text'],
