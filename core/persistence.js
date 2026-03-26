@@ -79,7 +79,10 @@ class ShifuPersistence {
     try {
       savedLearningState = JSON.parse(fs.readFileSync(learningPath, 'utf-8'));
     } catch (e) {
-      console.warn(`Corrupt learning_engine.json, restoring core only: ${e.message}`);
+      // Core and learning must be consistent — if learning is corrupt,
+      // discard both to avoid split-brain (core remembers, learning doesn't)
+      console.warn(`Corrupt learning_engine.json, starting fresh: ${e.message}`);
+      return null;
     }
 
     let meta = {};
