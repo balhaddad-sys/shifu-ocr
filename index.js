@@ -143,9 +143,9 @@ function createShifu(opts = {}) {
         }
         if (data.words) allWords.push(...data.words);
       }
-      // Surface warnings from corrected_verify / low_confidence / unknown tokens
+      // Surface warnings from any uncertain token flag
       const hasUncertain = allWords.some(w =>
-        w.flag === 'corrected_verify' || w.flag === 'low_confidence' || w.flag === 'unknown');
+        w.flag === 'corrected_verify' || w.flag === 'verify' || w.flag === 'low_confidence' || w.flag === 'unknown');
       if (hasUncertain) result.hasWarnings = true;
       return result;
     },

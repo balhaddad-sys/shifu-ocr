@@ -281,7 +281,7 @@ function correctWord(rawWord, options = {}) {
     : Math.max(wordLower.length * 0.45, 2.0);  // longer: proportional
   const maxDist = options.maxDistance ?? defaultMaxDist;
   const maxLenDiff = wordLower.length <= 4 ? 1 : 2;
-  const contextWords = columnType ? getColumnVocabulary(columnType) : baseWords;
+  const contextWords = columnType ? getColumnVocabulary(columnType) : null;
   const candidateWords = learningEngine
     ? learningEngine.vocabulary.getCandidateWords(wordLower, {
         maxLengthDiff: maxLenDiff,
@@ -314,8 +314,8 @@ function correctWord(rawWord, options = {}) {
       : ocrWeightedDistance(wordLower, vocabWord);
     if (dist > maxDist) continue;
 
-    // Layer 1: Column context boost
-    const colBoost = contextWords.has(vocabWord) ? 0.4 : 0;
+    // Layer 1: Column context boost — only when columnType is explicitly set
+    const colBoost = (contextWords && contextWords.has(vocabWord)) ? 0.4 : 0;
 
     // Layer 2: Ward vocabulary frequency boost
     const freqBoost = learningEngine
