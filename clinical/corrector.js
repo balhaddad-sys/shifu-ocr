@@ -311,8 +311,7 @@ function correctWord(rawWord, options = {}) {
   const candidates = [];
 
   for (const vocabWord of candidateWords) {
-    // Quick length filter — stricter for short words
-    const maxLenDiff = wordLower.length <= 4 ? 1 : 2;
+    // Quick length filter
     if (Math.abs(vocabWord.length - wordLower.length) > maxLenDiff) continue;
 
     // Distance: use adaptive confusion costs if available, else static
@@ -321,34 +320,57 @@ function correctWord(rawWord, options = {}) {
       : ocrWeightedDistance(wordLower, vocabWord);
     if (dist > maxDist) continue;
 
-    // Layer 1: Column context boost — only when columnType is explicitly set
-    const colBoost = (contextWords && contextWords.has(vocabWord)) ? 0.4 : 0;
+    // HUB AND SPOKE SCORING — Multiple independent signals accumulate.
+    // Each signal is a synapse. When enough fire together, the action potential
+    // (correction) triggers. No single signal dominates.
+    const { levDist: _lev } = require('../core/engine');
+    const editDist = _lev(wordLower, vocabWord);
+    const signals = [];
 
-    // Layer 2: Ward vocabulary frequency boost
-    const freqBoost = learningEngine
-      ? learningEngine.vocabulary.getFrequencyBoost(vocabWord) : 0;
+    // Signal 1: Confusion model fit — how well do known OCR confusions explain the diff?
+    // Low confusion distance relative to edit distance = strong OCR damage signal
+    const confusionFit = editDist > 0 ? 1.0 - (dist / editDist) : 1.0;
+    signals.push(confusionFit);
 
-    // Layer 3: Context chain boost (co-occurrence patterns)
-    const chainBoost = (learningEngine && knownContext)
-      ? learningEngine.context.getBoost(knownContext, columnType || '', vocabWord) : 0;
+    // Signal 2: Column context — does this word belong in the expected column?
+    const colSignal = (contextWords && contextWords.has(vocabWord)) ? 1.0 : 0;
+    signals.push(colSignal);
 
-    // Layer 4: Core engine resonance boost
-    let resonanceBoost = 0;
-    if (resonanceSet && resonanceSet.has(vocabWord)) {
-      resonanceBoost = resonanceSet.get(vocabWord) * 0.3;
-    }
+    // Signal 3: Ward vocabulary frequency
+    const freqSignal = learningEngine
+      ? Math.min(learningEngine.vocabulary.getFrequencyBoost(vocabWord), 1.0) : 0;
+    signals.push(freqSignal);
 
-    // Combined score
-    const lenRatio = Math.min(wordLower.length, vocabWord.length) /
-                     Math.max(wordLower.length, vocabWord.length);
-    const totalBoost = colBoost + freqBoost * 0.5 + chainBoost + resonanceBoost;
-    const score = Math.max(0,
-      1.0 - (dist - totalBoost) / Math.max(wordLower.length, 3)
-    ) * lenRatio;
+    // Signal 4: Context chain — co-occurrence with previous words
+    const chainSignal = (learningEngine && knownContext)
+      ? Math.min(learningEngine.context.getBoost(knownContext, columnType || '', vocabWord), 1.0) : 0;
+    signals.push(chainSignal);
+
+    // Signal 5: Core engine resonance
+    const resonanceSignal = (resonanceSet && resonanceSet.has(vocabWord))
+      ? Math.min(resonanceSet.get(vocabWord), 1.0) : 0;
+    signals.push(resonanceSignal);
+
+    // Signal 6: Length compatibility — closer length = more likely match
+    const lenSignal = 1.0 - Math.abs(vocabWord.length - wordLower.length) / Math.max(wordLower.length, 3);
+    signals.push(Math.max(0, lenSignal));
+
+    // Signal 7: Proximity — lower raw distance = stronger signal
+    const proxSignal = Math.max(0, 1.0 - dist / Math.max(wordLower.length, 3));
+    signals.push(proxSignal);
+
+    // ACCUMULATE: count how many signals fire (> 0.3 threshold)
+    const firingCount = signals.filter(s => s > 0.3).length;
+    // Total synaptic input = weighted sum + synchrony bonus
+    const synapticSum = signals.reduce((a, b) => a + b, 0);
+    const synchronyBonus = firingCount >= 3 ? 0.3 : (firingCount >= 2 ? 0.1 : 0);
+    const score = (synapticSum / signals.length) + synchronyBonus;
 
     candidates.push({
       word: vocabWord, distance: dist, score,
-      boosts: { column: colBoost, frequency: freqBoost, context: chainBoost, resonance: resonanceBoost },
+      boosts: { confusionFit, column: colSignal, frequency: freqSignal,
+                context: chainSignal, resonance: resonanceSignal,
+                firingCount, synchronyBonus },
     });
   }
 
@@ -418,6 +440,10 @@ function correctWord(rawWord, options = {}) {
     }
   }
 
+  // Edit distance to top candidate (used for ambiguity check and verify policy)
+  const { levDist: _levDist2 } = require('../core/engine');
+  const editDistToTop = _levDist2(wordLower, top.word);
+
   // Medication ambiguity check
   const meds = new Set(VOCABULARY.medications.map(m => m.toLowerCase()));
   const topIsMed = meds.has(top.word);
@@ -425,7 +451,9 @@ function correctWord(rawWord, options = {}) {
 
   let confidence = top.score;
   let flag;
-  if (topIsMed && secondIsMed && margin < 0.2) {
+  // Only flag medication ambiguity when the top match is NOT an obvious OCR typo
+  // (edit distance > 1). Single-char fixes like levetiracelam→levetiracetam are safe.
+  if (topIsMed && secondIsMed && margin < 0.2 && editDistToTop > 1) {
     flag = 'DANGER_medication_ambiguity';
     confidence = Math.min(confidence, 0.3);
   } else if (confidence > 0.8 && margin > 0.15) {
@@ -441,8 +469,6 @@ function correctWord(rawWord, options = {}) {
   // - corrected_verify with small edit distance (<=2): apply (obvious OCR typo like Abdulah→Abdullah)
   // - corrected_verify with large edit distance (>2): keep original (suspicious like p1antar→cluster)
   // - low_confidence / DANGER: always keep original
-  const { levDist: _levDist2 } = require('../core/engine');
-  const editDistToTop = _levDist2(wordLower, top.word);
   const isUncertain = flag === 'low_confidence' || flag === 'DANGER_medication_ambiguity'
     || (flag === 'corrected_verify' && editDistToTop > 2);
   const correctedWord = isUncertain ? word : preserveCase(word, top.word);
@@ -585,11 +611,20 @@ function correctTableRow(row, options = {}) {
     }
   }
 
+  // Aggregate words and confidence across all columns for top-level metadata
+  const allWords = Object.values(corrected).flatMap(c => c.words || []);
+  const avgConfidence = allWords.length > 0
+    ? Math.round(allWords.reduce((s, w) => s + w.confidence, 0) / allWords.length * 100) / 100
+    : 0;
+
   return {
     corrected,
+    words: allWords,
     safetyFlags: allFlags,
+    avgConfidence,
     hasDangers: allFlags.some(f => f.severity === 'danger'),
-    hasWarnings: allFlags.some(f => f.severity === 'warning' || f.severity === 'error'),
+    hasWarnings: allFlags.some(f => f.severity === 'warning' || f.severity === 'error')
+      || allWords.some(w => w.flag === 'corrected_verify' || w.flag === 'low_confidence' || w.flag === 'unknown'),
   };
 }
 
