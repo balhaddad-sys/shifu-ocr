@@ -110,12 +110,18 @@ def ocr_with_shifu(image_path, model_path, page_mode=True):
     # Use page mode for larger images (likely full page / screenshot)
     if page_mode and (img.shape[0] > 200 or img.shape[1] > 400):
         result = ocr.read_page(img)  # Layers 2-5
-        return {
+        output = {
             'backend': 'shifu',
             'text': result['text'],
             'lines': result.get('lines', []),
             'confidence': float(result.get('confidence', 0)),
         }
+        # Pass spatial coordinates through — the table IS the coordinates
+        if result.get('table'):
+            output['table'] = result['table']
+        if result.get('words'):
+            output['word_count'] = len(result['words'])
+        return output
 
     result = ocr.read_line(img)
     return {
@@ -223,6 +229,12 @@ def main():
 
     if not os.path.exists(args.image):
         print(json.dumps({'error': f'Image not found: {args.image}'}))
+        sys.exit(1)
+
+    # SEC-08: Validate image path is not a traversal or symlink escape
+    resolved = os.path.realpath(args.image)
+    if not os.path.isfile(resolved):
+        print(json.dumps({'error': 'Invalid image path'}))
         sys.exit(1)
 
     # Choose backend

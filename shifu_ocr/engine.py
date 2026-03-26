@@ -148,7 +148,7 @@ def extract_features(br):
             _, n_ep = ndimage.label(skel & (nc == 1))
             _, n_jp = ndimage.label(skel & (nc >= 3))
             feats.extend([float(n_ep), float(n_jp)])
-        except:
+        except Exception:
             feats.extend([0.0, 0.0])
     else:
         feats.extend([0.0, 0.0])
@@ -540,7 +540,7 @@ class ShifuOCR:
         # because characters are close together and the background is uniform
         try:
             thresh = threshold_otsu(grayscale_image)
-        except:
+        except Exception:
             thresh = 128
         
         binary = (grayscale_image < thresh).astype(np.uint8)
@@ -691,7 +691,7 @@ class ShifuOCR:
 
         try:
             thresh = threshold_otsu(grayscale_image)
-        except:
+        except Exception:
             thresh = 128
 
         binary = (grayscale_image < thresh).astype(np.uint8)
@@ -822,10 +822,98 @@ class ShifuOCR:
 
         avg_conf = np.mean([l['confidence'] for l in lines]) if lines else 0
 
+        # SPATIAL RECONSTRUCTION: extract word coordinates from character bboxes.
+        # The coordinates ARE the table structure — same X = same column.
+        words_with_coords = []
+        for line_result in lines:
+            line_bbox = line_result.get('bbox', (0, 0, 0, 0))
+            line_y = (line_bbox[0] + line_bbox[2]) / 2  # vertical center of line
+
+            # Split characters into words using spaces
+            chars = line_result.get('characters', [])
+            current_word = []
+            current_word_x_start = None
+
+            for ci, ch_info in enumerate(chars):
+                if ch_info['char'] == ' ':
+                    if current_word:
+                        word_text = ''.join(c['char'] for c in current_word)
+                        x_start = current_word_x_start
+                        x_end = current_word[-1]['bbox'][3] + line_bbox[1]  # absolute x
+                        words_with_coords.append({
+                            'text': word_text,
+                            'x': (x_start + x_end) / 2,
+                            'y': line_y,
+                            'x_start': x_start,
+                            'x_end': x_end,
+                            'line_index': line_result.get('row_index', 0),
+                        })
+                        current_word = []
+                        current_word_x_start = None
+                else:
+                    if not current_word:
+                        current_word_x_start = ch_info['bbox'][1] + line_bbox[1]
+                    current_word.append(ch_info)
+
+            if current_word:
+                word_text = ''.join(c['char'] for c in current_word)
+                x_start = current_word_x_start
+                x_end = current_word[-1]['bbox'][3] + line_bbox[1]
+                words_with_coords.append({
+                    'text': word_text,
+                    'x': (x_start + x_end) / 2,
+                    'y': line_y,
+                    'x_start': x_start,
+                    'x_end': x_end,
+                    'line_index': line_result.get('row_index', 0),
+                })
+
+        # RECONSTRUCT TABLE: cluster words by X position into columns
+        table = None
+        if words_with_coords:
+            # Find column boundaries by clustering X positions
+            x_positions = sorted(set(w['x_start'] for w in words_with_coords))
+            columns = []
+            if x_positions:
+                col_start = x_positions[0]
+                col_members = [col_start]
+                for xp in x_positions[1:]:
+                    if xp - col_members[-1] < 40:  # same column if < 40px apart
+                        col_members.append(xp)
+                    else:
+                        columns.append(np.mean(col_members))
+                        col_members = [xp]
+                columns.append(np.mean(col_members))
+
+            if len(columns) >= 2:
+                # Assign each word to nearest column
+                rows_dict = {}
+                for w in words_with_coords:
+                    col_idx = int(np.argmin([abs(w['x'] - c) for c in columns]))
+                    row_idx = w['line_index']
+                    if row_idx not in rows_dict:
+                        rows_dict[row_idx] = {}
+                    if col_idx not in rows_dict[row_idx]:
+                        rows_dict[row_idx][col_idx] = []
+                    rows_dict[row_idx][col_idx].append(w['text'])
+
+                table = {
+                    'columns': len(columns),
+                    'rows': [],
+                }
+                for row_idx in sorted(rows_dict.keys()):
+                    row = []
+                    for col_idx in range(len(columns)):
+                        cell_words = rows_dict.get(row_idx, {}).get(col_idx, [])
+                        row.append(' '.join(cell_words))
+                    table['rows'].append(row)
+
         return {
             'text': '\n'.join(all_text),
             'lines': [l['text'] for l in lines],
             'line_details': lines,
+            'words': words_with_coords,
+            'table': table,
             'confidence': avg_conf,
             'adapted': adapted is not None,
             'confident_samples': len(confident_samples),
@@ -839,7 +927,7 @@ class ShifuOCR:
         from skimage.filters import threshold_otsu
         try:
             thresh = threshold_otsu(grayscale_image)
-        except:
+        except Exception:
             thresh = 128
         binary = (grayscale_image < thresh).astype(np.uint8)
 
@@ -956,7 +1044,7 @@ class ShifuOCR:
         draw = ImageDraw.Draw(img)
         try:
             font = ImageFont.truetype(font_path, font_size)
-        except:
+        except Exception:
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), char, font=font)
         x = (img_size[0] - (bbox[2] - bbox[0])) // 2 - bbox[0]
@@ -969,7 +1057,7 @@ class ShifuOCR:
         """Render a line of text as a grayscale image."""
         try:
             font = ImageFont.truetype(font_path, font_size)
-        except:
+        except Exception:
             font = ImageFont.load_default()
         
         # Measure text
