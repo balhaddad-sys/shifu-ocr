@@ -60,15 +60,26 @@ def read_image(image_path):
 
     if img.mode in ('RGB', 'RGBA'):
         arr = np.array(img.convert('RGB')).astype(float)
-        # Text is dark across ALL channels (low brightness).
-        # Colored backgrounds (red, green, yellow) are bright in at least one channel.
-        # Use luminance (weighted grayscale) for best text/background separation.
-        luminance = 0.299 * arr[:,:,0] + 0.587 * arr[:,:,1] + 0.114 * arr[:,:,2]
-        # Preserve anti-aliased edges: keep actual gray values for text pixels.
-        # Threshold at 100 to capture dark text + anti-aliased fringes.
-        # Values 0-100 = text (keep real value), 101-255 = background (set to white).
-        gray = np.where(luminance < 100, luminance, 255).astype(np.uint8)
-        return gray
+        # CONTINUITY PRINCIPLE:
+        # - Backgrounds are HOMOGENEOUS (continuous, uniform color regions)
+        # - Grid lines are CONTINUOUS (long unbroken runs)
+        # - Text is DISCONTINUOUS (small varied marks that break local uniformity)
+        #
+        # Use local contrast: text pixels differ sharply from their neighbors,
+        # background/grid pixels match their neighbors.
+        from scipy.ndimage import uniform_filter
+        gray = np.array(img.convert('L')).astype(float)
+
+        # Local mean in a window around each pixel
+        local_mean = uniform_filter(gray, size=15)
+        # Text = pixels significantly darker than their local neighborhood
+        # This automatically handles ANY background color (white, green, red, yellow)
+        # because the local mean adapts to whatever the background is.
+        contrast = local_mean - gray  # positive = darker than surroundings = text
+
+        # Convert to grayscale: high contrast = dark (text), low contrast = white (background)
+        result = np.where(contrast > 15, gray, 255).astype(np.uint8)
+        return result
 
     return np.array(img.convert('L'))
 

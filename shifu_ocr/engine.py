@@ -593,27 +593,31 @@ class ShifuOCR:
 
         binary = (grayscale_image < thresh).astype(np.uint8)
 
-        # Remove horizontal grid lines: rows with long continuous runs of ink
+        # CONTINUITY PRINCIPLE for grid removal:
+        # Grid lines = CONTINUOUS runs of ink across the full span.
+        # Text = DISCONTINUOUS clusters with gaps between characters.
+        # Count the longest continuous run in each row/col. If it spans >50%,
+        # it's a grid line (text never has unbroken runs that long).
         h, w = binary.shape
         for row in range(h):
-            # Count longest continuous run of ink pixels in this row
             row_data = binary[row, :]
-            run = np.sum(row_data)
-            if run > w * 0.3:
-                # Check if this is a thin line (not text): little ink above/below
-                above = np.sum(binary[max(0, row-4):row, :]) if row > 0 else 0
-                below = np.sum(binary[row+1:min(h, row+5), :]) if row < h-1 else 0
-                if above < run * 0.2 and below < run * 0.2:
-                    binary[row, :] = 0
+            # Find longest continuous run of ink
+            max_run = 0; cur_run = 0
+            for px in row_data:
+                if px: cur_run += 1; max_run = max(max_run, cur_run)
+                else: cur_run = 0
+            # A continuous run > 50% of width = grid line, not text
+            if max_run > w * 0.5:
+                binary[row, :] = 0
 
-        # Remove vertical grid lines: columns with long continuous runs of ink
         for col in range(w):
-            run = np.sum(binary[:, col])
-            if run > h * 0.3:
-                left = np.sum(binary[:, max(0, col-4):col]) if col > 0 else 0
-                right = np.sum(binary[:, col+1:min(w, col+5)]) if col < w-1 else 0
-                if left < run * 0.2 and right < run * 0.2:
-                    binary[:, col] = 0
+            col_data = binary[:, col]
+            max_run = 0; cur_run = 0
+            for px in col_data:
+                if px: cur_run += 1; max_run = max(max_run, cur_run)
+                else: cur_run = 0
+            if max_run > h * 0.5:
+                binary[:, col] = 0
 
         binary = morphology.remove_small_objects(binary.astype(bool), min_size=10).astype(np.uint8)
 
@@ -734,7 +738,7 @@ class ShifuOCR:
             if text:
                 # Filter noise lines: mostly non-alphanumeric = grid remnants
                 alnum = sum(1 for c in text if c.isalnum())
-                if alnum >= max(len(text) * 0.3, 1):
+                if alnum >= max(len(text) * 0.15, 1):
                     result['bbox'] = seg['bbox']
                     result['row_index'] = seg['row_index']
                     lines.append(result)
