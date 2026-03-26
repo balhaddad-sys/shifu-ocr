@@ -225,8 +225,9 @@ function correctWord(rawWord, options = {}) {
     }
   }
 
-  // Very short words (1-3 chars) that aren't in vocabulary — don't try to correct
-  if (wordLower.length <= 2 && !baseWords.has(wordLower)) {
+  // Very short words (1-3 chars) that aren't in vocabulary — don't try to correct.
+  // Protects acronyms like MRI, DVT, CVA from being corrected to shorter words.
+  if (wordLower.length <= 3 && !baseWords.has(wordLower)) {
     return { original: word, corrected: word, confidence: 0.5, flag: 'short', candidates: [] };
   }
 
@@ -556,9 +557,9 @@ function assessConfidence(correctionResult) {
   // Direct check: safety flags with severity 'error' also force verify
   const flags = correctionResult.safetyFlags || [];
   if (flags.some(f => f.severity === 'error' || f.severity === 'warning')) return 'verify';
-  // Any low-confidence or unknown word in the line forces verify
+  // Any low-confidence, unknown, or verify-flagged word forces verify
   const words = correctionResult.words || [];
-  if (words.some(w => w.flag === 'low_confidence' || w.flag === 'unknown')) return 'verify';
+  if (words.some(w => w.flag === 'low_confidence' || w.flag === 'unknown' || w.flag === 'corrected_verify')) return 'verify';
   if (correctionResult.avgConfidence > 0.7) return 'accept';
   if (correctionResult.avgConfidence > 0.4) return 'verify';
   return 'reject';

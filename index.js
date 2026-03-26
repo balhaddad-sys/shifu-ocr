@@ -236,18 +236,20 @@ function createOrRestore(opts = {}) {
   const persistence = new ShifuPersistence(opts.stateDir);
   const saved = persistence.load();
   if (saved) {
-    // persistence.load() returns { savedCoreState, savedLearningState, meta }
-    // restoreShifu() expects { core, learning } — bridge the key names
-    const shifu = createShifu({
-      seed: false,
-      loadTrained: false,
-      autoSave: true,
-      ...opts,
-      stateDir: opts.stateDir,
-      savedCoreState: saved.savedCoreState,
-      savedLearningState: saved.savedLearningState,
-    });
-    return shifu;
+    try {
+      const shifu = createShifu({
+        seed: false,
+        loadTrained: false,
+        autoSave: true,
+        ...opts,
+        stateDir: opts.stateDir,
+        savedCoreState: saved.savedCoreState,
+        savedLearningState: saved.savedLearningState,
+      });
+      return shifu;
+    } catch (e) {
+      console.warn(`Corrupt saved state, starting fresh: ${e.message}`);
+    }
   }
   return createShifu({ autoSave: true, ...opts });
 }
