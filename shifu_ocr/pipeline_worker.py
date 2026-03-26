@@ -59,14 +59,39 @@ def read_image(image_path):
     img = Image.open(image_path)
 
     if img.mode in ('RGB', 'RGBA'):
-        arr = np.array(img.convert('RGB')).astype(float)
-        # CONTINUITY PRINCIPLE:
-        # Text pixels are dark AND discontinuous (small clusters).
-        # Backgrounds are homogeneous (continuous uniform regions).
-        # Step 1: Use brightness to isolate dark pixels (text candidates).
-        brightness = arr.mean(axis=2)
-        gray = np.where(brightness < 80, brightness, 255).astype(np.uint8)
-        return gray
+        from scipy.ndimage import gaussian_filter
+        # MRI-OCR PRINCIPLE: See density, not color. Different RF scales
+        # reveal different structures — just like T1/T2/FLAIR in MRI.
+        gray = np.array(img.convert('L')).astype(float)
+
+        # Wide RF (large kernel): background response — continuous, homogeneous
+        # 90% equal reactivity = that's the background
+        background = gaussian_filter(gray, sigma=25)
+
+        # Subtract background: removes continuous regions, keeps discontinuous marks
+        # This automatically handles ANY colored background (white/green/red/yellow)
+        foreground = background - gray  # positive = darker than background = ink
+
+        # Medium RF: line response — grid borders are medium-scale continuous structures
+        line_response = gaussian_filter(foreground, sigma=8)
+
+        # Small RF: letter response — subtract lines, keep only small structures (text)
+        text_signal = foreground - line_response
+
+        # The text signal is positive where there are small dark marks (letters)
+        # Map signal to grayscale: strong signal → dark (0), no signal → white (255)
+        text_signal = np.clip(text_signal, 0, None)
+        if text_signal.max() > 0:
+            # Scale so the strongest text signal maps to ~30 (dark) not 0 (black)
+            # This preserves gradients for the FLAIR perturbation engine
+            scaled = text_signal / text_signal.max()
+            normalized = 255 - (scaled * 225)  # range: 30 (text) to 255 (bg)
+            # Suppress very weak signal (noise) back to white
+            normalized[scaled < 0.08] = 255
+        else:
+            normalized = np.full_like(gray, 255)
+
+        return normalized.astype(np.uint8)
 
     return np.array(img.convert('L'))
 

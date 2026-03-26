@@ -185,13 +185,23 @@ def extract_features(br):
     else:
         feats.extend([0.0, 0.0])
 
-    # Top disconnection: ratio of connected components in top quarter vs whole
-    # Continuous measure — 'i' has high disconnection (dot separated from body),
-    # 'l' has low (one connected piece). The landscape learns what values mean.
-    top_quarter = br[:max(h // 4, 1), :]
-    _, top_n = ndimage.label(top_quarter)
-    _, whole_n = ndimage.label(br)
-    feats.append(float(top_n / max(whole_n, 1)))  # top_disconnection
+    # Top disconnection: gap between top ink cluster and rest
+    # Continuous — measures vertical gap in ink distribution.
+    # 'i' has a gap (dot then body), 'l' has continuous ink top to bottom.
+    # Uses projection gap instead of expensive ndimage.label()
+    v_proj = br.mean(axis=1)  # already have ink per row
+    gap_rows = (v_proj < 0.01).astype(int)
+    # Count largest gap in top half
+    top_half_gaps = gap_rows[:h // 2]
+    max_gap = 0
+    current_gap = 0
+    for g in top_half_gaps:
+        if g: current_gap += 1
+        else:
+            max_gap = max(max_gap, current_gap)
+            current_gap = 0
+    max_gap = max(max_gap, current_gap)
+    feats.append(float(max_gap / max(h // 2, 1)))  # top_disconnection
 
     # Mid horizontal extent: how wide is the ink in the middle third relative to total width
     # Continuous — 't' has wide middle extent (crossbar), 'l' has narrow.

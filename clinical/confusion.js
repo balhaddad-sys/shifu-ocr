@@ -30,6 +30,13 @@ const CONFUSION_PAIRS = {
   'u,o': 0.3, 'u,a': 0.3,                  // U over-predicted
   'g,d': 0.3, 'g,a': 0.3, 'g,o': 0.3,     // g over-predicted
   'n,r': 0.3, 'n,h': 0.3,                  // n low-confidence
+  // MRI-RF model v2 confusions (from real ward census output)
+  'q,b': 0.2, 'q,d': 0.2, 'q,o': 0.2, 'q,g': 0.2,  // Q for round chars
+  '9,g': 0.1,                                          // 9↔g
+  '2,z': 0.2,                                          // 2↔z
+  'j,i': 0.2, 'j,l': 0.2, 'j,1': 0.2,                // j↔thin verticals
+  'w,m': 0.3,                                          // w↔m
+  'v,u': 0.2,                                          // v↔u
 };
 
 // Optional adaptive profile can be injected to use learned costs
