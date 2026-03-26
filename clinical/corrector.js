@@ -162,6 +162,12 @@ function _isCommonEnglish(word) {
       'born','told','heard','felt','meant','kept','paid','sent',
       'less','enough','either','neither','whether','whose','wherever',
       'hello','sorry','okay','yes','no',
+      // Common plurals that should not be corrected to singulars
+      'patients','doctors','nurses','rooms','beds','tests','results',
+      'medications','diagnoses','symptoms','treatments','procedures',
+      'records','reports','notes','orders','doses','drugs','labs',
+      'findings','readings','values','levels','signs','changes',
+      'issues','problems','conditions','infections','injuries',
     ]);
   }
   return _commonEnglishSet.has(word);
@@ -429,10 +435,16 @@ function correctWord(rawWord, options = {}) {
     flag = 'low_confidence';
   }
 
-  // Low-confidence and dangerous matches: keep the original, don't substitute
-  const correctedWord = (flag === 'low_confidence' || flag === 'DANGER_medication_ambiguity')
-    ? word
-    : preserveCase(word, top.word);
+  // Determine whether to apply the correction or keep original in output.
+  // - high_confidence: always apply
+  // - corrected_verify with small edit distance (<=2): apply (obvious OCR typo like Abdulah→Abdullah)
+  // - corrected_verify with large edit distance (>2): keep original (suspicious like p1antar→cluster)
+  // - low_confidence / DANGER: always keep original
+  const { levDist: _levDist2 } = require('../core/engine');
+  const editDistToTop = _levDist2(wordLower, top.word);
+  const isUncertain = flag === 'low_confidence' || flag === 'DANGER_medication_ambiguity'
+    || (flag === 'corrected_verify' && editDistToTop > 2);
+  const correctedWord = isUncertain ? word : preserveCase(word, top.word);
 
   return {
     original: word, corrected: correctedWord,

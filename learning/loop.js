@@ -36,7 +36,15 @@ class AdaptiveConfusionProfile {
       'x,s': 0.3, 'x,k': 0.3, 'x,t': 0.3,   // X over-predicted
       'u,o': 0.3, 'u,a': 0.3,                  // U over-predicted
       'g,d': 0.3, 'g,a': 0.3, 'g,o': 0.3,     // g over-predicted
-      'n,r': 0.3, 'n,h': 0.3,                  // n 87% low-confidence
+      'n,r': 0.3, 'n,h': 0.3,                  // n low-confidence
+      // MRI-RF model v2 confusions (no-punctuation, from real ward census)
+      'q,b': 0.2, 'q,d': 0.2, 'q,o': 0.2, 'q,g': 0.2,  // Q over-predicted for round chars
+      'a,A': 0.1,                                          // case confusion a↔A
+      '9,g': 0.1, 'g,9': 0.1,                             // 9↔g loop+tail
+      '2,z': 0.2, 'z,2': 0.2,                             // 2↔z angular
+      'j,i': 0.2, 'j,l': 0.2, 'j,1': 0.2,                // j↔thin verticals
+      'w,m': 0.3, 'm,w': 0.3,                             // w↔m wave patterns
+      'v,u': 0.2,                                          // v↔u open curves
     };
     for (const [k, v] of Object.entries(rawCosts)) {
       const sorted = k.split(',').sort().join(',');
@@ -778,8 +786,9 @@ class ShifuLearningEngine {
     if (top.score > 0.8 && margin > 0.15) flag = 'high_confidence';
     else if (top.score > 0.5) flag = 'verify';
     else flag = 'low_confidence';
-    // Low-confidence: keep original, don't substitute
-    const correctedWord = flag === 'low_confidence' ? word : this._preserveCase(word, top.word);
+    // Uncertain tokens: keep original in output, suggestion available in candidates
+    const isUncertain = flag === 'low_confidence' || flag === 'verify';
+    const correctedWord = isUncertain ? word : this._preserveCase(word, top.word);
     return {
       original: word, corrected: correctedWord,
       confidence: top.score, flag,
