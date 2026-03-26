@@ -68,9 +68,16 @@ class ShifuPersistence {
     try {
       const savedCoreState = fs.readFileSync(corePath, 'utf-8');
       const savedLearningState = JSON.parse(fs.readFileSync(learningPath, 'utf-8'));
-      const meta = fs.existsSync(path.join(this.stateDir, META_FILE))
-        ? JSON.parse(fs.readFileSync(path.join(this.stateDir, META_FILE), 'utf-8'))
-        : {};
+
+      // Parse meta separately — corrupt meta should not discard valid learned state
+      let meta = {};
+      try {
+        if (fs.existsSync(path.join(this.stateDir, META_FILE))) {
+          meta = JSON.parse(fs.readFileSync(path.join(this.stateDir, META_FILE), 'utf-8'));
+        }
+      } catch (e) {
+        console.warn(`Corrupt meta.json, ignoring: ${e.message}`);
+      }
 
       return { savedCoreState, savedLearningState, meta };
     } catch (e) {

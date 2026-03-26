@@ -117,7 +117,7 @@ class ShifuPipeline {
     const allFlags = standard.safetyFlags || [];
     // Check all words across all columns for low-confidence / unknown
     const allWords = Object.values(merged).flatMap(d => d.words || []);
-    const hasUncertain = allWords.some(w => w.flag === 'low_confidence' || w.flag === 'unknown');
+    const hasUncertain = allWords.some(w => w.flag === 'low_confidence' || w.flag === 'unknown' || w.flag === 'corrected_verify');
 
     const decision = allFlags.some(f => f.severity === 'danger') ? 'reject'
       : (allFlags.some(f => f.severity === 'warning' || f.severity === 'error') || hasUncertain) ? 'verify' : 'accept';

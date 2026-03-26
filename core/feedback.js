@@ -87,7 +87,7 @@ class FeedbackLoop {
       allWords.push(...words);
     }
 
-    const hasUncertain = allWords.some(w => w.flag === 'low_confidence' || w.flag === 'unknown');
+    const hasUncertain = allWords.some(w => w.flag === 'low_confidence' || w.flag === 'unknown' || w.flag === 'corrected_verify');
     proposal.decision = corrected.hasDangers ? 'reject'
       : (corrected.hasWarnings || hasUncertain) ? 'verify' : 'accept';
 
