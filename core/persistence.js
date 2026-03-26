@@ -116,7 +116,7 @@ class ShifuPersistence {
  */
 function withAutoSave(shifu, options = {}) {
   const persistence = new ShifuPersistence(options.stateDir);
-  const saveInterval = options.saveInterval || 5; // Save every N corrections
+  const saveInterval = options.saveInterval || 1; // Save after every correction by default
   let correctionsSinceLastSave = 0;
 
   const originalLearn = shifu.learn.bind(shifu);

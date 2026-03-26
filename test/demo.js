@@ -307,7 +307,7 @@ function demoCoreEngine(shifu) {
 
 function demoPersistence(shifu) {
   console.log(`\n${C.bold}${C.cyan}  DEMO 5: Persistence — Save & Restore${C.reset}`);
-  console.log(`  ${C.dim}Everything the system learns survives between sessions${C.reset}\n`);
+  console.log(`  ${C.dim}Serialize and restore system state (use createOrRestore() for disk persistence)${C.reset}\n`);
 
   // Serialize
   const state = shifu.serialize();
