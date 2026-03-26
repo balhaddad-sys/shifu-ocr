@@ -4,14 +4,14 @@
 
 const http = require('http');
 const url = require('url');
-const { createShifu, ShifuPipeline, FeedbackLoop, DocumentIngestor, MetricsTracker } = require('./index');
+const { createOrRestore, ShifuPipeline, FeedbackLoop, DocumentIngestor, MetricsTracker } = require('./index');
 
 const PORT = 3737;
 const VOCABULARY_TARGET_SIZE = Number(process.env.SHIFU_VOCAB_TARGET || 100000);
 
 // Boot the system
 console.log('Booting Shifu OCR...');
-const shifu = createShifu({
+const shifu = createOrRestore({
   seed: true,
   loadTrained: true,
   autoSave: true,

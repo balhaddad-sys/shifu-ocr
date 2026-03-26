@@ -637,9 +637,8 @@ class ShifuLearningEngine {
 
     return {
       undone: snapshot.id,
-      ocrRow: snapshot.ocrRow,
-      confirmedRow: snapshot.confirmedRow,
       timestamp: snapshot.timestamp,
+      columns: snapshot.ocrRow ? Object.keys(snapshot.ocrRow) : (snapshot.columns || []),
       coreRestored: !!snapshot.coreSnapshot,
     };
   }
