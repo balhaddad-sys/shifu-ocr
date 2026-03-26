@@ -2,18 +2,18 @@
 
 **Date:** 2026-03-26
 **Scope:** Full codebase audit (security, code quality, architecture)
-**Codebase:** ~15,000 LOC across 45 files (JavaScript + Python)
+**Codebase:** ~20,000 LOC across 55+ files (JavaScript + Python)
 
 ---
 
 ## Executive Summary
 
-Shifu OCR is a clinical OCR correction system with a well-motivated Python/JavaScript split and a clear 5-stage pipeline. The codebase demonstrates strong domain expertise but has significant gaps in security hardening, deployment infrastructure, and code maintainability. **19 security findings**, **12 code quality issues**, and **10 architectural concerns** were identified.
+Shifu OCR is a clinical OCR correction system with a well-motivated Python/JavaScript split and a clear 5-stage pipeline. The codebase demonstrates strong domain expertise but has significant gaps in security hardening, deployment infrastructure, and code maintainability. **14 security findings**, **10 code quality issues**, and **10 architectural concerns** were identified.
 
 | Category | Critical | High | Medium | Low |
 |----------|----------|------|--------|-----|
-| Security | 0 | 3 | 7 | 4 |
-| Code Quality | 0 | 3 | 6 | 3 |
+| Security | 0 | 3 | 7 | 3 |
+| Code Quality | 0 | 3 | 5 | 2 |
 | Architecture | 0 | 1 | 4 | 5 |
 
 ---
@@ -88,7 +88,7 @@ Shifu OCR is a clinical OCR correction system with a well-motivated Python/JavaS
 
 ### SEC-14: Hardcoded Port [LOW]
 - **File:** `server.js:9`
-- **Description:** Port 3737 is hardcoded. `Number()` on env var could return `NaN`.
+- **Description:** Port 3737 is hardcoded with no environment variable override. Not an issue for local use but limits deployment flexibility.
 
 ### Positive Security Findings
 - No hardcoded secrets or credentials
@@ -103,10 +103,10 @@ Shifu OCR is a clinical OCR correction system with a well-motivated Python/JavaS
 ## 2. CODE QUALITY FINDINGS
 
 ### CQ-01: Bare Except Clauses in Python [HIGH]
-- **Files:** `shifu_ocr/codefining.py:135`, `shifu_ocr/clinical.py:254`, `shifu_ocr/complete.py` (multiple)
-- **Description:** Bare `except:` clauses swallow all exceptions including `KeyboardInterrupt` and `SystemExit`.
-- **Impact:** Makes debugging extremely difficult. Critical failures masked silently.
-- **Recommendation:** Use `except Exception:` or specific exception types.
+- **Files:** 15+ files with 44+ instances — `shifu_ocr/codefining.py` (6), `shifu_ocr/engine.py` (6), `shifu_ocr/learn_from_confusion.py` (5), `shifu_ocr/train_extensive.py` (5), `shifu_ocr/complete.py` (4), `shifu_ocr/train_medium.py` (4), `shifu_ocr/clinical.py`, `shifu_ocr/coherence.py`, `shifu_ocr/displacement.py`, `shifu_ocr/fluid.py` (2), `shifu_ocr/perturbation.py` (2), `shifu_ocr/photoreceptor.py` (2), `shifu_ocr/theory_revision.py` (2), `shifu_ocr/train_real.py` (2), `shifu_ocr/test_extensive.py` (2)
+- **Description:** Bare `except:` clauses swallow all exceptions including `KeyboardInterrupt` and `SystemExit`. This is pervasive across nearly every Python module.
+- **Impact:** Makes debugging extremely difficult. Critical failures masked silently across the entire Python codebase.
+- **Recommendation:** Use `except Exception:` or specific exception types. Prioritize `engine.py`, `codefining.py`, and `complete.py` as these are runtime-critical.
 
 ### CQ-02: Unhandled Promise Rejections [HIGH]
 - **Files:** `server.js:32-41`, `core/pipeline.js`, `core/ingest.js`
@@ -142,23 +142,15 @@ Shifu OCR is a clinical OCR correction system with a well-motivated Python/JavaS
 - **Impact:** O(n) per operation instead of O(1). Memory churn under heavy load.
 - **Recommendation:** Use fixed-size circular buffer with index pointer.
 
-### CQ-08: Sync Process Spawn Edge Cases [MEDIUM]
-- **File:** `core/pipeline.js:247`
-- **Description:** `timeout` option in `spawn()` options is not standard Node.js API. May be silently ignored.
-
-### CQ-09: Temporary File Cleanup [MEDIUM]
+### CQ-08: Temporary File Cleanup [MEDIUM]
 - **Files:** `core/ingest.js:431,253,269`, `server.js:253,269`
 - **Description:** Cleanup in `finally` blocks uses empty catch. If process crashes, temp files persist in `/tmp`.
 
-### CQ-10: Duplicate Sanitization Logic [LOW]
+### CQ-09: Duplicate Sanitization Logic [LOW]
 - **File:** `server.js:195-197, 243-245`
 - **Description:** Filename sanitization code is duplicated between direct upload and multipart handlers.
 
-### CQ-11: Non-Standard spawn() Timeout [LOW]
-- **File:** `core/pipeline.js:247`
-- **Description:** `{ timeout: 60000 }` in `spawn()` options. While this works in recent Node, behavior is implementation-dependent.
-
-### CQ-12: Magic Numbers [LOW]
+### CQ-10: Magic Numbers [LOW]
 - **Files:** Multiple (e.g., `core/engine.js`, `learning/engine.js`)
 - **Description:** Threshold values (0.3, 0.7, 0.97, 200) scattered through code without named constants.
 
@@ -202,7 +194,7 @@ Shifu OCR is a clinical OCR correction system with a well-motivated Python/JavaS
 - **Recommendation:** Add protocol version negotiation. Consider socket-based communication for production.
 
 ### ARCH-06: Monolithic Server File [LOW]
-- **File:** `server.js` (600+ LOC)
+- **File:** `server.js` (674 LOC)
 - **Description:** All 14 endpoints, HTML UI, multipart parsing, and CORS handling in one file.
 
 ### ARCH-07: Relative State Paths [LOW]
@@ -264,4 +256,6 @@ Shifu OCR is a clinical OCR correction system with a well-motivated Python/JavaS
 
 ---
 
-*Generated by comprehensive codebase audit*
+**Corrections applied:** Original audit contained 2 false findings (CQ-08, CQ-11) claiming `spawn()` timeout is non-standard — it is a supported Node.js option since v15.13.0, and this project requires Node 16+. LOC count corrected from ~15k to ~20k. Bare except count expanded from 3 files to 15+ files (44+ instances). SEC-14 NaN claim removed (fallback `|| 100000` prevents it). Finding count adjusted accordingly.
+
+*Generated by comprehensive codebase audit, verified against source*
