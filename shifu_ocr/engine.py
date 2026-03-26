@@ -38,7 +38,10 @@ def extract_region(binary, pad=3):
     return binary[r0:r1+1, c0:c1+1]
 
 def normalize_region(region, size=(64, 64)):
-    img = Image.fromarray((region * 255).astype(np.uint8)).resize(size, Image.NEAREST)
+    """MACULA PRINCIPLE: preserve detail at the point of highest acuity.
+    Use LANCZOS (highest quality) instead of NEAREST (destroys edges).
+    The fine details that distinguish Q from O, g from 9 live in the edges."""
+    img = Image.fromarray((region * 255).astype(np.uint8)).resize(size, Image.LANCZOS)
     return (np.array(img) > 127).astype(np.uint8)
 
 def image_to_binary(char_img, bg_kernel=15, disp_thresh=0.25):
@@ -450,30 +453,40 @@ class ShifuOCR:
         # --- Template matching scores (independent feature space) ---
         template_sim = self._template_match_score(grayscale_image)
 
-        # --- Rank-based fusion ---
-        # Convert each scorer's ranking into a normalised rank score in [0, 1].
-        # Rank 0 (best) -> score 1.0,  rank N-1 (worst) -> score ~0.
+        # --- WAVE INTERFERENCE FUSION ---
+        # Like L/M/S cones: each scorer is a different frequency response.
+        # The interference pattern (product, not sum) of responses gives identity.
+        # When both scorers agree (constructive interference): signal amplifies.
+        # When they disagree (destructive interference): signal cancels.
         n_classes = len(flair_scores)
 
-        flair_rank = {}
-        for rank, (label, _) in enumerate(flair_scores):
-            flair_rank[label] = 1.0 - rank / max(n_classes - 1, 1)
+        # Normalize FLAIR scores to [0, 1] range
+        flair_min = flair_scores[-1][1] if flair_scores else 0
+        flair_max = flair_scores[0][1] if flair_scores else 1
+        flair_range = max(flair_max - flair_min, 1e-8)
+        flair_norm = {label: (score - flair_min) / flair_range for label, score in flair_scores}
 
+        # Normalize template scores to [0, 1] range
+        tpl_norm = {}
         if template_sim:
-            tpl_sorted = sorted(template_sim.items(), key=lambda x: x[1], reverse=True)
-            tpl_rank = {}
-            for rank, (label, _) in enumerate(tpl_sorted):
-                tpl_rank[label] = 1.0 - rank / max(len(tpl_sorted) - 1, 1)
-        else:
-            tpl_rank = {}
+            tpl_vals = list(template_sim.values())
+            tpl_min = min(tpl_vals) if tpl_vals else 0
+            tpl_max = max(tpl_vals) if tpl_vals else 1
+            tpl_range = max(tpl_max - tpl_min, 1e-8)
+            tpl_norm = {label: (score - tpl_min) / tpl_range for label, score in template_sim.items()}
 
-        # Combine: 0.6 FLAIR + 0.4 template
-        all_labels = set(flair_rank.keys()) | set(tpl_rank.keys())
+        # Interference: geometric mean (constructive when both high, destructive when one low)
+        # Plus additive component for cases where only one scorer has data
+        all_labels = set(flair_norm.keys()) | set(tpl_norm.keys())
         combined = []
         for label in all_labels:
-            f_score = flair_rank.get(label, 0.0)
-            t_score = tpl_rank.get(label, 0.0)
-            combined.append((label, 0.6 * f_score + 0.4 * t_score))
+            f = flair_norm.get(label, 0.0)
+            t = tpl_norm.get(label, 0.0)
+            # Constructive interference: sqrt(f * t) — both must be high
+            interference = np.sqrt(f * t) if f > 0 and t > 0 else 0
+            # Additive baseline so single-scorer matches still work
+            baseline = 0.4 * f + 0.2 * t
+            combined.append((label, interference + baseline))
         combined.sort(key=lambda x: x[1], reverse=True)
 
         # --- Confidence from original FLAIR margin (unchanged logic) ---
