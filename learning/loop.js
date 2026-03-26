@@ -786,8 +786,13 @@ class ShifuLearningEngine {
     if (top.score > 0.8 && margin > 0.15) flag = 'high_confidence';
     else if (top.score > 0.5) flag = 'verify';
     else flag = 'low_confidence';
-    // Uncertain tokens: keep original in output, suggestion available in candidates
-    const isUncertain = flag === 'low_confidence' || flag === 'verify';
+    // Edit-distance-aware policy (matches standard corrector):
+    // - high_confidence: always apply
+    // - verify with small edit distance (<=2): apply (obvious OCR typo)
+    // - verify with large edit distance (>2): keep original (suspicious)
+    // - low_confidence: always keep original
+    const editDist = this._editDistance(wordLower, top.word);
+    const isUncertain = flag === 'low_confidence' || (flag === 'verify' && editDist > 2);
     const correctedWord = isUncertain ? word : this._preserveCase(word, top.word);
     return {
       original: word, corrected: correctedWord,
@@ -797,6 +802,17 @@ class ShifuLearningEngine {
         boosts: { frequency: Math.round(c.freqBoost * 100) / 100, column: Math.round(c.colBoost * 100) / 100, context: Math.round(c.chainBoost * 100) / 100 },
       })),
     };
+  }
+
+  _editDistance(a, b) {
+    if (a.length === 0) return b.length;
+    if (b.length === 0) return a.length;
+    const m = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= b.length; j++) m[0][j] = j;
+    for (let i = 1; i <= a.length; i++)
+      for (let j = 1; j <= b.length; j++)
+        m[i][j] = Math.min(m[i-1][j] + 1, m[i][j-1] + 1, m[i-1][j-1] + (a[i-1] !== b[j-1] ? 1 : 0));
+    return m[a.length][b.length];
   }
 
   _preserveCase(original, corrected) {

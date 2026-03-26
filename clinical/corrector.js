@@ -281,12 +281,13 @@ function correctWord(rawWord, options = {}) {
   }
 
   // Fuzzy matching through all layers
+  // OCR source: wider search radius (more damage expected from FLAIR confusions)
   const isOcr = options.ocrSource === true;
   const defaultMaxDist = wordLower.length <= 4
-    ? Math.max(wordLower.length * 0.35, 1.0)   // short: 1-1.4 edits max
-    : Math.max(wordLower.length * 0.45, 2.0);  // longer: proportional
+    ? Math.max(wordLower.length * (isOcr ? 0.45 : 0.35), 1.0)
+    : Math.max(wordLower.length * (isOcr ? 0.55 : 0.45), 2.0);
   const maxDist = options.maxDistance ?? defaultMaxDist;
-  const maxLenDiff = wordLower.length <= 4 ? 1 : 2;
+  const maxLenDiff = isOcr ? (wordLower.length <= 4 ? 2 : 3) : (wordLower.length <= 4 ? 1 : 2);
   const contextWords = columnType ? getColumnVocabulary(columnType) : null;
   const candidateWords = learningEngine
     ? learningEngine.vocabulary.getCandidateWords(wordLower, {
@@ -384,7 +385,7 @@ function correctWord(rawWord, options = {}) {
       const confusionRatio = top.distance / editDist;
       // OCR source: allow more aggressive correction (confusion model explains more damage)
       const threshold = isOcr
-        ? (wordLower.length <= 4 ? 0.5 : 0.7)
+        ? (wordLower.length <= 4 ? 0.6 : 0.8)
         : (wordLower.length <= 4 ? 0.35 : 0.55);
 
       if (confusionRatio >= threshold) {
@@ -407,7 +408,7 @@ function correctWord(rawWord, options = {}) {
       // 3+ edits on a 7-letter word is not OCR damage — it's a different word.
       // Exception: if confusion ratio is very low (<0.2), the edits ARE explained
       // by known OCR confusions (e.g., I↔t from FLAIR engine), so allow them.
-      const editCap = isOcr ? 4 : 3;
+      const editCap = isOcr ? 6 : 3;
       const shortEditCap = isOcr ? 3 : 2;
       if ((editDist >= editCap || (editDist >= shortEditCap && wordLower.length <= 5)) && confusionRatio >= 0.2) {
         return { original: word, corrected: word, confidence: 0, flag: 'clean', candidates: topCandidates.slice(0, 3).map(c => ({
@@ -464,27 +465,59 @@ function correctWord(rawWord, options = {}) {
 
 /**
  * Correct a full line of OCR text through the unified pipeline.
+ *
+ * CEREBELLAR CORRECTION: Like Purkinje fibers, iterate.
+ * Pass 1: correct what's confident. Pass 2+: use corrected context
+ * to resolve words that were too uncertain on the first pass.
+ * Each pass refines the signal using feedback from the previous pass.
  */
 function correctLine(ocrText, options = {}) {
   const rawWords = ocrText.split(/\s+/).filter(w => w.length > 0);
-  const results = [];
-  const previousWords = [];
+  const maxPasses = options.ocrSource ? 3 : 1;  // Multi-pass only for OCR input
+  let results = [];
 
-  for (const rawWord of rawWords) {
-    // Strip leading/trailing punctuation, correct the core word, re-wrap
-    const leadMatch = rawWord.match(/^([^a-zA-Z0-9]*)/);
-    const trailMatch = rawWord.match(/([^a-zA-Z0-9]*)$/);
-    const lead = leadMatch ? leadMatch[1] : '';
-    const trail = trailMatch ? trailMatch[1] : '';
-    const core = rawWord.slice(lead.length, rawWord.length - (trail.length || 0)) || rawWord;
-    const coreResult = correctWord(core, { ...options, previousWords });
-    const result = {
-      ...coreResult,
-      original: rawWord,
-      corrected: lead + coreResult.corrected + trail,
-    };
-    results.push(result);
-    previousWords.push(result.corrected);
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const previousWords = [];
+    const newResults = [];
+
+    for (let wi = 0; wi < rawWords.length; wi++) {
+      const rawWord = rawWords[wi];
+      const leadMatch = rawWord.match(/^([^a-zA-Z0-9]*)/);
+      const trailMatch = rawWord.match(/([^a-zA-Z0-9]*)$/);
+      const lead = leadMatch ? leadMatch[1] : '';
+      const trail = trailMatch ? trailMatch[1] : '';
+      const core = rawWord.slice(lead.length, rawWord.length - (trail.length || 0)) || rawWord;
+
+      // On pass 2+, use corrected words from previous pass as context
+      const contextWords = pass > 0
+        ? results.map(r => r.corrected.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, ''))
+        : previousWords;
+
+      // On pass 2+, if this word was already confidently corrected, keep it
+      if (pass > 0 && results[wi] && results[wi].confidence > 0.7) {
+        newResults.push(results[wi]);
+        previousWords.push(results[wi].corrected);
+        continue;
+      }
+
+      const coreResult = correctWord(core, { ...options, previousWords: contextWords });
+      const result = {
+        ...coreResult,
+        original: rawWord,
+        corrected: lead + coreResult.corrected + trail,
+      };
+      newResults.push(result);
+      previousWords.push(result.corrected);
+    }
+
+    results = newResults;
+
+    // Stop early if no changes from previous pass
+    if (pass > 0) {
+      const changed = results.some((r, i) =>
+        i < rawWords.length && r.corrected !== (results[i] || {}).corrected);
+      if (!changed) break;
+    }
   }
 
   // Numeric canonicalization: normalize OCR-garbled digits in doses
@@ -515,7 +548,8 @@ function correctLine(ocrText, options = {}) {
     words: results,
     safetyFlags,
     avgConfidence: Math.round(avgConfidence * 100) / 100,
-    hasWarnings: safetyFlags.some(f => f.severity === 'warning' || f.severity === 'error'),
+    hasWarnings: safetyFlags.some(f => f.severity === 'warning' || f.severity === 'error')
+      || results.some(w => w.flag === 'corrected_verify' || w.flag === 'low_confidence' || w.flag === 'unknown'),
     hasDangers: safetyFlags.some(f => f.severity === 'danger'),
   };
 }
