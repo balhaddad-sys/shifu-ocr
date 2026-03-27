@@ -596,7 +596,7 @@ function correctLine(ocrText, options = {}) {
     safetyFlags,
     avgConfidence: Math.round(avgConfidence * 100) / 100,
     hasWarnings: safetyFlags.some(f => f.severity === 'warning' || f.severity === 'error')
-      || results.some(w => w.flag === 'corrected_verify' || w.flag === 'low_confidence' || w.flag === 'unknown'),
+      || results.some(w => w.flag === 'corrected_verify' || w.flag === 'low_confidence' || w.flag === 'unknown' || w.flag === 'short_unknown'),
     hasDangers: safetyFlags.some(f => f.severity === 'danger'),
   };
 }
@@ -645,7 +645,7 @@ function correctTableRow(row, options = {}) {
     avgConfidence,
     hasDangers: allFlags.some(f => f.severity === 'danger'),
     hasWarnings: allFlags.some(f => f.severity === 'warning' || f.severity === 'error')
-      || allWords.some(w => w.flag === 'corrected_verify' || w.flag === 'low_confidence' || w.flag === 'unknown'),
+      || allWords.some(w => w.flag === 'corrected_verify' || w.flag === 'low_confidence' || w.flag === 'unknown' || w.flag === 'short_unknown'),
   };
 }
 
