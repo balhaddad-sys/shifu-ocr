@@ -949,16 +949,67 @@ class ShifuOCR:
                         rows_dict[row_idx][col_idx] = []
                     rows_dict[row_idx][col_idx].append(w['text'])
 
-                table = {
-                    'columns': len(columns),
-                    'rows': [],
-                }
+                # Build initial table
+                raw_rows = []
                 for row_idx in sorted(rows_dict.keys()):
                     row = []
                     for col_idx in range(len(columns)):
                         cell_words = rows_dict.get(row_idx, {}).get(col_idx, [])
                         row.append(' '.join(cell_words))
-                    table['rows'].append(row)
+                    raw_rows.append(row)
+
+                # RELATIONAL MEMORY: information is never stored in isolation.
+                # Each cell exists in RELATION to all other cells in the same column.
+                # Repeated words in the same column reinforce each other.
+                # "Bazzah" at col 4 row 5 confirms "3azzah" at col 4 row 8 = "Bazzah".
+                from difflib import SequenceMatcher
+                col_vocab = {}  # {col_idx: {word: count}}
+                for row in raw_rows:
+                    for ci, cell in enumerate(row):
+                        if ci not in col_vocab:
+                            col_vocab[ci] = {}
+                        for w in cell.split():
+                            if len(w) > 2:
+                                col_vocab[ci][w] = col_vocab[ci].get(w, 0) + 1
+
+                # Find confident words per column (appear 2+ times)
+                col_anchors = {}
+                for ci, vocab in col_vocab.items():
+                    col_anchors[ci] = {w for w, c in vocab.items() if c >= 2}
+
+                # Correct uncertain words using column anchors
+                corrected_rows = []
+                for row in raw_rows:
+                    corrected_row = []
+                    for ci, cell in enumerate(row):
+                        words = cell.split()
+                        fixed_words = []
+                        for w in words:
+                            if len(w) > 2 and ci in col_anchors:
+                                # Check if this word is similar to any column anchor
+                                best_match = None
+                                best_ratio = 0
+                                for anchor in col_anchors[ci]:
+                                    if anchor == w:
+                                        best_match = None  # already matches
+                                        break
+                                    ratio = SequenceMatcher(None, w.lower(), anchor.lower()).ratio()
+                                    if ratio > best_ratio and ratio > 0.6:
+                                        best_ratio = ratio
+                                        best_match = anchor
+                                if best_match:
+                                    fixed_words.append(best_match)
+                                else:
+                                    fixed_words.append(w)
+                            else:
+                                fixed_words.append(w)
+                        corrected_row.append(' '.join(fixed_words))
+                    corrected_rows.append(corrected_row)
+
+                table = {
+                    'columns': len(columns),
+                    'rows': corrected_rows,
+                }
 
         return {
             'text': '\n'.join(all_text),
