@@ -181,12 +181,16 @@ class ShifuPipeline {
 
   _processLineResult(ocrResult) {
     const lines = ocrResult.lines || [ocrResult.text || ''];
-    // START WITHIN, THEN WITHOUT:
-    // Detect document structure from the OCR lines themselves.
-    // Ward census lines follow patterns — use them to constrain correction.
+    // SOMATOTOPIC CORRECTION: use spatial position to determine column type.
+    // Like the visual cortex where each position has a dedicated calculator
+    // tuned to what it expects to see at that location.
+
+    // Learn page width from the table structure (if available)
+    const table = ocrResult.table;
+    const nCols = table ? table.columns : 0;
+
     const results = lines.map(line => {
       if (!line) return null;
-      // Detect line type from pattern (the structure we KNOW)
       const lower = line.toLowerCase();
       let columnType = null;
 
@@ -194,10 +198,9 @@ class ShifuPipeline {
       if (/^w[a-z]*d?\s*\d/i.test(line.trim()) || /ward/i.test(lower)) {
         columnType = 'ward_structure';
       }
-      // Lines starting with numbers = patient rows (room-patient-diagnosis-doctor)
+      // Lines starting with numbers = patient rows
       else if (/^\d/.test(line.trim())) {
-        // Split by large spaces — each segment is a different column
-        columnType = 'diagnosis'; // diagnoses are the hardest to correct
+        columnType = 'diagnosis';
       }
       // Known section labels
       else if (/icu|er|unassign|chronic/i.test(lower)) {

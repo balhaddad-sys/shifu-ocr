@@ -637,11 +637,51 @@ class ShifuOCR:
         median_height = np.median(all_heights) if all_heights else 20
         median_top = np.median(all_tops) if all_tops else 0
 
-        for i, seg in enumerate(char_segments):
+        # SOMATOTOPIC PROCESSING: first pass gets raw predictions,
+        # second pass uses neighbor context (like V1 lateral connections)
+        raw_preds = []
+        for seg in char_segments:
             pred = self.predict_character(seg['image'])
+            raw_preds.append(pred)
+
+        for i, seg in enumerate(char_segments):
+            pred = raw_preds[i]
             char = pred['predicted']
 
-            # Case disambiguation: only when classifier is uncertain between case pairs
+            # NEURAL CALCULATOR: position-aware refinement.
+            # Each character's identity is influenced by its neighbors
+            # (somatotopy: adjacent neurons share information).
+            # If prediction is uncertain, look at neighbors for context.
+            if pred['confidence'] < 0.5 and len(pred['candidates']) >= 2:
+                # Get neighbor predictions (lateral connections)
+                prev_char = raw_preds[i-1]['predicted'] if i > 0 else None
+                next_char = raw_preds[i+1]['predicted'] if i < len(raw_preds)-1 else None
+
+                # Digit/letter consistency: if neighbors are digits, prefer digit prediction.
+                # If neighbors are letters, prefer letter prediction.
+                # Like V1 neurons that align with their neighbors' orientation preference.
+                neighbors_are_digits = (
+                    (prev_char and prev_char.isdigit()) or
+                    (next_char and next_char.isdigit())
+                )
+                neighbors_are_letters = (
+                    (prev_char and prev_char.isalpha()) or
+                    (next_char and next_char.isalpha())
+                )
+
+                # Check if the top candidates have a digit/letter split
+                top = pred['candidates'][:3]
+                digit_cands = [(c, s) for c, s in top if c.isdigit()]
+                letter_cands = [(c, s) for c, s in top if c.isalpha()]
+
+                if neighbors_are_letters and not neighbors_are_digits and digit_cands and letter_cands:
+                    # Neighbors are letters → prefer letter candidate
+                    char = letter_cands[0][0]
+                elif neighbors_are_digits and not neighbors_are_letters and digit_cands and letter_cands:
+                    # Neighbors are digits → prefer digit candidate
+                    char = digit_cands[0][0]
+
+            # Case disambiguation
             if pred['confidence'] < 0.1 and char.isalpha():
                 char_height = seg['bbox'][2] - seg['bbox'][0]
                 char_top = seg['bbox'][0]
