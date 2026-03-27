@@ -541,61 +541,111 @@ class ShifuOCR:
 
     def segment_characters(self, grayscale_image, min_char_width=3):
         """
-        Segment a text line image into individual character images.
-        Uses simple Otsu binarization (better for full lines) + vertical projection.
+        Mod 5: Connected component labeling as PRIMARY path.
+        Vertical projection as FALLBACK.
+
+        CC is better: handles i-dots, diacritics, variable-width chars.
+        Each character is a disconnected island (medium displacement theory).
         """
         from skimage.filters import threshold_otsu
-        
-        # For line images, simple Otsu works better than medium displacement
-        # because characters are close together and the background is uniform
+        from scipy import ndimage
+
         try:
             thresh = threshold_otsu(grayscale_image)
         except Exception:
             thresh = 128
-        
+
         binary = (grayscale_image < thresh).astype(np.uint8)
-        
-        # Clean up
         binary = morphology.remove_small_objects(binary.astype(bool), min_size=5).astype(np.uint8)
-        
-        # Vertical projection — sum ink in each column
+
+        # --- PRIMARY: Connected component segmentation ---
+        labeled, n_components = ndimage.label(binary)
+
+        if n_components > 0:
+            components = []
+            for i in range(1, n_components + 1):
+                coords = np.argwhere(labeled == i)
+                if len(coords) < 4:
+                    continue
+                r0, c0 = coords.min(axis=0)
+                r1, c1 = coords.max(axis=0)
+                height = r1 - r0 + 1
+                width = c1 - c0 + 1
+                if height < 4 or width < 2:
+                    continue
+                if width / max(height, 1) > 8 or height / max(width, 1) > 10:
+                    continue  # filter table borders
+                components.append({'r0': r0, 'c0': c0, 'r1': r1, 'c1': c1,
+                                   'area': int((labeled == i).sum())})
+
+            components.sort(key=lambda x: x['c0'])
+
+            # Merge vertically close components (i-dots, j-dots, diacritics)
+            merged = []
+            used = set()
+            for i, comp in enumerate(components):
+                if i in used:
+                    continue
+                r0, c0, r1, c1, area = comp['r0'], comp['c0'], comp['r1'], comp['c1'], comp['area']
+                for j in range(i + 1, len(components)):
+                    if j in used:
+                        continue
+                    other = components[j]
+                    h_overlap = min(c1, other['c1']) - max(c0, other['c0'])
+                    if h_overlap < 0:
+                        continue
+                    if other['area'] < area * 0.3 or area < other['area'] * 0.3:
+                        r0 = min(r0, other['r0']); c0 = min(c0, other['c0'])
+                        r1 = max(r1, other['r1']); c1 = max(c1, other['c1'])
+                        area += other['area']; used.add(j)
+                merged.append({'r0': r0, 'c0': c0, 'r1': r1, 'c1': c1})
+
+            merged.sort(key=lambda x: x['c0'])
+
+            if merged:
+                char_images = []
+                for comp in merged:
+                    r0, c0, r1, c1 = comp['r0'], comp['c0'], comp['r1'], comp['c1']
+                    r0p = max(0, r0 - 2); r1p = min(grayscale_image.shape[0], r1 + 3)
+                    c0p = max(0, c0 - 1); c1p = min(grayscale_image.shape[1], c1 + 2)
+                    char_crop = grayscale_image[r0p:r1p, c0p:c1p]
+                    ch, cw = char_crop.shape
+                    size = max(ch, cw) + 10
+                    padded = np.full((size, size), 255, dtype=np.uint8)
+                    y_off = (size - ch) // 2; x_off = (size - cw) // 2
+                    padded[y_off:y_off + ch, x_off:x_off + cw] = char_crop
+                    char_images.append({'image': padded, 'bbox': (r0p, c0p, r1p, c1p)})
+                if char_images:
+                    return char_images
+
+        # --- FALLBACK: Vertical projection ---
         v_proj = binary.sum(axis=0).astype(float)
-        
-        # Find character boundaries by detecting gaps
         is_ink = v_proj > 0
         segments = []
         in_char = False
         start = 0
-        
+
         for i in range(len(is_ink)):
             if is_ink[i] and not in_char:
-                start = i
-                in_char = True
+                start = i; in_char = True
             elif not is_ink[i] and in_char:
                 if i - start >= min_char_width:
                     segments.append((start, i))
                 in_char = False
-        
+
         if in_char and len(is_ink) - start >= min_char_width:
             segments.append((start, len(is_ink)))
-        
-        # Extract character images — pad each into a square for consistent processing
+
         char_images = []
         for c_start, c_end in segments:
             col_slice = binary[:, c_start:c_end]
             row_proj = col_slice.sum(axis=1)
             rows_with_ink = np.where(row_proj > 0)[0]
-            
             if len(rows_with_ink) == 0:
                 continue
-            
             r_start = max(0, rows_with_ink[0] - 2)
             r_end = min(binary.shape[0], rows_with_ink[-1] + 3)
-            
-            # Extract from ORIGINAL grayscale (not binary)
             char_crop = grayscale_image[r_start:r_end, c_start:c_end]
-            
-            # Pad into a square with white background for consistent processing
             ch, cw = char_crop.shape
             size = max(ch, cw) + 10
             padded = np.full((size, size), 255, dtype=np.uint8)
