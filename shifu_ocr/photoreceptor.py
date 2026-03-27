@@ -71,7 +71,7 @@ def smart_binarize_cell(cell_rgb, cell_gray):
         try:
             t = threshold_otsu(cell_gray)
             binary = (cell_gray < t).astype(np.uint8)
-        except:
+        except Exception:
             pass
     
     # Clean: remove small noise, fill small holes
@@ -234,7 +234,7 @@ def extract_and_train(pipeline, rgb, gray, ground_truth_cells):
                 
                 total += 1
                 char_counts[label] += 1
-            except:
+            except Exception:
                 pass
     
     return total, char_counts

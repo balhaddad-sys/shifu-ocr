@@ -251,7 +251,7 @@ class ClinicalPostProcessor:
                         alt = float(word[:dp] + '.' + word[dp:])
                         if lo <= alt <= hi:
                             alts.append(alt)
-                    except:
+                    except Exception:
                         pass
                 if alts:
                     return {

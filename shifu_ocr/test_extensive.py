@@ -25,7 +25,7 @@ for f in sorted(all_fonts):
         draw.text((5,5), 'Abc', fill=0, font=font)
         if (np.array(img) < 128).sum() > 20:
             usable.append(f)
-    except: pass
+    except Exception: pass
 print(f'Testing on {len(usable)} fonts', flush=True)
 
 tests = [
@@ -62,7 +62,7 @@ font_scores = {}
 for fi, fp in enumerate(usable):
     fn = os.path.basename(fp)
     try: font = ImageFont.truetype(fp, 36)
-    except: continue
+    except Exception: continue
     fc = 0; ft = 0; fwc = 0; fwt = 0
     for text in tests:
         img = Image.new('L', (700, 60), color=255)

@@ -145,7 +145,7 @@ def detect_text_regions(displacement, threshold=None):
         from skimage.filters import threshold_otsu
         try:
             threshold = threshold_otsu(displacement)
-        except:
+        except Exception:
             threshold = 0.3
     
     binary = displacement > threshold

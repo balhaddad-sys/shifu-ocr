@@ -174,7 +174,7 @@ class Principles:
             return {'endpoints': 0, 'junctions': 0, 'skel_density': 0.0}
         try:
             skel = morphology.skeletonize(br.astype(bool))
-        except:
+        except Exception:
             return {'endpoints': 0, 'junctions': 0, 'skel_density': 0.0}
         if skel.sum() < 3:
             return {'endpoints': 0, 'junctions': 0, 'skel_density': 0.0}
@@ -756,7 +756,7 @@ def render_char(char, font_path, size=80, img_size=(100, 100)):
     draw = ImageDraw.Draw(img)
     try:
         font = ImageFont.truetype(font_path, size)
-    except:
+    except Exception:
         font = ImageFont.load_default()
     bbox = draw.textbbox((0, 0), char, font=font)
     x = (img_size[0] - (bbox[2]-bbox[0])) // 2 - bbox[0]

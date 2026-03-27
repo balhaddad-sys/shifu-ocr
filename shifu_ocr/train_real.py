@@ -96,13 +96,9 @@ def align_segments_to_label(segments, label):
 def train():
     model_path = os.path.join(os.path.dirname(__file__), 'trained_model.json')
 
-    # Resume if model exists, otherwise start fresh
-    if os.path.exists(model_path):
-        ocr = ShifuOCR.load(model_path)
-        print(f'Resuming from existing model: {ocr.get_stats()["characters"]} landscapes')
-    else:
-        ocr = ShifuOCR()
-        print('Starting training from real images')
+    # Start fresh — feature dimensions must be consistent
+    ocr = ShifuOCR()
+    print('Starting fresh training (53 features)')
 
     # Load training list
     train_list = os.path.join(TRAINING_DIR, 'train_list.txt')
@@ -148,7 +144,7 @@ def train():
                     ocr.train_character(char_label, seg['image'])
                     total_chars += 1
                     total_aligned += 1
-                except:
+                except Exception:
                     pass
 
             # Free segment images
@@ -203,7 +199,7 @@ def train():
                     tested += 1
                     if pred[i] == truth[i]:
                         correct += 1
-            except:
+            except Exception:
                 pass
         if tested > 0:
             print(f'  Character accuracy: {correct}/{tested} ({100*correct/tested:.1f}%)')

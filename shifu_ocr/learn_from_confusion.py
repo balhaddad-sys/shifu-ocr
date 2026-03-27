@@ -75,7 +75,7 @@ def find_fonts(max_fonts=50):
             draw.text((5, 5), 'Abc', fill=0, font=font)
             if (np.array(img) < 128).sum() > 20:
                 usable.append(f)
-        except:
+        except Exception:
             pass
     if len(usable) > max_fonts:
         step = len(usable) // max_fonts
@@ -92,7 +92,7 @@ def test_model(ocr, fonts, tests):
     for fp in fonts:
         try:
             font = ImageFont.truetype(fp, 36)
-        except:
+        except Exception:
             continue
         for text in tests:
             img = Image.new('L', (700, 60), color=255)
@@ -146,7 +146,7 @@ def retrain_confused(ocr, confusions, fonts, rounds_per_char=20):
         for fp in fonts:
             try:
                 font = ImageFont.truetype(fp, np.random.choice(sizes))
-            except:
+            except Exception:
                 continue
             for _ in range(rounds_per_char):
                 img = Image.new('L', (100, 100), color=255)
@@ -156,7 +156,7 @@ def retrain_confused(ocr, confusions, fonts, rounds_per_char=20):
                     x = (100 - (bbox[2] - bbox[0])) // 2 - bbox[0]
                     y = (100 - (bbox[3] - bbox[1])) // 2 - bbox[1]
                     draw.text((x, y), char, fill=0, font=font)
-                except:
+                except Exception:
                     continue
                 arr = np.array(img)
                 if (arr < 128).sum() < 10:
@@ -166,7 +166,7 @@ def retrain_confused(ocr, confusions, fonts, rounds_per_char=20):
                 try:
                     ocr.train_character(label, arr)
                     trained += 1
-                except:
+                except Exception:
                     pass
 
     return trained

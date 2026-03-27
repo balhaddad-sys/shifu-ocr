@@ -69,7 +69,7 @@ def render_char(char, font, img_size=(100, 100)):
         x = (img_size[0] - (bbox[2] - bbox[0])) // 2 - bbox[0]
         y = (img_size[1] - (bbox[3] - bbox[1])) // 2 - bbox[1]
         draw.text((x, y), char, fill=0, font=font)
-    except:
+    except Exception:
         return None
     arr = np.array(img)
     # Check if anything was actually rendered
@@ -110,7 +110,7 @@ def test_font(font_path, size=36):
         # Check that it looks like a character (has enough ink)
         ink = (img < 128).sum()
         return ink > 20
-    except:
+    except Exception:
         return False
 
 
@@ -158,7 +158,7 @@ def train():
         for size in FONT_SIZES:
             try:
                 font = ImageFont.truetype(font_path, size)
-            except:
+            except Exception:
                 continue
 
             for char in all_chars:
@@ -174,7 +174,7 @@ def train():
                     ocr.train_character(label, img)
                     total_trained += 1
                     font_chars += 1
-                except:
+                except Exception:
                     continue
 
                 # Train on augmentations (only for a subset of sizes to save time)
@@ -183,7 +183,7 @@ def train():
                         try:
                             ocr.train_character(label, aug_img)
                             total_augmented += 1
-                        except:
+                        except Exception:
                             continue
 
         elapsed = time.time() - start

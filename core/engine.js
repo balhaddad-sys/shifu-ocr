@@ -1,4 +1,4 @@
-// SHIFU CORE ENGINE v1.7.0
+// SHIFU CORE ENGINE v2.0.0
 // Form distinguishes. Context relates. History remembers.
 // Influence reshapes. Contrast identifies. Expectation directs.
 // Understanding arises between them.

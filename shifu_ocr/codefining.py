@@ -132,7 +132,7 @@ def extract_features(br):
             _, n_ep = ndimage.label(skel & (nc == 1))
             _, n_jp = ndimage.label(skel & (nc >= 3))
             feats.extend([float(n_ep), float(n_jp)])
-        except:
+        except Exception:
             feats.extend([0.0, 0.0])
     else:
         feats.extend([0.0, 0.0])
@@ -542,7 +542,7 @@ class ShifuOCR_v2:
         from skimage.filters import threshold_otsu
         try:
             thresh = threshold_otsu(grayscale_image)
-        except:
+        except Exception:
             thresh = 128
         binary = (grayscale_image < thresh).astype(np.uint8)
         binary = morphology.remove_small_objects(binary.astype(bool), min_size=5).astype(np.uint8)
@@ -655,9 +655,9 @@ class ShifuOCR_v2:
                                         if lo <= alt <= hi:
                                             w['flag'] = f'OUT_OF_RANGE: {prev} {val} outside [{lo}-{hi}], suggest {alt}'
                                             break
-                                    except:
+                                    except Exception:
                                         pass
-                        except:
+                        except Exception:
                             pass
                         break
 
@@ -678,7 +678,7 @@ class ShifuOCR_v2:
         draw = ImageDraw.Draw(img)
         try:
             font = ImageFont.truetype(font_path, font_size)
-        except:
+        except Exception:
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), char, font=font)
         x = (img_size[0] - (bbox[2] - bbox[0])) // 2 - bbox[0]
@@ -690,7 +690,7 @@ class ShifuOCR_v2:
     def render_line(text, font_path, font_size=40, padding=10):
         try:
             font = ImageFont.truetype(font_path, font_size)
-        except:
+        except Exception:
             font = ImageFont.load_default()
         dummy = Image.new('L', (1, 1))
         draw = ImageDraw.Draw(dummy)

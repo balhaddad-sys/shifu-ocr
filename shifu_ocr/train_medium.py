@@ -140,7 +140,7 @@ def render_char_on_medium(char, font, rng, img_size=(100, 100)):
         cx = (w - (bbox[2] - bbox[0])) // 2 - bbox[0]
         cy = (h - (bbox[3] - bbox[1])) // 2 - bbox[1]
         draw.text((cx, cy), char, fill=0, font=font)
-    except:
+    except Exception:
         return None
 
     char_binary = (np.array(clean) < 128).astype(np.uint8)
@@ -212,7 +212,7 @@ def check_font(font_path, size=36):
         draw = ImageDraw.Draw(img)
         draw.text((10, 10), 'A', fill=0, font=font)
         return (np.array(img) < 128).sum() > 20
-    except:
+    except Exception:
         return False
 
 
@@ -251,7 +251,7 @@ def train():
         for size in SIZES:
             try:
                 font = ImageFont.truetype(font_path, size)
-            except:
+            except Exception:
                 continue
 
             for char in all_chars:
@@ -267,7 +267,7 @@ def train():
                         ocr.train_character(label, img)
                         total += 1
                         font_count += 1
-                    except:
+                    except Exception:
                         continue
 
         elapsed = time.time() - start

@@ -145,7 +145,7 @@ def extract_features(br):
             _, n_ep = ndimage.label(skel & (nc == 1))
             _, n_jp = ndimage.label(skel & (nc >= 3))
             feats.extend([float(n_ep), float(n_jp)])
-        except:
+        except Exception:
             feats.extend([0.0, 0.0])
     else:
         feats.extend([0.0, 0.0])
@@ -470,7 +470,7 @@ def render_char(char, font_path, size=80, img_size=(100,100)):
     img = Image.new('L', img_size, color=255)
     draw = ImageDraw.Draw(img)
     try: font = ImageFont.truetype(font_path, size)
-    except: font = ImageFont.load_default()
+    except Exception: font = ImageFont.load_default()
     bbox = draw.textbbox((0,0), char, font=font)
     x = (img_size[0]-(bbox[2]-bbox[0]))//2 - bbox[0]
     y = (img_size[1]-(bbox[3]-bbox[1]))//2 - bbox[1]

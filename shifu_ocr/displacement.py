@@ -436,7 +436,7 @@ def render_character(char, font_path, font_size=80, image_size=(100, 100)):
     
     try:
         font = ImageFont.truetype(font_path, font_size)
-    except:
+    except Exception:
         font = ImageFont.load_default()
     
     # Get text bounding box for centering

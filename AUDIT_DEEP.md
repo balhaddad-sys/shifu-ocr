@@ -16,7 +16,7 @@ This second-pass audit goes deeper than the first, focusing on **performance bot
 | Clinical Safety | 2 | 3 | 3 | 0 |
 | Python Engines | 2 | 4 | 8 | 3 |
 | Logic Bugs | 0 | 3 | 6 | 3 |
-| **Total** | **7** | **13** | **22** | **7** |
+| **Total** | **7** | **13** | **23** | **6** |
 
 ---
 
@@ -99,19 +99,18 @@ This second-pass audit goes deeper than the first, focusing on **performance bot
 
 ## 2. CLINICAL SAFETY FINDINGS
 
-### CLIN-01: No Dose/Unit Validation [CRITICAL]
-- **File:** `shifu_ocr/clinical_context.py` (missing), `clinical/safety.js:126`
-- **Description:** The system can output "Methotrexate 15g" (lethal; should be 15mg) without flagging. No unit plausibility checking. The safety flag at line 126 uses over-broad regex `/[\dO]/` that matches any word containing a digit — room numbers, bed numbers, years — causing false positives while missing the actual dangerous case (wrong units).
-- **Impact:** Patient safety risk. Lethal dose errors can pass undetected.
-- **Recommendation:** Add dose+unit plausibility tables per medication. Flag implausible units.
+### CLIN-01: Incomplete Dose/Unit Validation [HIGH]
+- **File:** `clinical/safety.js:126-131`
+- **Description:** The system does have dose validation — `checkDosePlausibility()` is called when a digit-containing word follows a known medication. However, the detection regex `/[\dO]/` is over-broad (triggers on room numbers, bed numbers, years) causing false positives. The dose plausibility function exists but unit-specific validation (mg vs g vs mcg per medication) is limited.
+- **Impact:** False positive safety flags on non-dose numbers. Some implausible units may pass.
+- **Recommendation:** Tighten detection regex to dose-like patterns. Expand per-medication unit tables.
 
-### CLIN-02: PII Redaction Incomplete [CRITICAL]
+### CLIN-02: PII Redaction Limited to Kuwait Formats [HIGH]
 - **File:** `training/shield.py:23-33, 74`
-- **Description:** Two issues:
-  1. PII regex patterns only detect Kuwait-format civil IDs and +965 phone numbers. No coverage for other formats.
-  2. `str.replace(original, token, 1)` only replaces FIRST occurrence. If an MRN "123456" appears twice, the second instance leaks.
-- **Impact:** Patient data exposure in training artifacts.
-- **Fix:** Use `replace_all` or regex with `/g`. Expand PII patterns or use NER.
+- **Description:** PII regex patterns only detect Kuwait-format civil IDs and +965 phone numbers. No coverage for other ID formats or free-text patient names.
+- **Note:** The `str.replace(original, token, 1)` pattern was originally flagged as missing duplicates, but this is **incorrect** — `finditer()` iterates over all matches in the original text, and each sequential `replace(..., 1)` correctly replaces the next remaining occurrence in the shielded string.
+- **Impact:** Non-Kuwait PII formats are unprotected.
+- **Fix:** Expand PII patterns or add NER-based detection.
 
 ### CLIN-03: No Physiological Range Validation [CRITICAL]
 - **File:** `shifu_ocr/clinical_context.py`
@@ -252,10 +251,10 @@ This second-pass audit goes deeper than the first, focusing on **performance bot
 - **Description:** Module-level mutable state. If multiple shifu instances exist in the same process, the last `setAdaptiveProfile()` call wins. All instances share one profile.
 - **Fix:** Pass profile as parameter or use instance-scoped storage.
 
-### BUG-04: stderr Mixed Into stdout [MEDIUM]
-- **File:** `core/pipeline.js:156`
-- **Description:** Variable named `stdout` accumulates both stdout AND stderr. When Python emits warnings to stderr, `JSON.parse(stdout)` fails silently.
-- **Fix:** Keep separate buffers.
+### BUG-04: stderr Mixed Into stdout in Version Check [LOW]
+- **File:** `core/pipeline.js:156` (`checkPython()` only)
+- **Description:** In the `checkPython()` version-check function, stderr is appended to the stdout variable. This is a **harmless workaround** because `python --version` writes to stderr on some systems. The actual OCR runner (`_runPythonOCR` at line 254-257) already correctly separates stdout and stderr into distinct buffers.
+- **Status:** Fixed — version check now uses separate buffers with `(stdout || stderr)` fallback.
 
 ### BUG-05: Safety Regex Overly Broad [MEDIUM]
 - **File:** `clinical/safety.js:126`
@@ -296,8 +295,8 @@ This second-pass audit goes deeper than the first, focusing on **performance bot
 ## 5. PRIORITY MATRIX
 
 ### Must Fix Before Any Clinical Deployment
-1. **CLIN-01**: Dose/unit validation (lethal doses can pass)
-2. **CLIN-02**: PII redaction incomplete (patient data leaks)
+1. **CLIN-01**: Improve dose/unit validation (tighten regex, expand unit tables)
+2. **CLIN-02**: Expand PII redaction beyond Kuwait formats
 3. **CLIN-03**: No physiological range validation
 4. **CLIN-05**: Learning loop poisoning (can teach wrong corrections)
 5. **BUG-02**: CSV parser corrupts quoted fields

@@ -12,8 +12,8 @@ Shifu does not use a single OCR algorithm. Multiple engines see every character 
 | **Fluid** (`fluid.py`) | Probability landscapes shaped by experience | Adapting to new fonts/styles |
 | **Perturbation** (`perturbation.py`) | MRI-style response to disturbance | Low-resolution (6px) characters |
 | **Theory-Revision** (`theory_revision.py`) | Principled prediction with auditable reasoning | Explainable corrections |
-| **Co-Defining** (`codefining.py`) | Bidirectional constraints (char-word-context) | Context-dependent ambiguity |
-| **Coherence** (`coherence.py`) | Harmony disruption detection | Colored backgrounds |
+
+> Co-Defining (`codefining.py`) and Coherence (`coherence.py`) exist as experimental modules but are **not registered** in the active ensemble pipeline.
 
 ```
   Character Image
@@ -21,8 +21,7 @@ Shifu does not use a single OCR algorithm. Multiple engines see every character 
        ├──→ Topology Engine ──→ vote (label, confidence)
        ├──→ Fluid Engine ────→ vote (label, confidence)
        ├──→ Perturbation ────→ vote (label, confidence)     ──→  FUSION  ──→  Result
-       ├──→ Theory-Revision ─→ vote (label, confidence)         (weighted)
-       └──→ Co-Defining ─────→ vote (label, confidence)
+       └──→ Theory-Revision ─→ vote (label, confidence)         (weighted)
                                                                     │
                                                               Nurse correction
                                                                     │
@@ -70,7 +69,7 @@ shifu-ocr/
 │   ├── clinical_weights.js  # Learning rates by clinical importance
 │   ├── ablation.js          # Component impact testing
 │   ├── scale.js             # Scaling experiments
-│   └── suite.js             # Learning layer test suite
+│   └── scale.js             # Scaling experiments
 │
 ├── shifu_ocr/               # Python OCR engines (multi-engine ensemble)
 │   ├── ensemble.py          # Multi-engine orchestrator — all engines see every character
@@ -90,7 +89,7 @@ shifu-ocr/
 │   ├── train_medium.py      # Medium-complexity training
 │   ├── train_extensive.py   # Large-scale training
 │   ├── train_real.py        # Real document training
-│   └── trained_model/       # Pre-trained character data
+│   └── trained_model.json   # Pre-trained character data (2.4MB)
 │
 ├── v2/                      # V2 JS modules (Firebase-ready)
 │   ├── index.js             # V2 entry point

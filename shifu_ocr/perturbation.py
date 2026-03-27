@@ -64,7 +64,7 @@ def pulse_skeleton(binary):
         return binary
     try:
         return morphology.skeletonize(binary.astype(bool)).astype(np.uint8)
-    except:
+    except Exception:
         return binary
 
 def pulse_distance(binary):
@@ -324,7 +324,7 @@ def extract_components(cell_gray, scale=3):
         try:
             t = threshold_otsu(upscaled)
             binary = (upscaled < t).astype(np.uint8)
-        except:
+        except Exception:
             return [], binary
     
     binary = morphology.remove_small_objects(binary.astype(bool), min_size=8).astype(np.uint8)

@@ -250,7 +250,7 @@ class DocumentIngestor {
       const ch = content[i];
       if (ch === '"') {
         if (inQuotes && i + 1 < content.length && content[i + 1] === '"') {
-          current += '"';
+          current += '"'; // escaped quote: keep one
           i++;
         } else {
           inQuotes = !inQuotes; // toggle quote mode, don't add delimiter to output

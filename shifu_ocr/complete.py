@@ -61,7 +61,7 @@ def binarize_coherence(disp, method='otsu'):
     from skimage.filters import threshold_otsu
     try:
         thresh = threshold_otsu(disp)
-    except:
+    except Exception:
         thresh = 0.15
     binary = disp > thresh
     binary = morphology.remove_small_objects(binary, min_size=8)
@@ -267,7 +267,7 @@ def render_char(char, font_path, font_size, img_size=(80, 80)):
     draw = ImageDraw.Draw(img)
     try:
         font = ImageFont.truetype(font_path, font_size)
-    except:
+    except Exception:
         font = ImageFont.load_default()
     bbox = draw.textbbox((0, 0), char, font=font)
     x = (img_size[0] - (bbox[2]-bbox[0]))//2 - bbox[0]
@@ -421,7 +421,7 @@ class ShifuPipeline:
                         normed = normalize_char(cropped)
                         fv = extract_features(normed)
                         self.landscapes[char].absorb(fv)
-                    except:
+                    except Exception:
                         pass
         
         self._trained = True
@@ -470,7 +470,7 @@ class ShifuPipeline:
                 t = threshold_otsu(cell_gray)
                 binary = (cell_gray < t).astype(np.uint8)
                 binary = morphology.remove_small_objects(binary.astype(bool), min_size=5).astype(np.uint8)
-            except:
+            except Exception:
                 return ''
         
         if binary.sum() < 5:
