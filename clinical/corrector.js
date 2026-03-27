@@ -233,11 +233,11 @@ function correctWord(rawWord, options = {}) {
   }
 
   // Very short words (1-3 chars) that aren't in vocabulary — don't try to correct.
-  // Protects acronyms like MRI, DVT, CVA from being corrected to shorter words.
-  // Confidence 0.8: these are preserved intentionally (not uncertain), so the
-  // confidence contract should reflect that — hasWarnings and assessConfidence agree.
+  // Short unknown words (1-3 chars): don't correct, but flag as uncertain.
+  // Known short words (CVA, AKI, UTI) already matched as 'exact' above.
+  // Unknown ones (x, q, NRI) need 'verify' — they might be OCR noise.
   if (wordLower.length <= 3 && !baseWords.has(wordLower)) {
-    return { original: word, corrected: word, confidence: 0.8, flag: 'short_preserved', candidates: [] };
+    return { original: word, corrected: word, confidence: 0.4, flag: 'short_unknown', candidates: [] };
   }
 
   // Punctuation-heavy tokens

@@ -74,6 +74,8 @@ export const CONFUSION_PAIRS = {
  */
 export function getConfusionCost(char1, char2) {
   if (char1 === char2) return 0.0;
+  // Case is free — same letter, same FLAIR perturbation response
+  if (char1.toLowerCase() === char2.toLowerCase()) return 0.0;
 
   const key1 = `${char1},${char2}`;
   const key2 = `${char2},${char1}`;
