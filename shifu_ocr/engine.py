@@ -928,57 +928,57 @@ class ShifuOCR:
                     'line_index': line_result.get('row_index', 0),
                 })
 
-        # RECONSTRUCT TABLE using receptive field + grid cell principles:
-        # 1. Overlapping receptive fields: scan X axis with Gaussian bins
-        # 2. Gaps in the activation = column boundaries
-        # 3. Grid cell encoding: each word gets a (row, col) relational position
+        # RECONSTRUCT TABLE: find columns from word X positions across ALL lines.
+        # Somatotopic principle: positions that consistently have words across
+        # many lines = column positions. The pattern emerges from repetition.
         table = None
         if words_with_coords:
             page_w = grayscale_image.shape[1]
-            # Build X-axis histogram: count words whose x_start falls in each bin
-            bin_size = 10
-            n_bins = page_w // bin_size + 1
-            x_hist = np.zeros(n_bins)
-            for w in words_with_coords:
-                b = int(w['x_start'] / bin_size)
-                if 0 <= b < n_bins:
-                    x_hist[b] += 1
-                    # Overlapping receptive field: spread activation to neighbors
-                    if b > 0: x_hist[b-1] += 0.5
-                    if b < n_bins - 1: x_hist[b+1] += 0.5
 
-            # Find column boundaries: wide gaps (>3 empty bins) in the histogram
+            # Collect ALL word x_start positions across all lines
+            all_x = sorted([w['x_start'] for w in words_with_coords])
+
+            # Find clusters of X positions (columns) using gap detection
+            # Words in the same column start at similar X across different rows
+            clusters = []
+            if all_x:
+                cluster = [all_x[0]]
+                for x in all_x[1:]:
+                    if x - cluster[-1] < 25:  # within 25px = same cluster
+                        cluster.append(x)
+                    else:
+                        clusters.append((min(cluster), max(cluster), len(cluster)))
+                        cluster = [x]
+                clusters.append((min(cluster), max(cluster), len(cluster)))
+
+            # Keep clusters with 3+ words (real columns have multiple entries)
+            # and find natural breakpoints between clusters
+            strong_clusters = [c for c in clusters if c[2] >= 3]
+            if len(strong_clusters) < 3:
+                strong_clusters = clusters  # fallback: use all
+
+            # Build column boundaries from cluster gaps
             columns = []
-            in_col = False
-            col_start_bin = 0
-            for b in range(n_bins):
-                if x_hist[b] > 0 and not in_col:
-                    col_start_bin = b
-                    in_col = True
-                elif x_hist[b] == 0 and in_col:
-                    # Check if gap is wide enough (>3 bins = >30px)
-                    gap_end = b
-                    while gap_end < n_bins and x_hist[gap_end] == 0:
-                        gap_end += 1
-                    if gap_end - b >= 3:  # 30px+ gap = column boundary
-                        columns.append((col_start_bin * bin_size, b * bin_size))
-                        in_col = False
-                        # Skip to end of gap
-            if in_col:
-                columns.append((col_start_bin * bin_size, page_w))
+            for i, (cmin, cmax, cnt) in enumerate(strong_clusters):
+                if i == 0:
+                    col_start = 0
+                else:
+                    prev_max = strong_clusters[i-1][1]
+                    col_start = (prev_max + cmin) // 2  # midpoint of gap
+                if i == len(strong_clusters) - 1:
+                    col_end = page_w
+                else:
+                    next_min = strong_clusters[i+1][0]
+                    col_end = (cmax + next_min) // 2
+                columns.append((col_start, col_end))
 
             if len(columns) >= 2:
-                # Assign each word to the column whose range contains its x_start
-                # (receptive field: word activates the column it falls within)
+                # Assign each word to the column containing its x_start
                 rows_dict = {}
                 for w in words_with_coords:
                     col_idx = 0
                     for ci, (cs, ce) in enumerate(columns):
-                        if w['x_start'] >= cs and w['x_start'] < ce:
-                            col_idx = ci
-                            break
-                        # Also check if word center falls in column
-                        if w['x'] >= cs and w['x'] < ce:
+                        if cs <= w['x_start'] < ce:
                             col_idx = ci
                             break
                     row_idx = w['line_index']
