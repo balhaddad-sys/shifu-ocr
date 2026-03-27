@@ -60,25 +60,65 @@ def read_image(image_path):
 
     if img.mode in ('RGB', 'RGBA'):
         from scipy.ndimage import gaussian_filter
-        # 4D MRI-OCR: Run MRI-RF on EACH color channel independently.
-        # Like multi-sequence MRI: T1(R) + T2(G) + FLAIR(B) + DWI(L).
-        # Text = dark in ALL channels (constructive interference).
-        # Colored backgrounds = bright in at least one (destructive interference).
+        # 4D MRI SPATIAL ENCODING:
+        # Like MRI: multi-sequence (R,G,B,L) × multi-scale (Laplacian pyramid)
+        # × directional (Gabor orientation contrast).
+        # Each pixel gets a multi-dimensional feature vector.
+        # Text = high fine-detail + high orientation contrast + dark in all channels.
         arr = np.array(img.convert('RGB')).astype(float)
-        channels = [arr[:,:,0], arr[:,:,1], arr[:,:,2], arr.mean(axis=2)]  # R, G, B, Luminance
+        channels = [arr[:,:,0], arr[:,:,1], arr[:,:,2], arr.mean(axis=2)]
+        h, w = arr.shape[:2]
 
-        def mri_rf_channel(gray):
-            background = gaussian_filter(gray, sigma=25)
-            foreground = background - gray
-            line_response = gaussian_filter(foreground, sigma=8)
-            return np.clip(foreground - line_response, 0, None)
+        # MULTI-SCALE per channel: Laplacian pyramid (3 levels)
+        # Level 0 (sigma=2): fine strokes. Level 1 (sigma=6): character scale.
+        # Level 2 (sigma=18): word/cell scale. Residual = background.
+        text_evidence = np.zeros((h, w))
+        per_channel_fg = []
 
-        # Run MRI-RF on each channel
-        signals = [mri_rf_channel(ch) for ch in channels]
+        for ch in channels:
+            sigmas = [2.0, 6.0, 18.0]
+            current = ch.copy()
+            fine_energy = np.zeros((h, w))
+            for sigma in sigmas:
+                smoothed = gaussian_filter(current, sigma=sigma)
+                detail = current - smoothed
+                if sigma <= 6.0:
+                    fine_energy += np.abs(detail)  # text lives at fine scales
+                current = smoothed
+            background = current
+            fg = np.clip(background - ch, 0, None)
+            if fg.max() > 0:
+                fg /= fg.max()
+            per_channel_fg.append(fg)
+            if fine_energy.max() > 0:
+                fine_energy /= fine_energy.max()
+            text_evidence += fine_energy * fg
 
-        # COMBINE: minimum across channels (text is dark in ALL = high signal in ALL)
-        # Colored backgrounds have low signal in at least one channel → min suppresses them
-        combined = np.minimum.reduce(signals)
+        # DIRECTIONAL: Gabor orientation contrast at character-stroke frequency
+        # Text strokes are anisotropic, backgrounds are isotropic
+        try:
+            from skimage.filters import gabor
+            gray_norm = arr.mean(axis=2) / 255.0
+            orient_responses = []
+            for i in range(4):
+                theta = i * np.pi / 4
+                fr, fi = gabor(gray_norm, frequency=0.25, theta=theta)
+                orient_responses.append(np.sqrt(fr**2 + fi**2))
+            orient_stack = np.stack(orient_responses, axis=-1)
+            orient_contrast = orient_stack.max(axis=-1) - orient_stack.min(axis=-1)
+            if orient_contrast.max() > 0:
+                orient_contrast /= orient_contrast.max()
+        except Exception:
+            orient_contrast = np.zeros((h, w))
+
+        # COMBINE: geometric mean across channels (soft minimum)
+        fg_stack = np.stack(per_channel_fg, axis=-1)
+        geo_mean = np.exp(np.mean(np.log(np.maximum(fg_stack, 1e-8)), axis=-1))
+
+        # Fuse: multi-scale evidence + directional contrast, gated by cross-channel
+        if text_evidence.max() > 0:
+            text_evidence /= text_evidence.max()
+        combined = (0.5 * text_evidence + 0.3 * geo_mean + 0.2 * orient_contrast)
 
         # Normalize to grayscale
         if combined.max() > 0:
@@ -86,7 +126,7 @@ def read_image(image_path):
             normalized = 255 - (scaled * 225)
             normalized[scaled < 0.08] = 255
         else:
-            normalized = np.full(arr.shape[:2], 255.0)
+            normalized = np.full((h, w), 255.0)
 
         return normalized.astype(np.uint8)
 
