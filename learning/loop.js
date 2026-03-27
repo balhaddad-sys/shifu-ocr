@@ -461,11 +461,14 @@ class ShifuLearningEngine {
         allFlags.push({ column, ...flag });
       }
     }
+    // Collect all words across columns for flag checking
+    const allWords = Object.values(corrected).flatMap(c => (c.words || []));
     return {
       corrected,
       safetyFlags: allFlags,
       hasDangers: allFlags.some(f => f.severity === 'danger'),
-      hasWarnings: allFlags.some(f => f.severity === 'warning' || f.severity === 'error'),
+      hasWarnings: allFlags.some(f => f.severity === 'warning' || f.severity === 'error')
+        || allWords.some(w => w.flag === 'corrected_verify' || w.flag === 'low_confidence' || w.flag === 'unknown' || w.flag === 'short_unknown'),
     };
   }
 
@@ -752,7 +755,7 @@ class ShifuLearningEngine {
       }
     }
     if (wordLower.length <= 3 && !this.vocabulary.isKnown(wordLower)) {
-      return { original: word, corrected: word, confidence: 0.5, flag: 'short', candidates: [] };
+      return { original: word, corrected: word, confidence: 0.4, flag: 'short_unknown', candidates: [] };
     }
     // ── End guards ─────────────────────────────────────────────────
 

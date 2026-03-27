@@ -145,7 +145,7 @@ function createShifu(opts = {}) {
       }
       // Surface warnings from any uncertain token flag
       const hasUncertain = allWords.some(w =>
-        w.flag === 'corrected_verify' || w.flag === 'verify' || w.flag === 'low_confidence' || w.flag === 'unknown');
+        w.flag === 'corrected_verify' || w.flag === 'verify' || w.flag === 'low_confidence' || w.flag === 'unknown' || w.flag === 'short_unknown');
       if (hasUncertain) result.hasWarnings = true;
       return result;
     },
