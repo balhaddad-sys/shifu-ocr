@@ -169,6 +169,12 @@ const VOCABULARY = {
     'csf protein', 'csf glucose', 'csf wbc',
     'blood culture', 'urine culture', 'csf culture',
     'abg', 'vbg', 'ph', 'pco2', 'po2',
+    // Common medical acronyms (short but valid)
+    'mri', 'ct', 'ecg', 'eeg', 'emg', 'cxr', 'xr',
+    'gcs', 'bp', 'hr', 'rr', 'spo2', 'bmi', 'bsa',
+    'iv', 'im', 'sc', 'po', 'pr', 'ng', 'nj',
+    'od', 'bd', 'tds', 'qds', 'prn', 'stat',
+    'npo', 'npo', 'obs', 'rx', 'dx', 'hx', 'sx', 'tx', 'mx',
   ],
 
   names: [
