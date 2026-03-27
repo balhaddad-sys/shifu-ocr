@@ -16,7 +16,7 @@ This second-pass audit goes deeper than the first, focusing on **performance bot
 | Clinical Safety | 2 | 3 | 3 | 0 |
 | Python Engines | 2 | 4 | 8 | 3 |
 | Logic Bugs | 0 | 3 | 6 | 3 |
-| **Total** | **7** | **13** | **23** | **6** |
+| **Total** | **7** | **13** | **22** | **7** |
 
 ---
 
