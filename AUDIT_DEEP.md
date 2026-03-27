@@ -13,10 +13,10 @@ This second-pass audit goes deeper than the first, focusing on **performance bot
 | Category | Critical | High | Medium | Low |
 |----------|----------|------|--------|-----|
 | Performance | 3 | 3 | 5 | 1 |
-| Clinical Safety | 3 | 2 | 3 | 0 |
+| Clinical Safety | 2 | 3 | 3 | 0 |
 | Python Engines | 2 | 4 | 8 | 3 |
-| Logic Bugs | 0 | 3 | 7 | 2 |
-| **Total** | **8** | **12** | **23** | **6** |
+| Logic Bugs | 0 | 3 | 6 | 3 |
+| **Total** | **7** | **13** | **22** | **7** |
 
 ---
 

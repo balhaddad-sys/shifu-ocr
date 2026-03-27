@@ -152,14 +152,16 @@ class ShifuPipeline {
         return;
       }
       let stdout = '';
+      let stderr = '';
       proc.stdout.on('data', d => { stdout += d.toString(); });
-      proc.stderr.on('data', d => { stdout += d.toString(); }); // python --version writes to stderr on some systems
+      proc.stderr.on('data', d => { stderr += d.toString(); });
       proc.on('close', code => {
         if (code !== 0) {
           resolve({ available: false, version: null, error: `exit code ${code}` });
           return;
         }
-        const version = stdout.trim();
+        // python --version writes to stderr on some systems
+        const version = (stdout || stderr).trim();
         // Also check if the pipeline worker script exists
         const scriptExists = fs.existsSync(PYTHON_SCRIPT);
         resolve({

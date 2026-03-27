@@ -116,7 +116,6 @@ def ocr_with_shifu(image_path, model_path, page_mode=True):
             'lines': result.get('lines', []),
             'confidence': float(result.get('confidence', 0)),
         }
-        # Pass spatial coordinates through — the table IS the coordinates
         if result.get('table'):
             output['table'] = result['table']
         if result.get('words'):

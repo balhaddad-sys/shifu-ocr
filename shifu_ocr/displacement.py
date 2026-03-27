@@ -78,9 +78,12 @@ def compute_displacement_field(image_array, background):
     displacement = background.astype(float) - image_array.astype(float)
     
     # Normalize to [0, 1]
-    if displacement.max() > displacement.min():
-        displacement = (displacement - displacement.min()) / (displacement.max() - displacement.min())
-    
+    d_min, d_max = displacement.min(), displacement.max()
+    if d_max > d_min:
+        displacement = (displacement - d_min) / (d_max - d_min)
+    else:
+        displacement = np.zeros_like(displacement)
+
     return displacement
 
 

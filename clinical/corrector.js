@@ -13,6 +13,7 @@
 // SAFETY PRINCIPLE: Never silently override. Flag uncertainty.
 
 const { ocrWeightedDistance, fixDigraphs } = require('./confusion');
+const { levDist: _lev } = require('../core/engine');
 const {
   getBaseWordSet,
   getBaseCandidateIndex,
@@ -233,8 +234,10 @@ function correctWord(rawWord, options = {}) {
 
   // Very short words (1-3 chars) that aren't in vocabulary — don't try to correct.
   // Protects acronyms like MRI, DVT, CVA from being corrected to shorter words.
+  // Confidence 0.8: these are preserved intentionally (not uncertain), so the
+  // confidence contract should reflect that — hasWarnings and assessConfidence agree.
   if (wordLower.length <= 3 && !baseWords.has(wordLower)) {
-    return { original: word, corrected: word, confidence: 0.5, flag: 'short', candidates: [] };
+    return { original: word, corrected: word, confidence: 0.8, flag: 'short_preserved', candidates: [] };
   }
 
   // Punctuation-heavy tokens
@@ -323,7 +326,6 @@ function correctWord(rawWord, options = {}) {
     // HUB AND SPOKE SCORING — Multiple independent signals accumulate.
     // Each signal is a synapse. When enough fire together, the action potential
     // (correction) triggers. No single signal dominates.
-    const { levDist: _lev } = require('../core/engine');
     const editDist = _lev(wordLower, vocabWord);
     const signals = [];
 

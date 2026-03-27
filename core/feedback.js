@@ -134,8 +134,8 @@ class FeedbackLoop {
         const proposalCol = (proposal.columns || {})[col];
         if (!proposalCol) continue;
 
-        // Blank confirmed = deletion: all proposed words are wrong
-        if (!confirmedText && confirmedText !== '') continue;
+        // Skip null/undefined confirmed (no data for this column)
+        if (confirmedText == null) continue;
         const confirmedWords = confirmedText.split(/\s+/).filter(w => w.length > 0);
         const proposedWords = proposalCol.words || [];
 

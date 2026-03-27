@@ -37,9 +37,13 @@ class DocumentIngestor {
     if (!ext || !['.csv','.tsv','.txt','.png','.jpg','.jpeg','.tiff','.tif','.bmp','.pdf'].includes(ext)) {
       try {
         const head = Buffer.alloc(8);
-        const fd = fs.openSync(filePath, 'r');
-        fs.readSync(fd, head, 0, 8, 0);
-        fs.closeSync(fd);
+        let fd;
+        try {
+          fd = fs.openSync(filePath, 'r');
+          fs.readSync(fd, head, 0, 8, 0);
+        } finally {
+          if (fd !== undefined) fs.closeSync(fd);
+        }
         if (head[0] === 0x25 && head[1] === 0x50 && head[2] === 0x44 && head[3] === 0x46) {
           ext = '.pdf';   // %PDF
         } else if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4E && head[3] === 0x47) {
@@ -249,9 +253,8 @@ class DocumentIngestor {
           current += '"';
           i++;
         } else {
-          inQuotes = !inQuotes;
+          inQuotes = !inQuotes; // toggle quote mode, don't add delimiter to output
         }
-        current += ch;
       } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
         // End of record
         if (ch === '\r' && i + 1 < content.length && content[i + 1] === '\n') i++;

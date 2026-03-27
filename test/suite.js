@@ -387,7 +387,7 @@ S("REGRESSION: Fix #8 — low-confidence words not substituted, decision is veri
 
 const lowConfResult = correctLine("for");
 assert("#8: low-confidence word keeps original", lowConfResult.words[0].corrected === 'for');
-assert("#8: low-confidence flag set", lowConfResult.words[0].flag === 'low_confidence' || lowConfResult.words[0].flag === 'short' || lowConfResult.words[0].flag === 'exact' || lowConfResult.words[0].flag === 'passthrough' || lowConfResult.words[0].flag === 'unknown' || lowConfResult.words[0].flag === 'clean');
+assert("#8: low-confidence flag set", lowConfResult.words[0].flag === 'low_confidence' || lowConfResult.words[0].flag === 'short' || lowConfResult.words[0].flag === 'short_preserved' || lowConfResult.words[0].flag === 'exact' || lowConfResult.words[0].flag === 'passthrough' || lowConfResult.words[0].flag === 'unknown' || lowConfResult.words[0].flag === 'clean');
 
 const mixedResult = correctLine("Levetiracetarn 5OOmg for seizure");
 const forWord = mixedResult.words.find(w => w.original === 'for');

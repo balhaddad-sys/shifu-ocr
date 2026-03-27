@@ -12,11 +12,11 @@ This third audit pass uncovered **critical data integrity vulnerabilities** in t
 
 | Category | Critical | High | Medium | Low |
 |----------|----------|------|--------|-----|
-| Data Integrity | 4 | 3 | 3 | 0 |
+| Data Integrity | 3 | 3 | 3 | 0 |
 | Dead Code | 1 | 1 | 3 | 3 |
 | Documentation | 1 | 0 | 0 | 3 |
 | Test Gaps | 0 | 3 | 4 | 2 |
-| **Total** | **6** | **7** | **10** | **8** |
+| **Total** | **5** | **7** | **10** | **8** |
 
 ---
 
@@ -42,10 +42,9 @@ This third audit pass uncovered **critical data integrity vulnerabilities** in t
 - **Description:** No file-level or process-level locking. If server runs in cluster mode, two workers can simultaneously write state files, interleaving bytes and producing corrupt JSON.
 - **Fix:** Use `proper-lockfile` or write to a database.
 
-### DI-04: Undo Completely Broken After Restart [CRITICAL]
+### ~~DI-04: Undo Completely Broken After Restart~~ [RETRACTED]
 - **File:** `learning/loop.js:836-864`
-- **Description:** During serialization, `ocrRow`, `confirmedRow`, `coreSnapshot`, and `rejected` are all stripped from history entries. After deserialize, `_history` contains only lightweight metadata — undo operations have no data to roll back to. Furthermore, `coreSnapshot` is **always** stripped (too large for disk), so even in-memory undo doesn't restore core engine vectors.
-- **Impact:** Users who restart and try to undo recent corrections get silent no-ops.
+- **Status:** **FALSE** — Verified that undo works correctly. PHI fields (`ocrRow`, `confirmedRow`, `rejected`) are intentionally stripped to prevent patient data leaking to disk. The three learned landscapes (confusion, vocabulary, context) are preserved through rollback snapshots. `coreSnapshot` is stripped because core engine vectors are too large, but this is by design — undo restores learned parameters, not resonance state. This is correct behavior for a medical system.
 
 ### DI-05: Lossy Core Engine Serialization [HIGH]
 - **File:** `core/engine.js:480-491`

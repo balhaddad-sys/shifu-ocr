@@ -29,10 +29,22 @@ function jsonResponse(res, data, status = 200) {
   res.end(JSON.stringify(data, null, 2));
 }
 
+const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_TEXT_LENGTH = 100000; // 100k chars for text inputs
+
 function parseBody(req) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => { body += chunk; });
+    let size = 0;
+    req.on('error', err => reject(err));
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY_SIZE) {
+        req.destroy();
+        return reject(new Error('Request body too large'));
+      }
+      body += chunk;
+    });
     req.on('end', () => {
       try { resolve(JSON.parse(body)); }
       catch { resolve({}); }
@@ -41,6 +53,7 @@ function parseBody(req) {
 }
 
 const server = http.createServer(async (req, res) => {
+  try {
   const parsed = url.parse(req.url, true);
   const path = parsed.pathname;
 
@@ -64,6 +77,7 @@ const server = http.createServer(async (req, res) => {
   if (path === '/api/correct' && req.method === 'POST') {
     const { text } = await parseBody(req);
     if (!text) return jsonResponse(res, { error: 'text required' }, 400);
+    if (text.length > MAX_TEXT_LENGTH) return jsonResponse(res, { error: 'text too long' }, 400);
     const lines = text.split('\n').filter(l => l.trim());
     if (lines.length === 1) {
       const result = shifu.correctLine(lines[0]);
@@ -128,6 +142,7 @@ const server = http.createServer(async (req, res) => {
   if (path === '/api/compare-structure' && req.method === 'POST') {
     const { sentA, sentB } = await parseBody(req);
     if (!sentA || !sentB) return jsonResponse(res, { error: 'sentA and sentB required' }, 400);
+    if (sentA.length > MAX_TEXT_LENGTH || sentB.length > MAX_TEXT_LENGTH) return jsonResponse(res, { error: 'text too long' }, 400);
     return jsonResponse(res, shifu.compareStructure(sentA, sentB));
   }
 
@@ -135,6 +150,7 @@ const server = http.createServer(async (req, res) => {
   if (path === '/api/score' && req.method === 'POST') {
     const { text } = await parseBody(req);
     if (!text) return jsonResponse(res, { error: 'text required' }, 400);
+    if (text.length > MAX_TEXT_LENGTH) return jsonResponse(res, { error: 'text too long' }, 400);
     return jsonResponse(res, shifu.scoreSentence(text));
   }
 
@@ -142,6 +158,7 @@ const server = http.createServer(async (req, res) => {
   if (path === '/api/roles' && req.method === 'POST') {
     const { text } = await parseBody(req);
     if (!text) return jsonResponse(res, { error: 'text required' }, 400);
+    if (text.length > MAX_TEXT_LENGTH) return jsonResponse(res, { error: 'text too long' }, 400);
     return jsonResponse(res, shifu.extractRoles(text));
   }
 
@@ -169,6 +186,7 @@ const server = http.createServer(async (req, res) => {
   if (path === '/api/ingest' && req.method === 'POST') {
     const { text, format, columns, delimiter } = await parseBody(req);
     if (!text) return jsonResponse(res, { error: 'text required' }, 400);
+    if (text.length > MAX_TEXT_LENGTH) return jsonResponse(res, { error: 'text too long' }, 400);
     const result = ingestor.ingestRawText(text, { format, columns, delimiter });
     return jsonResponse(res, result);
   }
@@ -179,10 +197,19 @@ const server = http.createServer(async (req, res) => {
     const os = require('os');
     const tmpDir = os.tmpdir();
 
-    // Read raw body
+    // Read raw body with size limit
     const chunks = [];
-    await new Promise(resolve => {
-      req.on('data', chunk => chunks.push(chunk));
+    let uploadSize = 0;
+    await new Promise((resolve, reject) => {
+      req.on('error', err => reject(err));
+      req.on('data', chunk => {
+        uploadSize += chunk.length;
+        if (uploadSize > MAX_BODY_SIZE) {
+          req.destroy();
+          return reject(new Error('Upload too large'));
+        }
+        chunks.push(chunk);
+      });
       req.on('end', resolve);
     });
     const body = Buffer.concat(chunks);
@@ -248,7 +275,8 @@ const server = http.createServer(async (req, res) => {
               const doc = await ingestor.ingestFile(realPath, { correctNativeText });
               return jsonResponse(res, doc);
             } catch (err) {
-              return jsonResponse(res, { error: err.message }, 500);
+              console.warn('Upload processing error:', err.message);
+              return jsonResponse(res, { error: 'failed to process upload' }, 500);
             } finally {
               try { fs.unlinkSync(realPath); } catch {}
             }
@@ -271,6 +299,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   jsonResponse(res, { error: 'not found' }, 404);
+  } catch (err) {
+    console.warn('Request error:', err.message);
+    if (!res.headersSent) {
+      const status = /too large/i.test(err.message) ? 413 : 500;
+      const msg = status === 413 ? err.message : 'internal error';
+      jsonResponse(res, { error: msg }, status);
+    }
+  }
 });
 
 // ── HTML UI ───────────────────────────────────────────────────────
