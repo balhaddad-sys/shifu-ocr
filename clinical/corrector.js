@@ -317,9 +317,43 @@ function correctWord(rawWord, options = {}) {
     }
   }
 
+  // PREDICTIVE CANDIDATES: meaning is how things PROCEED, not what things ARE.
+  // Use the core engine to predict what word SHOULD come next from context.
+  // Then match garbled text against predictions — dramatically narrows search.
+  let predictedSet = null;
+  if (coreEngine && options.previousWords && options.previousWords.length > 0) {
+    const prevWords = options.previousWords.map(w => w.toLowerCase().replace(/[^a-z]/g, '')).filter(w => w.length > 1);
+    if (prevWords.length > 0) {
+      const lastWord = prevWords[prevWords.length - 1];
+      try {
+        // What typically PROCEEDS from the last word?
+        const nx = coreEngine.softNx(lastWord);
+        if (nx && typeof nx === 'object') {
+          predictedSet = new Map();
+          for (const [predicted, weight] of Object.entries(nx)) {
+            if (predicted.length > 1) {
+              predictedSet.set(predicted, weight);
+            }
+          }
+        }
+      } catch {}
+    }
+  }
+
   const candidates = [];
 
-  for (const vocabWord of candidateWords) {
+  // Add predicted words to candidate pool — if the engine expects them, try them
+  // even if fuzzy indexing didn't find them. Meaning proceeds from context.
+  const allCandidates = new Set(candidateWords);
+  if (predictedSet) {
+    for (const [pw] of predictedSet) {
+      if (Math.abs(pw.length - wordLower.length) <= maxLenDiff + 1) {
+        allCandidates.add(pw);
+      }
+    }
+  }
+
+  for (const vocabWord of allCandidates) {
     // Quick length filter
     if (Math.abs(vocabWord.length - wordLower.length) > maxLenDiff) continue;
 
@@ -366,6 +400,15 @@ function correctWord(rawWord, options = {}) {
     // Signal 7: Proximity — lower raw distance = stronger signal
     const proxSignal = Math.max(0, 1.0 - dist / Math.max(wordLower.length, 3));
     signals.push(proxSignal);
+
+    // Signal 8: PREDICTION — meaning is how things PROCEED.
+    // If the core engine predicts this word should follow the previous words,
+    // it gets a strong boost. The prediction narrows the universe of candidates.
+    let predictionSignal = 0;
+    if (predictedSet && predictedSet.has(vocabWord)) {
+      predictionSignal = Math.min(predictedSet.get(vocabWord), 1.0);
+    }
+    signals.push(predictionSignal);
 
     // ACCUMULATE: count how many signals fire (> 0.3 threshold)
     const firingCount = signals.filter(s => s > 0.3).length;
