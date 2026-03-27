@@ -875,42 +875,50 @@ class ShifuOCR:
         avg_conf = np.mean([l['confidence'] for l in lines]) if lines else 0
 
         # SPATIAL RECONSTRUCTION: extract word coordinates from character bboxes.
-        # The coordinates ARE the table structure — same X = same column.
+        # Detect word boundaries from GAPS between characters (not space chars).
+        # Like somatotopic receptive fields: neighboring chars with small gaps = same word,
+        # large gaps = word boundary (different somatotopic region).
         words_with_coords = []
         for line_result in lines:
             line_bbox = line_result.get('bbox', (0, 0, 0, 0))
-            line_y = (line_bbox[0] + line_bbox[2]) / 2  # vertical center of line
+            line_y = (line_bbox[0] + line_bbox[2]) / 2
 
-            # Split characters into words using spaces
             chars = line_result.get('characters', [])
-            current_word = []
-            current_word_x_start = None
+            if not chars:
+                continue
 
-            for ci, ch_info in enumerate(chars):
-                if ch_info['char'] == ' ':
-                    if current_word:
-                        word_text = ''.join(c['char'] for c in current_word)
-                        x_start = current_word_x_start
-                        x_end = current_word[-1]['bbox'][3] + line_bbox[1]  # absolute x
-                        words_with_coords.append({
-                            'text': word_text,
-                            'x': (x_start + x_end) / 2,
-                            'y': line_y,
-                            'x_start': x_start,
-                            'x_end': x_end,
-                            'line_index': line_result.get('row_index', 0),
-                        })
-                        current_word = []
-                        current_word_x_start = None
+            # Compute median gap to determine space threshold
+            gaps = []
+            for ci in range(1, len(chars)):
+                gap = chars[ci]['bbox'][1] - chars[ci-1]['bbox'][3]
+                gaps.append(gap)
+            space_thresh = np.median(gaps) * 2.0 if gaps else 20
+
+            # Split into words at large gaps
+            current_word = [chars[0]]
+            for ci in range(1, len(chars)):
+                gap = chars[ci]['bbox'][1] - chars[ci-1]['bbox'][3]
+                if gap > space_thresh:
+                    # Word boundary — save current word
+                    word_text = ''.join(c['char'] for c in current_word)
+                    x_start = current_word[0]['bbox'][1]
+                    x_end = current_word[-1]['bbox'][3]
+                    words_with_coords.append({
+                        'text': word_text,
+                        'x': (x_start + x_end) / 2,
+                        'y': line_y,
+                        'x_start': x_start,
+                        'x_end': x_end,
+                        'line_index': line_result.get('row_index', 0),
+                    })
+                    current_word = [chars[ci]]
                 else:
-                    if not current_word:
-                        current_word_x_start = ch_info['bbox'][1] + line_bbox[1]
-                    current_word.append(ch_info)
+                    current_word.append(chars[ci])
 
             if current_word:
                 word_text = ''.join(c['char'] for c in current_word)
-                x_start = current_word_x_start
-                x_end = current_word[-1]['bbox'][3] + line_bbox[1]
+                x_start = current_word[0]['bbox'][1]
+                x_end = current_word[-1]['bbox'][3]
                 words_with_coords.append({
                     'text': word_text,
                     'x': (x_start + x_end) / 2,
