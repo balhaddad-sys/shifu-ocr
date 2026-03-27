@@ -600,10 +600,12 @@ class ShifuOCR:
         
         return char_images
 
-    def read_line(self, grayscale_image, space_threshold=None):
+    def read_line(self, grayscale_image, space_threshold=None, page_offset=(0, 0)):
         """
         Read a line of text from a grayscale image.
-        Returns recognized text with per-character confidence.
+        MRI SPATIAL ENCODING: every character carries absolute (x,y) coordinates
+        in the original page space, like voxel coordinates in MRI k-space.
+        page_offset = (y_offset, x_offset) to convert line-relative → page-absolute.
         """
         char_segments = self.segment_characters(grayscale_image)
         
@@ -651,10 +653,17 @@ class ShifuOCR:
                     if c1.lower() == c2.lower():
                         char = c1.upper() if (is_tall and is_high) else c1.lower()
 
+            # MRI SPATIAL ENCODING: absolute page coordinates
+            abs_bbox = (
+                seg['bbox'][0] + page_offset[0],  # y_start (absolute)
+                seg['bbox'][1] + page_offset[1],  # x_start (absolute)
+                seg['bbox'][2] + page_offset[0],  # y_end (absolute)
+                seg['bbox'][3] + page_offset[1],  # x_end (absolute)
+            )
             results.append({
                 'char': char,
                 'confidence': pred['confidence'],
-                'bbox': seg['bbox'],
+                'bbox': abs_bbox,
                 'candidates': pred['candidates'][:3],
             })
 
@@ -798,7 +807,10 @@ class ShifuOCR:
             seg = p1['seg']
             if adapted:
                 # Full re-read with adapted model
-                result = ocr_engine.read_line(seg['image'], space_threshold=space_threshold)
+                # Pass page offset so characters get absolute coordinates
+                line_y_offset = seg['bbox'][0]
+                result = ocr_engine.read_line(seg['image'], space_threshold=space_threshold,
+                                              page_offset=(line_y_offset, 0))
             else:
                 # No adaptation possible, reconstruct from pass 1
                 text_parts = []

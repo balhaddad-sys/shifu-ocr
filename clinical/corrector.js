@@ -519,7 +519,14 @@ function correctLine(ocrText, options = {}) {
       const trailMatch = rawWord.match(/([^a-zA-Z0-9]*)$/);
       const lead = leadMatch ? leadMatch[1] : '';
       const trail = trailMatch ? trailMatch[1] : '';
-      const core = rawWord.slice(lead.length, rawWord.length - (trail.length || 0)) || rawWord;
+      const coreSlice = rawWord.slice(lead.length, rawWord.length - (trail.length || 0));
+      // If core is empty (all-punctuation token), pass through unchanged
+      if (!coreSlice) {
+        newResults.push({ original: rawWord, corrected: rawWord, confidence: 0.6, flag: 'punctuation', candidates: [] });
+        previousWords.push(rawWord);
+        continue;
+      }
+      const core = coreSlice;
 
       // On pass 2+, use corrected words from previous pass as context
       const contextWords = pass > 0
@@ -543,12 +550,13 @@ function correctLine(ocrText, options = {}) {
       previousWords.push(result.corrected);
     }
 
+    const prevResults = results;
     results = newResults;
 
     // Stop early if no changes from previous pass
     if (pass > 0) {
       const changed = results.some((r, i) =>
-        i < rawWords.length && r.corrected !== (results[i] || {}).corrected);
+        i < prevResults.length && r.corrected !== (prevResults[i] || {}).corrected);
       if (!changed) break;
     }
   }
