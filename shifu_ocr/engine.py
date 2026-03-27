@@ -247,16 +247,23 @@ def extract_features(br):
 class Landscape:
     def __init__(self, label):
         self.label = label
-        self.observations = []  # kept only for small n; cleared after warmup
         self.mean = None
         self.variance = None
-        self._m2 = None  # Welford's running sum of squared differences
+        self._m2 = None
         self.n = 0
+        self.expected_dim = None  # Mod 2: track expected feature vector length
         self.n_correct = 0
         self.n_errors = 0
         self.confused_with = defaultdict(int)
 
     def absorb(self, fv):
+        # Mod 2: Dimension validation
+        if self.expected_dim is None:
+            self.expected_dim = len(fv)
+        elif len(fv) != self.expected_dim:
+            raise ValueError(
+                f"Landscape '{self.label}': expected {self.expected_dim}-dim, "
+                f"got {len(fv)}-dim. Retrain from scratch.")
         self.n += 1
         if self.n == 1:
             self.mean = fv.copy()
@@ -285,6 +292,7 @@ class Landscape:
         return {
             'label': self.label,
             'n': self.n,
+            'expected_dim': self.expected_dim,  # Mod 6
             'mean': self.mean.tolist() if self.mean is not None else None,
             'variance': self.variance.tolist() if self.variance is not None else None,
             'n_correct': self.n_correct,
@@ -296,11 +304,13 @@ class Landscape:
     def from_dict(cls, d):
         l = cls(d['label'])
         l.n = d['n']
+        l.expected_dim = d.get('expected_dim', None)  # Mod 6
         l.mean = np.array(d['mean']) if d['mean'] else None
         l.variance = np.array(d['variance']) if d['variance'] else None
-        # Reconstruct Welford's M2 from saved variance: M2 = variance * n
         if l.variance is not None and l.n > 0:
             l._m2 = l.variance * l.n
+        if l.expected_dim is None and l.mean is not None:
+            l.expected_dim = len(l.mean)
         l.n_correct = d.get('n_correct', 0)
         l.n_errors = d.get('n_errors', 0)
         l.confused_with = defaultdict(int, d.get('confused_with', {}))

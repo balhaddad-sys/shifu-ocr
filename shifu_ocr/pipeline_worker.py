@@ -46,9 +46,10 @@ def load_paddle_ocr():
         return None
 
 
-def read_image(image_path):
+def read_image(image_path, preprocess='auto'):
     """
-    Read image as grayscale numpy array.
+    Read image with configurable preprocessing.
+    Mod 3: auto=detect, full=always 4D MRI, skip=grayscale only.
 
     For colored documents (spreadsheets, ward sheets): isolate dark text from
     colored/bright backgrounds so the FLAIR perturbation engine gets clean input.
@@ -57,6 +58,19 @@ def read_image(image_path):
     """
     from PIL import Image
     img = Image.open(image_path)
+
+    # Mod 3: preprocessing control
+    if preprocess == 'skip':
+        return np.array(img.convert('L'))
+
+    if img.mode == 'L':
+        return np.array(img)
+
+    if preprocess == 'auto' and img.mode in ('RGB', 'RGBA'):
+        arr_quick = np.array(img.convert('RGB'))
+        gray_quick = arr_quick.mean(axis=2)
+        if (gray_quick > 230).mean() > 0.85:
+            return np.array(img.convert('L'))
 
     if img.mode in ('RGB', 'RGBA'):
         from scipy.ndimage import gaussian_filter
