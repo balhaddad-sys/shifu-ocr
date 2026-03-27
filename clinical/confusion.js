@@ -32,6 +32,8 @@ const CONFUSION_PAIRS = {
   'n,r': 0.3, 'n,h': 0.3,                  // n low-confidence
   // MRI-RF model v2 confusions (from real ward census output)
   'q,b': 0.2, 'q,d': 0.2, 'q,o': 0.2, 'q,g': 0.2,  // Q for round chars
+  '4,a': 0.1, '4,e': 0.2, '4,o': 0.2,              // 4↔a/e/o (4D MRI)
+  'z,2': 0.2, 'z,s': 0.3,                           // z↔2/s
   '9,g': 0.1,                                          // 9↔g
   '2,z': 0.2,                                          // 2↔z
   'j,i': 0.2, 'j,l': 0.2, 'j,1': 0.2,                // j↔thin verticals

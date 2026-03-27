@@ -39,7 +39,8 @@ class AdaptiveConfusionProfile {
       'n,r': 0.3, 'n,h': 0.3,                  // n low-confidence
       // MRI-RF model v2 confusions (no-punctuation, from real ward census)
       'q,b': 0.2, 'q,d': 0.2, 'q,o': 0.2, 'q,g': 0.2,  // Q over-predicted for round chars
-      'a,A': 0.1,                                          // case confusion a↔A
+      '4,a': 0.1, '4,e': 0.2, '4,o': 0.2,                // 4↔a/e/o (4D MRI systematic)
+      'z,2': 0.2, 'z,s': 0.3,                             // z↔2/s
       '9,g': 0.1, 'g,9': 0.1,                             // 9↔g loop+tail
       '2,z': 0.2, 'z,2': 0.2,                             // 2↔z angular
       'j,i': 0.2, 'j,l': 0.2, 'j,1': 0.2,                // j↔thin verticals
