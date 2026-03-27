@@ -920,28 +920,59 @@ class ShifuOCR:
                     'line_index': line_result.get('row_index', 0),
                 })
 
-        # RECONSTRUCT TABLE: cluster words by X position into columns
+        # RECONSTRUCT TABLE using receptive field + grid cell principles:
+        # 1. Overlapping receptive fields: scan X axis with Gaussian bins
+        # 2. Gaps in the activation = column boundaries
+        # 3. Grid cell encoding: each word gets a (row, col) relational position
         table = None
         if words_with_coords:
-            # Find column boundaries by clustering X positions
-            x_positions = sorted(set(w['x_start'] for w in words_with_coords))
+            page_w = grayscale_image.shape[1]
+            # Build X-axis histogram: count words whose x_start falls in each bin
+            bin_size = 10
+            n_bins = page_w // bin_size + 1
+            x_hist = np.zeros(n_bins)
+            for w in words_with_coords:
+                b = int(w['x_start'] / bin_size)
+                if 0 <= b < n_bins:
+                    x_hist[b] += 1
+                    # Overlapping receptive field: spread activation to neighbors
+                    if b > 0: x_hist[b-1] += 0.5
+                    if b < n_bins - 1: x_hist[b+1] += 0.5
+
+            # Find column boundaries: wide gaps (>3 empty bins) in the histogram
             columns = []
-            if x_positions:
-                col_start = x_positions[0]
-                col_members = [col_start]
-                for xp in x_positions[1:]:
-                    if xp - col_members[-1] < 40:  # same column if < 40px apart
-                        col_members.append(xp)
-                    else:
-                        columns.append(np.mean(col_members))
-                        col_members = [xp]
-                columns.append(np.mean(col_members))
+            in_col = False
+            col_start_bin = 0
+            for b in range(n_bins):
+                if x_hist[b] > 0 and not in_col:
+                    col_start_bin = b
+                    in_col = True
+                elif x_hist[b] == 0 and in_col:
+                    # Check if gap is wide enough (>3 bins = >30px)
+                    gap_end = b
+                    while gap_end < n_bins and x_hist[gap_end] == 0:
+                        gap_end += 1
+                    if gap_end - b >= 3:  # 30px+ gap = column boundary
+                        columns.append((col_start_bin * bin_size, b * bin_size))
+                        in_col = False
+                        # Skip to end of gap
+            if in_col:
+                columns.append((col_start_bin * bin_size, page_w))
 
             if len(columns) >= 2:
-                # Assign each word to nearest column
+                # Assign each word to the column whose range contains its x_start
+                # (receptive field: word activates the column it falls within)
                 rows_dict = {}
                 for w in words_with_coords:
-                    col_idx = int(np.argmin([abs(w['x'] - c) for c in columns]))
+                    col_idx = 0
+                    for ci, (cs, ce) in enumerate(columns):
+                        if w['x_start'] >= cs and w['x_start'] < ce:
+                            col_idx = ci
+                            break
+                        # Also check if word center falls in column
+                        if w['x'] >= cs and w['x'] < ce:
+                            col_idx = ci
+                            break
                     row_idx = w['line_index']
                     if row_idx not in rows_dict:
                         rows_dict[row_idx] = {}
