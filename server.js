@@ -647,6 +647,23 @@ async function uploadFile(file) {
       }
     }
 
+    // Reconstructed table (from spatial coordinates)
+    if (r.table && r.table.rows && r.table.rows.length > 0) {
+      html += '\\n<b style="color:#7eb8ff">--- Reconstructed Table (' + r.table.columns + ' columns, ' + r.table.rows.length + ' rows) ---</b>\\n';
+      html += '<table style="border-collapse:collapse;width:100%;font-size:0.8rem;margin:8px 0">';
+      for (let ri = 0; ri < r.table.rows.length; ri++) {
+        const row = r.table.rows[ri];
+        const isHeader = ri <= 2 && row.some(c => /patient|name|diagnosis|doctor|status|room|ward/i.test(c));
+        html += '<tr>';
+        for (const cell of row) {
+          const tag = isHeader ? 'th' : 'td';
+          html += '<' + tag + ' style="border:1px solid #2a3050;padding:4px 8px;text-align:left;color:' + (isHeader ? '#7eb8ff' : '#ccc') + '">' + esc(cell || '') + '</' + tag + '>';
+        }
+        html += '</tr>';
+      }
+      html += '</table>\\n';
+    }
+
     // Corrected lines (text/PDF)
     if (r.lines && r.lines.length) {
       html += '\\n<b style="color:#7eb8ff">--- Corrected Output ---</b>\\n';

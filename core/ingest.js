@@ -175,13 +175,18 @@ class DocumentIngestor {
 
   async _ingestImage(filePath) {
     const result = await this.pipeline.processImage(filePath, { format: 'line' });
-    return {
+    const doc = {
       type: 'image',
       format: 'line',
       lines: result.lines || [],
       overallDecision: result.overallDecision,
       raw: result.raw,
     };
+    // Pass through table structure from spatial reconstruction
+    if (result.raw && result.raw.table) {
+      doc.table = result.raw.table;
+    }
+    return doc;
   }
 
   async _ingestCSV(filePath, delimiter) {
