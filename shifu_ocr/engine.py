@@ -539,16 +539,92 @@ class ShifuOCR:
 
     # --- Text Processing ---
 
+    def _segment_cc(self, grayscale_image, binary):
+        """Connected component segmentation — good for isolated, well-separated chars."""
+        from scipy import ndimage
+        labeled, n_components = ndimage.label(binary)
+        if n_components == 0:
+            return []
+        components = []
+        for i in range(1, n_components + 1):
+            coords = np.argwhere(labeled == i)
+            if len(coords) < 4:
+                continue
+            r0, c0 = coords.min(axis=0)
+            r1, c1 = coords.max(axis=0)
+            height = r1 - r0 + 1; width = c1 - c0 + 1
+            if height < 4 or width < 2:
+                continue
+            if width / max(height, 1) > 8 or height / max(width, 1) > 10:
+                continue
+            components.append({'r0': r0, 'c0': c0, 'r1': r1, 'c1': c1,
+                               'area': int((labeled == i).sum())})
+        components.sort(key=lambda x: x['c0'])
+        merged = []; used = set()
+        for i, comp in enumerate(components):
+            if i in used: continue
+            r0, c0, r1, c1, area = comp['r0'], comp['c0'], comp['r1'], comp['c1'], comp['area']
+            for j in range(i + 1, len(components)):
+                if j in used: continue
+                other = components[j]
+                if min(c1, other['c1']) - max(c0, other['c0']) < 0: continue
+                if other['area'] < area * 0.3 or area < other['area'] * 0.3:
+                    r0=min(r0,other['r0']);c0=min(c0,other['c0'])
+                    r1=max(r1,other['r1']);c1=max(c1,other['c1'])
+                    area+=other['area'];used.add(j)
+            merged.append({'r0':r0,'c0':c0,'r1':r1,'c1':c1})
+        merged.sort(key=lambda x: x['c0'])
+        chars = []
+        for comp in merged:
+            r0,c0,r1,c1=comp['r0'],comp['c0'],comp['r1'],comp['c1']
+            r0p=max(0,r0-2);r1p=min(grayscale_image.shape[0],r1+3)
+            c0p=max(0,c0-1);c1p=min(grayscale_image.shape[1],c1+2)
+            crop=grayscale_image[r0p:r1p,c0p:c1p]
+            ch,cw=crop.shape;size=max(ch,cw)+10
+            padded=np.full((size,size),255,dtype=np.uint8)
+            yo=(size-ch)//2;xo=(size-cw)//2
+            padded[yo:yo+ch,xo:xo+cw]=crop
+            chars.append({'image':padded,'bbox':(r0p,c0p,r1p,c1p)})
+        return chars
+
+    def _segment_vproj(self, grayscale_image, binary, min_char_width=3):
+        """Vertical projection segmentation — good for touching/close chars."""
+        v_proj = binary.sum(axis=0).astype(float)
+        is_ink = v_proj > 0
+        segments = []; in_char = False; start = 0
+        for i in range(len(is_ink)):
+            if is_ink[i] and not in_char: start=i;in_char=True
+            elif not is_ink[i] and in_char:
+                if i-start>=min_char_width: segments.append((start,i))
+                in_char=False
+        if in_char and len(is_ink)-start>=min_char_width:
+            segments.append((start,len(is_ink)))
+        chars = []
+        for c_start,c_end in segments:
+            col_slice=binary[:,c_start:c_end]
+            rows_ink=np.where(col_slice.sum(axis=1)>0)[0]
+            if len(rows_ink)==0:continue
+            r_start=max(0,rows_ink[0]-2);r_end=min(binary.shape[0],rows_ink[-1]+3)
+            crop=grayscale_image[r_start:r_end,c_start:c_end]
+            ch,cw=crop.shape;size=max(ch,cw)+10
+            padded=np.full((size,size),255,dtype=np.uint8)
+            yo=(size-ch)//2;xo=(size-cw)//2
+            padded[yo:yo+ch,xo:xo+cw]=crop
+            chars.append({'image':padded,'bbox':(r_start,c_start,r_end,c_end)})
+        return chars
+
     def segment_characters(self, grayscale_image, min_char_width=3):
         """
-        Mod 5: Connected component labeling as PRIMARY path.
-        Vertical projection as FALLBACK.
+        ADAPTIVE SEGMENTATION — the eye accommodates.
 
-        CC is better: handles i-dots, diacritics, variable-width chars.
-        Each character is a disconnected island (medium displacement theory).
+        Try BOTH VP and CC, predict a SAMPLE from each, keep the one
+        with higher average confidence. Confidence IS the sharpness signal.
+        The model tells you which method produces crops it recognizes.
+
+        Over time, as the model trains on CC crops via document adaptation,
+        CC confidence rises and the system naturally transitions.
         """
         from skimage.filters import threshold_otsu
-        from scipy import ndimage
 
         try:
             thresh = threshold_otsu(grayscale_image)
@@ -558,107 +634,38 @@ class ShifuOCR:
         binary = (grayscale_image < thresh).astype(np.uint8)
         binary = morphology.remove_small_objects(binary.astype(bool), min_size=5).astype(np.uint8)
 
-        # --- PRIMARY: Connected component segmentation ---
-        labeled, n_components = ndimage.label(binary)
+        vp_chars = self._segment_vproj(grayscale_image, binary, min_char_width)
+        cc_chars = self._segment_cc(grayscale_image, binary)
 
-        if n_components > 0:
-            components = []
-            for i in range(1, n_components + 1):
-                coords = np.argwhere(labeled == i)
-                if len(coords) < 4:
-                    continue
-                r0, c0 = coords.min(axis=0)
-                r1, c1 = coords.max(axis=0)
-                height = r1 - r0 + 1
-                width = c1 - c0 + 1
-                if height < 4 or width < 2:
-                    continue
-                if width / max(height, 1) > 8 or height / max(width, 1) > 10:
-                    continue  # filter table borders
-                components.append({'r0': r0, 'c0': c0, 'r1': r1, 'c1': c1,
-                                   'area': int((labeled == i).sum())})
+        if not vp_chars and not cc_chars:
+            return []
+        if not vp_chars:
+            return cc_chars
+        if not cc_chars:
+            return vp_chars
 
-            components.sort(key=lambda x: x['c0'])
+        # ACCOMMODATION: sample predictions from both, compare confidence
+        sample_size = min(5, len(vp_chars), len(cc_chars))
 
-            # Merge vertically close components (i-dots, j-dots, diacritics)
-            merged = []
-            used = set()
-            for i, comp in enumerate(components):
-                if i in used:
-                    continue
-                r0, c0, r1, c1, area = comp['r0'], comp['c0'], comp['r1'], comp['c1'], comp['area']
-                for j in range(i + 1, len(components)):
-                    if j in used:
-                        continue
-                    other = components[j]
-                    h_overlap = min(c1, other['c1']) - max(c0, other['c0'])
-                    if h_overlap < 0:
-                        continue
-                    if other['area'] < area * 0.3 or area < other['area'] * 0.3:
-                        r0 = min(r0, other['r0']); c0 = min(c0, other['c0'])
-                        r1 = max(r1, other['r1']); c1 = max(c1, other['c1'])
-                        area += other['area']; used.add(j)
-                merged.append({'r0': r0, 'c0': c0, 'r1': r1, 'c1': c1})
+        def sample_confidence(chars, n):
+            if len(chars) <= n:
+                indices = range(len(chars))
+            else:
+                start = max(0, (len(chars) - n) // 2)
+                indices = range(start, start + n)
+            total_conf = 0; count = 0
+            for idx in indices:
+                pred = self.predict_character(chars[idx]['image'])
+                total_conf += pred['confidence']; count += 1
+            return total_conf / max(count, 1)
 
-            merged.sort(key=lambda x: x['c0'])
+        vp_conf = sample_confidence(vp_chars, sample_size)
+        cc_conf = sample_confidence(cc_chars, sample_size)
 
-            if merged:
-                char_images = []
-                for comp in merged:
-                    r0, c0, r1, c1 = comp['r0'], comp['c0'], comp['r1'], comp['c1']
-                    r0p = max(0, r0 - 2); r1p = min(grayscale_image.shape[0], r1 + 3)
-                    c0p = max(0, c0 - 1); c1p = min(grayscale_image.shape[1], c1 + 2)
-                    char_crop = grayscale_image[r0p:r1p, c0p:c1p]
-                    ch, cw = char_crop.shape
-                    size = max(ch, cw) + 10
-                    padded = np.full((size, size), 255, dtype=np.uint8)
-                    y_off = (size - ch) // 2; x_off = (size - cw) // 2
-                    padded[y_off:y_off + ch, x_off:x_off + cw] = char_crop
-                    char_images.append({'image': padded, 'bbox': (r0p, c0p, r1p, c1p)})
-                if char_images:
-                    return char_images
-
-        # --- FALLBACK: Vertical projection ---
-        v_proj = binary.sum(axis=0).astype(float)
-        is_ink = v_proj > 0
-        segments = []
-        in_char = False
-        start = 0
-
-        for i in range(len(is_ink)):
-            if is_ink[i] and not in_char:
-                start = i; in_char = True
-            elif not is_ink[i] and in_char:
-                if i - start >= min_char_width:
-                    segments.append((start, i))
-                in_char = False
-
-        if in_char and len(is_ink) - start >= min_char_width:
-            segments.append((start, len(is_ink)))
-
-        char_images = []
-        for c_start, c_end in segments:
-            col_slice = binary[:, c_start:c_end]
-            row_proj = col_slice.sum(axis=1)
-            rows_with_ink = np.where(row_proj > 0)[0]
-            if len(rows_with_ink) == 0:
-                continue
-            r_start = max(0, rows_with_ink[0] - 2)
-            r_end = min(binary.shape[0], rows_with_ink[-1] + 3)
-            char_crop = grayscale_image[r_start:r_end, c_start:c_end]
-            ch, cw = char_crop.shape
-            size = max(ch, cw) + 10
-            padded = np.full((size, size), 255, dtype=np.uint8)
-            y_off = (size - ch) // 2
-            x_off = (size - cw) // 2
-            padded[y_off:y_off+ch, x_off:x_off+cw] = char_crop
-            
-            char_images.append({
-                'image': padded,
-                'bbox': (r_start, c_start, r_end, c_end),
-            })
-        
-        return char_images
+        # Pick higher confidence. Tie goes to VP (established training match)
+        if cc_conf > vp_conf + 0.05:
+            return cc_chars
+        return vp_chars
 
     def read_line(self, grayscale_image, space_threshold=None, page_offset=(0, 0)):
         """
