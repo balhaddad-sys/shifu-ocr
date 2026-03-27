@@ -181,30 +181,47 @@ class ShifuPipeline {
 
   _processLineResult(ocrResult) {
     const lines = ocrResult.lines || [ocrResult.text || ''];
-    // SOMATOTOPIC CORRECTION: use spatial position to determine column type.
-    // Like the visual cortex where each position has a dedicated calculator
-    // tuned to what it expects to see at that location.
+    // ATL HUB: the Anterior Temporal Lobe is where all modalities converge.
+    // Like the ATL, this function is the integration point where:
+    // - OCR text (from FLAIR engine)
+    // - Spatial coordinates (from somatotopic map)
+    // - Document structure (from table reconstruction)
+    // - Clinical vocabulary (from corrector)
+    // all meet and inform each other.
 
-    // Learn page width from the table structure (if available)
+    // Use table structure for spatial column detection
     const table = ocrResult.table;
-    const nCols = table ? table.columns : 0;
+    // Ward census column types by position index
+    const columnTypeMap = ['ward_structure', 'names', 'diagnosis', 'names', 'ward_structure'];
 
-    const results = lines.map(line => {
+    const results = lines.map((line, lineIdx) => {
       if (!line) return null;
       const lower = line.toLowerCase();
+
+      // ATL integration: determine column type from SPATIAL position (table row)
+      // or from TEXT pattern (fallback)
       let columnType = null;
 
-      // "Ward XX" section headers
-      if (/^w[a-z]*d?\s*\d/i.test(line.trim()) || /ward/i.test(lower)) {
-        columnType = 'ward_structure';
+      // If table structure available, use the dominant column for this line
+      if (table && table.rows && table.rows[lineIdx]) {
+        const row = table.rows[lineIdx];
+        // Find the column with the most content in this row
+        let longestCol = 0, longestLen = 0;
+        row.forEach((cell, ci) => {
+          if (cell.length > longestLen) { longestLen = cell.length; longestCol = ci; }
+        });
+        columnType = columnTypeMap[longestCol] || 'diagnosis';
       }
-      // Lines starting with numbers = patient rows
-      else if (/^\d/.test(line.trim())) {
-        columnType = 'diagnosis';
-      }
-      // Known section labels
-      else if (/icu|er|unassign|chronic/i.test(lower)) {
-        columnType = 'ward_structure';
+
+      // Fallback: text pattern detection
+      if (!columnType) {
+        if (/^w[a-z]*d?\s*\d/i.test(line.trim()) || /ward/i.test(lower)) {
+          columnType = 'ward_structure';
+        } else if (/^\d/.test(line.trim())) {
+          columnType = 'diagnosis';
+        } else if (/icu|er|unassign|chronic/i.test(lower)) {
+          columnType = 'ward_structure';
+        }
       }
 
       return this.processText(line, { ocrSource: true, columnType });

@@ -2,45 +2,33 @@
 // Topology-predicted character substitution costs.
 // Lower cost = more likely OCR confusion = cheaper substitution.
 
+// ALL KEYS LOWERCASE + SORTED — ocrWeightedDistance lowercases inputs,
+// and lookup uses sorted key for consistency with adaptive profile.
 const CONFUSION_PAIRS = {
-  'O,0': 0.1, 'o,0': 0.1, 'D,O': 0.3, 'D,0': 0.3, 'Q,O': 0.3,
-  'l,1': 0.2, 'I,1': 0.2, 'I,l': 0.1, 'l,|': 0.2,
-  '5,S': 0.3, '5,s': 0.3, '8,B': 0.3, '6,G': 0.4, '6,b': 0.4,
-  '2,Z': 0.4, '2,z': 0.4, '9,g': 0.2, '9,q': 0.4,
-  'r,n': 0.3, 'rn,m': 0.2, 'cl,d': 0.3, 'vv,w': 0.3,
-  'm,n': 0.4, 'u,v': 0.5, 'u,n': 0.5, 'c,e': 0.5,
-  'h,b': 0.5, 'p,q': 0.4, 'f,t': 0.4, 'i,j': 0.4,
-  'V,W': 0.4, 'E,F': 0.4,
-  'a,A': 0.3, 'c,C': 0.2, 'o,O': 0.1, 's,S': 0.2,
-  'v,V': 0.2, 'w,W': 0.2, 'x,X': 0.2, 'z,Z': 0.2,
+  // Classic OCR confusions
+  '0,o': 0.1, 'd,o': 0.3, '0,d': 0.3, 'o,q': 0.3,
+  '1,l': 0.2, '1,i': 0.2, 'i,l': 0.1, '|,l': 0.2,
+  '5,s': 0.3, '8,b': 0.3, '6,g': 0.1, '6,b': 0.3,
+  '2,z': 0.2, '9,g': 0.1, '9,q': 0.4,
+  'n,r': 0.3, 'm,rn': 0.2, 'cl,d': 0.3, 'vv,w': 0.3,
+  'm,n': 0.4, 'u,v': 0.3, 'n,u': 0.5, 'c,e': 0.5,
+  'b,h': 0.5, 'p,q': 0.4, 'f,t': 0.4, 'i,j': 0.4,
+  'v,w': 0.4, 'e,f': 0.4,
   'a,e': 0.4, 'a,o': 0.4, 'e,i': 0.4, 'f,l': 0.4,
-  's,e': 0.5, 'b,d': 0.4, 'r,n': 0.3, 'd,o': 0.3,
-  // FLAIR engine systematic confusions (shape-similar under perturbation)
-  // These must be LOWERCASE since ocrWeightedDistance lowercases inputs
-  'i,t': 0.1, 't,i': 0.1,   // vertical stroke: I/i → t
-  'i,l': 0.1, 'l,i': 0.1,   // vertical stroke: i ↔ l
-  '6,g': 0.1, 'g,6': 0.1,   // loop + tail
-  '1,j': 0.2, 'j,1': 0.2,   // vertical stroke
-  'c,x': 0.2, 'x,c': 0.2,   // crossing strokes
-  'u,v': 0.3,                // open curves
-  'g,q': 0.3, 'g,9': 0.2,   // descender + loop
-  '3,s': 0.2,                // curved forms
-  // Additional FLAIR confusions from real document analysis
-  'x,s': 0.3, 'x,k': 0.3, 'x,t': 0.3,   // X over-predicted
-  'u,o': 0.3, 'u,a': 0.3,                  // U over-predicted
-  'g,d': 0.3, 'g,a': 0.3, 'g,o': 0.3,     // g over-predicted
-  'n,r': 0.3, 'n,h': 0.3,                  // n low-confidence
-  // MRI-RF model v2 confusions (from real ward census output)
-  'q,b': 0.2, 'q,d': 0.2, 'q,o': 0.2, 'q,g': 0.2,  // Q for round chars
-  '4,a': 0.1, '4,e': 0.2, '4,o': 0.2,              // 4↔a/e/o (4D MRI)
-  '3,b': 0.2, '0,n': 0.2, '0,o': 0.1,              // 3↔B, 0↔N/O
-  '6,e': 0.1, '6,b': 0.3,                           // 6↔e/b
-  'z,2': 0.2, 'z,s': 0.3,                           // z↔2/s
-  '9,g': 0.1,                                          // 9↔g
-  '2,z': 0.2,                                          // 2↔z
-  'j,i': 0.2, 'j,l': 0.2, 'j,1': 0.2,                // j↔thin verticals
-  'w,m': 0.3,                                          // w↔m
-  'v,u': 0.2,                                          // v↔u
+  'e,s': 0.5, 'b,d': 0.4,
+  // FLAIR engine systematic confusions
+  'i,t': 0.1, 'g,q': 0.3,
+  '1,j': 0.2, 'c,x': 0.2, '3,s': 0.2,
+  'k,x': 0.3, 's,x': 0.3, 't,x': 0.3,
+  'a,u': 0.3, 'o,u': 0.3,
+  'a,g': 0.3, 'd,g': 0.3, 'g,o': 0.3,
+  'h,n': 0.3,
+  // 4D MRI systematic confusions
+  'b,q': 0.2, 'd,q': 0.2, 'g,q': 0.2, 'o,q': 0.2,
+  '4,a': 0.1, '4,e': 0.2, '4,o': 0.2,
+  '0,n': 0.2, '3,b': 0.2, '6,e': 0.1,
+  's,z': 0.3, 'm,w': 0.3,
+  'i,l': 0.1, 'j,l': 0.2,
 };
 
 // Optional adaptive profile can be injected to use learned costs
@@ -60,9 +48,9 @@ function getConfusionCost(char1, char2) {
   if (_adaptiveProfile && typeof _adaptiveProfile.getCost === 'function') {
     return _adaptiveProfile.getCost(char1, char2);
   }
-  const key1 = `${char1},${char2}`;
-  const key2 = `${char2},${char1}`;
-  return CONFUSION_PAIRS[key1] ?? CONFUSION_PAIRS[key2] ?? 1.0;
+  // Sorted key — consistent with adaptive profile's sorted lookup
+  const key = [char1.toLowerCase(), char2.toLowerCase()].sort().join(',');
+  return CONFUSION_PAIRS[key] ?? 1.0;
 }
 
 function ocrWeightedDistance(str1, str2) {
