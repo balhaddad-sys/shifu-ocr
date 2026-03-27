@@ -93,6 +93,8 @@ class AdaptiveConfusionProfile {
    */
   getCost(char1, char2) {
     if (char1 === char2) return 0.0;
+    // Case is free — same letter, same FLAIR response
+    if (char1.toLowerCase() === char2.toLowerCase()) return 0.0;
     const key = [char1, char2].sort().join(',');
     const baseCost = this.baseCosts[key] ?? 1.0;
     const confusionCount = this.confusionCounts[key] || 0;

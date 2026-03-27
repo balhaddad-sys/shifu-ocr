@@ -48,6 +48,10 @@ function setAdaptiveProfile(profile) {
 
 function getConfusionCost(char1, char2) {
   if (char1 === char2) return 0.0;
+  // CASE IS FREE: same letter, different case = same character.
+  // FLAIR perturbation response is identical for 'a' and 'A'.
+  // Case is spatial (baseline position), not shape.
+  if (char1.toLowerCase() === char2.toLowerCase()) return 0.0;
   // Use adaptive profile if available — it blends learned data with base costs
   if (_adaptiveProfile && typeof _adaptiveProfile.getCost === 'function') {
     return _adaptiveProfile.getCost(char1, char2);

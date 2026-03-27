@@ -254,8 +254,14 @@ function correctWord(rawWord, options = {}) {
   if (isKnown) {
     const freqBoost = learningEngine
       ? learningEngine.vocabulary.getFrequencyBoost(wordLower) : 0;
+    // Normalize case: if word matches vocabulary but has mixed case from OCR,
+    // use the lowercase form (vocabulary canonical form).
+    // Preserve all-caps (acronyms like CVA, AKI) and Title Case (names).
+    const isAllCaps = word === word.toUpperCase() && word.length <= 5;
+    const isTitleCase = word[0] === word[0].toUpperCase() && word.slice(1) === word.slice(1).toLowerCase();
+    const normalized = isAllCaps ? word : (isTitleCase ? word : wordLower);
     return {
-      original: word, corrected: word,
+      original: word, corrected: normalized,
       confidence: Math.min(0.9 + freqBoost * 0.1, 1.0),
       flag: 'exact', candidates: [],
     };
