@@ -15,13 +15,13 @@ function engine() {
 }
 
 function generateCandidates(eng, word, maxDist, maxCandidates) {
-  if (maxDist === undefined) maxDist = Math.max(word.length * 0.5, 2);
+  if (maxDist === undefined) maxDist = Math.max(word.length * 0.3, 1.5);
   if (maxCandidates === undefined) maxCandidates = 5;
   const candidates = [];
   for (const known of Object.keys(eng.wf)) {
     const lenDiff = Math.abs(known.length - word.length);
-    if (lenDiff > Math.max(2, word.length * 0.4)) continue;
-    if (known.length < Math.ceil(word.length * 0.6)) continue;
+    if (lenDiff > Math.max(1, word.length * 0.3)) continue;
+    if (known.length < Math.ceil(word.length * 0.7)) continue;
     const d = ocrDist(word, known);
     if (d <= maxDist && d > 0) candidates.push({ word: known, distance: d });
   }
@@ -41,6 +41,14 @@ function process(text) {
     const w = words[i];
     if (/^[\d.]+$/.test(w)) continue;
     if (eng._meaningRichness(w) > 0) continue;
+    // Only auto-correct words that look like OCR damage:
+    // - Has digit mixed with letters (d0ctor, pat1ent)
+    // - Very short (<=3 chars) and not a common word
+    // - Otherwise: leave unknown words alone (they might be real words
+    //   the corpus hasn't seen, like "regularly", "approximately", etc.)
+    const hasOcrSignature = /\d/.test(w) && /[a-z]/.test(w);
+    const isVeryShort = w.length <= 3;
+    if (!hasOcrSignature && !isVeryShort && w.length >= 5) continue;
     const candidates = generateCandidates(eng, w);
     if (candidates.length > 0) candidatesMap[i] = candidates;
   }

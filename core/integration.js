@@ -78,6 +78,9 @@ function handleStatsRequest(req, res) {
 let _learnCount = 0;
 
 function learn(originalText, correctedText) {
+  if (!originalText || !correctedText || !originalText.trim() || !correctedText.trim()) {
+    return { learned: false, reason: 'empty_input' };
+  }
   ensureBrain();
   const eng = shifu.engine();
   eng.feed(correctedText);

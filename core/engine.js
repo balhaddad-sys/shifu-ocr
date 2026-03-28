@@ -412,7 +412,7 @@ class ShifuEngine {
   }
 
   read(text, candidatesMap = {}) {
-    const raw = (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(w => w.length > 0);
+    const raw = (text.toLowerCase().match(/[a-z0-9]+(?:\.[a-z0-9]+)*/g) || []).filter(w => w.length > 0);
     if (raw.length === 0) return { words: [], corrected: '', field: new Map(), decisions: [] };
     const field = new Map(); const finalWords = []; const decisions = [];
     for (let i = 0; i < raw.length; i++) {
