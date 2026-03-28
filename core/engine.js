@@ -341,6 +341,106 @@ class ShifuEngine {
     return this.accommodate(variants, text => { const result = this.scoreSentence(text); return result.settledCoherence; });
   }
 
+  _meaningRichness(word) {
+    const w = word.toLowerCase(); let richness = 0;
+    for (const source of Object.keys(this.nx)) { if (this.nx[source][w]) richness += 1; }
+    if (this.nx[w]) richness += Object.keys(this.nx[w]).length;
+    for (const source of Object.keys(this.snx)) { if (this.snx[source][w]) richness += 0.5; }
+    if (this.co[w]) richness += Object.keys(this.co[w]).length * 0.3;
+    if (this.res[w]) richness += Object.keys(this.res[w]).length * 0.5;
+    return richness;
+  }
+
+  infer(word) {
+    const w = word.toLowerCase();
+    if (w in this.wf) return { word: w, nearest: w, distance: 0, known: true, freq: this.wf[w] };
+    let bestWord = null, bestDist = Infinity, bestLenDiff = Infinity;
+    for (const known of Object.keys(this.wf)) {
+      const d = ocrDist(w, known); const lenDiff = Math.abs(w.length - known.length);
+      if (d < bestDist || (d === bestDist && lenDiff < bestLenDiff)) { bestDist = d; bestWord = known; bestLenDiff = lenDiff; }
+    }
+    return { word: w, nearest: bestWord, distance: bestDist, known: false, freq: bestWord ? (this.wf[bestWord] || 0) : 0 };
+  }
+
+  choose(words, position, candidates) {
+    if (!candidates || candidates.length === 0 || position >= words.length) return { word: words[position] || '', reason: 'no_candidates', accepted: false };
+    const original = words[position]; const NOISE = 0.001;
+    const origRichness = this._meaningRichness(original);
+    if (origRichness > 0) return { word: original, original, reason: 'already_understood', richness: origRichness, accepted: false };
+    const contextWords = words.filter((_, i) => i !== position);
+    const field = new Map();
+    for (const w of contextWords) { const wave = this.activateInContext(w, field); for (const [node, energy] of wave) field.set(node, (field.get(node) || 0) + energy); }
+    const scored = [];
+    for (const cand of candidates) {
+      const candWord = typeof cand === 'string' ? cand : cand.word || cand[0];
+      const candWave = this.activate(candWord);
+      const alignment = fieldCosine(candWave, field);
+      const fieldEnergy = field.get(candWord) || 0;
+      const richness = this._meaningRichness(candWord);
+      scored.push({ word: candWord, alignment, fieldEnergy, richness, score: alignment + fieldEnergy + (richness > 0 ? 0.01 : 0) });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const best = scored[0];
+    if (best.score > NOISE) return { word: best.word, original, reason: 'context_aligned', alignment: best.alignment, fieldEnergy: best.fieldEnergy, richness: best.richness, accepted: true, scores: scored };
+    let bestInferred = null, bestInferScore = -1;
+    for (const s of scored) {
+      const inf = this.infer(s.word);
+      if (inf.nearest && inf.nearest !== s.word) {
+        const infWave = this.activate(inf.nearest);
+        const infScore = (field.size > 0 ? fieldCosine(infWave, field) : 0) + (field.get(inf.nearest) || 0);
+        if (infScore > bestInferScore) { bestInferScore = infScore; bestInferred = { word: s.word, via: inf.nearest, score: infScore }; }
+      }
+    }
+    if (bestInferred && bestInferScore > NOISE) return { word: bestInferred.word, original, reason: 'inferred_via_' + bestInferred.via, accepted: true, scores: scored };
+    return { word: original, original, reason: 'no_alignment', accepted: false, scores: scored };
+  }
+
+  chooseLine(words, candidatesPerPosition) {
+    const corrected = [...words]; const decisions = [];
+    for (const [pos, cands] of Object.entries(candidatesPerPosition).sort((a,b) => a[0]-b[0])) {
+      const p = parseInt(pos);
+      if (p >= corrected.length || !cands || cands.length === 0) continue;
+      const result = this.choose(corrected, p, cands);
+      if (result.accepted && result.word !== corrected[p]) { decisions.push({ position: p, from: corrected[p], to: result.word, reason: result.reason }); corrected[p] = result.word; }
+    }
+    return { original: words.join(' '), corrected: corrected.join(' '), words: corrected, decisions };
+  }
+
+  accommodateWord(words, position, candidates) {
+    const result = this.choose(words, position, candidates);
+    return { best: result.word, original: result.original, coherenceGain: 0, accepted: result.accepted, reason: result.reason, scores: result.scores || [] };
+  }
+
+  read(text, candidatesMap = {}) {
+    const raw = (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(w => w.length > 0);
+    if (raw.length === 0) return { words: [], corrected: '', field: new Map(), decisions: [] };
+    const field = new Map(); const finalWords = []; const decisions = [];
+    for (let i = 0; i < raw.length; i++) {
+      const word = raw[i]; const candidates = candidatesMap[i] || null;
+      const richness = this._meaningRichness(word);
+      if (richness > 0 && !candidates) { finalWords.push(word); const wave = this.activateInContext(word, field); for (const [n, e] of wave) field.set(n, (field.get(n) || 0) + e); continue; }
+      if (richness > 0 && candidates) {
+        const candWords = candidates.map(c => typeof c === 'string' ? c : c[0]);
+        if (candWords.includes(word)) { finalWords.push(word); const wave = this.activateInContext(word, field); for (const [n, e] of wave) field.set(n, (field.get(n) || 0) + e); continue; }
+        const origWave = this.activate(word); const origScore = (field.size > 0 ? fieldCosine(origWave, field) : 0) + (field.get(word) || 0);
+        let better = null;
+        for (const cand of candidates) { const c = typeof cand === 'string' ? cand : cand[0]; const cRich = this._meaningRichness(c); if (cRich === 0) continue; const cW = this.activate(c); const cS = (field.size > 0 ? fieldCosine(cW, field) : 0) + (field.get(c) || 0); if (cS > origScore + 0.05) better = { word: c, score: cS }; }
+        const chosen = better ? better.word : word;
+        if (better) decisions.push({ position: i, from: word, to: chosen, reason: 'field_prefers' });
+        finalWords.push(chosen); const wave = this.activateInContext(chosen, field); for (const [n, e] of wave) field.set(n, (field.get(n) || 0) + e); continue;
+      }
+      if (!candidates) { finalWords.push(word); const wave = this.activateInContext(word, field); for (const [n, e] of wave) field.set(n, (field.get(n) || 0) + e); continue; }
+      let bestCand = null, bestScore = -1;
+      for (const cand of candidates) { const c = typeof cand === 'string' ? cand : cand[0]; const cW = this.activate(c); const cAlign = field.size > 0 ? fieldCosine(cW, field) : 0; const cEnergy = field.get(c) || 0; const cRich = this._meaningRichness(c); const cScore = cAlign + cEnergy + (cRich > 0 ? 0.01 : 0); if (cScore > bestScore) { bestScore = cScore; bestCand = c; } }
+      if (bestCand && bestScore > 0.001) { finalWords.push(bestCand); decisions.push({ position: i, from: word, to: bestCand, reason: 'field_aligned' }); const wave = this.activateInContext(bestCand, field); for (const [n, e] of wave) field.set(n, (field.get(n) || 0) + e); continue; }
+      let bestInf = null, bestInfScore = -1;
+      for (const cand of candidates) { const c = typeof cand === 'string' ? cand : cand[0]; const inf = this.infer(c); if (inf.nearest && inf.nearest !== c) { const iW = this.activate(inf.nearest); const iS = (field.size > 0 ? fieldCosine(iW, field) : 0) + (field.get(inf.nearest) || 0); if (iS > bestInfScore) { bestInfScore = iS; bestInf = { word: c, via: inf.nearest }; } } }
+      if (bestInf && bestInfScore > 0.001) { finalWords.push(bestInf.word); decisions.push({ position: i, from: word, to: bestInf.word, reason: 'inferred_' + bestInf.via }); const wave = this.activateInContext(bestInf.word, field); for (const [n, e] of wave) field.set(n, (field.get(n) || 0) + e); continue; }
+      finalWords.push(word); const wave = this.activateInContext(word, field); for (const [n, e] of wave) field.set(n, (field.get(n) || 0) + e);
+    }
+    return { words: finalWords, corrected: finalWords.join(' '), field, decisions };
+  }
+
   stats(){const v=Object.keys(this.wf);return{version:this.version,sentences:this.ns,tokens:this.nt,vocabulary:v.length,bigrams:Object.keys(this.bf).length,cooccurrences:Object.values(this.co).reduce((a,v)=>a+Object.keys(v).length,0),mature:v.filter(w=>this.wf[w]>=10).length,transitions:Object.values(this.nx).reduce((a,v)=>a+Object.keys(v).length,0),trajectories:Object.values(this.nx2).reduce((a,v)=>a+Object.values(v).reduce((b,c)=>b+Object.keys(c).length,0),0),skipGrams:Object.values(this.snx).reduce((a,v)=>a+Object.keys(v).length,0),resonancePairs:Object.values(this.res).reduce((a,v)=>a+Object.keys(v).length,0)/2,medianFreq:this._medianFreq,lastDecay:this._lastDecay};}
   serialize(){const tr=(o,n)=>Object.fromEntries(Object.entries(o).map(([k,v])=>[k,Array.isArray(v)?v.slice(-n):v]));return JSON.stringify({version:this.version,config:this.config,wf:this.wf,co:this.co,wp:tr(this.wp,50),bf:this.bf,fs:this.fs,ls:this.ls,eg:tr(this.eg,30),ph:tr(this.ph,30),nv:tr(this.nv,20),sl:tr(this.sl,30),sn:tr(this.sn,30),sd:tr(this.sd,30),nx:this.nx,px:this.px,nx2:this.nx2,snx:this.snx,res:this.res,gp:this._globalPos.slice(-200),gsl:this._globalSentLen.slice(-200),gfs:this._globalFreqSum,gwc:this._globalWordCount,pn:Object.fromEntries(Object.entries(this._pn).map(([k,v])=>[k,[...v]])),ns:this.ns,nt:this.nt,lastDecay:this._lastDecay});}
   static deserialize(json){const d=JSON.parse(json);const e=new ShifuEngine(d.config||CONFIG);e.wf=d.wf||{};e.co=d.co||{};e.wp=d.wp||{};e.bf=d.bf||{};e.fs=d.fs||{};e.ls=d.ls||{};e.eg=d.eg||{};e.ph=d.ph||{};e.nv=d.nv||{};e.sl=d.sl||{};e.sn=d.sn||{};e.sd=d.sd||{};e.nx=d.nx||{};e.px=d.px||{};e.nx2=d.nx2||{};e.snx=d.snx||{};e.res=d.res||{};e._globalPos=d.gp||[];e._globalSentLen=d.gsl||[];e._globalFreqSum=d.gfs||0;e._globalWordCount=d.gwc||0;if(d.pn)e._pn=Object.fromEntries(Object.entries(d.pn).map(([k,v])=>[k,new Set(v)]));e.ns=d.ns||0;e.nt=d.nt||0;e._lastDecay=d.lastDecay||0;for(const w of Object.keys(e.wf))e._reindex(w);e._updateMedianFreq();return e;}
