@@ -29,13 +29,47 @@ Author: Bader & Claude — March 2026
 from .engine import ShifuOCR, Landscape
 from .clinical import ClinicalPostProcessor
 from .ensemble import ShifuEnsemble, create_ensemble, train_ensemble
+from .mri_flair import (
+    FLAIR_OCR, FLAIRLandscape, extract_flair_signature,
+    T1Weighted, T2Weighted, FLAIRSequence, DWISequence, SWISequence, MRASequence,
+)
+from .topology_coherence import (
+    TopologyCaps, CoherenceCappedDetector, TopologyCoherenceFusion,
+    AdaptiveTopologyCaps,
+)
+from .image_interpreter import (
+    ImageInterpreter, MultiEngineRecognizer,
+    create_interpreter, interpret_image, interpret_region,
+)
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __all__ = [
+    # Core
     "ShifuOCR",
     "Landscape",
     "ClinicalPostProcessor",
     "ShifuEnsemble",
     "create_ensemble",
     "train_ensemble",
+    # MRI FLAIR
+    "FLAIR_OCR",
+    "FLAIRLandscape",
+    "extract_flair_signature",
+    "T1Weighted",
+    "T2Weighted",
+    "FLAIRSequence",
+    "DWISequence",
+    "SWISequence",
+    "MRASequence",
+    # Topology Coherence
+    "TopologyCaps",
+    "CoherenceCappedDetector",
+    "TopologyCoherenceFusion",
+    "AdaptiveTopologyCaps",
+    # Image Interpreter
+    "ImageInterpreter",
+    "MultiEngineRecognizer",
+    "create_interpreter",
+    "interpret_image",
+    "interpret_region",
 ]
