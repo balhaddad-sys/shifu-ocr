@@ -107,7 +107,7 @@ function jsonResponse(res, data, status = 200) {
   res.end(JSON.stringify(data, null, 2));
 }
 
-const MAX_BODY_SIZE = 100 * 1024 * 1024; // 100 MB — large medical PDFs
+const MAX_BODY_SIZE = Infinity; // No size limit — Shifu eats everything
 const MAX_TEXT_LENGTH = 100000; // 100k chars for text inputs
 
 function parseBody(req) {
@@ -116,11 +116,6 @@ function parseBody(req) {
     let size = 0;
     req.on('error', err => reject(err));
     req.on('data', chunk => {
-      size += chunk.length;
-      if (size > MAX_BODY_SIZE) {
-        req.destroy();
-        return reject(new Error('Request body too large'));
-      }
       body += chunk;
     });
     req.on('end', () => {
@@ -143,6 +138,13 @@ const server = http.createServer(async (req, res) => {
       'Access-Control-Allow-Headers': 'Content-Type, Accept',
       'Access-Control-Max-Age': '86400',
     });
+    res.end();
+    return;
+  }
+
+  // Favicon — return empty to suppress browser 404
+  if (path === '/favicon.ico') {
+    res.writeHead(204);
     res.end();
     return;
   }
@@ -286,11 +288,6 @@ const server = http.createServer(async (req, res) => {
     await new Promise((resolve, reject) => {
       req.on('error', err => reject(err));
       req.on('data', chunk => {
-        uploadSize += chunk.length;
-        if (uploadSize > MAX_BODY_SIZE) {
-          req.destroy();
-          return reject(new Error('Upload too large'));
-        }
         chunks.push(chunk);
       });
       req.on('end', resolve);
@@ -450,6 +447,7 @@ const HTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>Shifu</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--bg:#0a0a0a;--surface:#111;--accent:#c8a97e;--accent2:#a08050;--green:#7c9885;--blue:#5b8fd4;--amber:#f59e0b;--red:#ef4444;--purple:#a78bfa;--text:#e8e8e8;--dim:#777;--faint:#444;--user-bg:#161626;--shifu-bg:#141e14;--border:#1e1e1e;--radius:16px}
@@ -576,71 +574,75 @@ async function send(){
 }
 
 // ── File upload handler (multi-file, auto-feed to mind) ──
+// ── PDF.js client-side extraction — no server upload needed ──
+// PDFs are read in the BROWSER. Text extracted page by page.
+// Only the text goes to the server. Any size PDF works.
+if (typeof pdfjsLib !== 'undefined') pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+async function extractPdfText(file, onPage) {
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+  const lines = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const tc = await page.getTextContent();
+    const text = tc.items.map(i => i.str).join(' ');
+    if (text.trim().length > 5) lines.push(text.trim());
+    if (onPage) onPage(p, pdf.numPages);
+  }
+  return { pages: pdf.numPages, lines };
+}
+
 async function handleFiles(event) {
   const files = event.target.files;
   if (!files || !files.length) return;
-  addMsg('<div style="color:var(--dim)">Uploading ' + files.length + ' file(s)...</div>', 'user');
-  const loading = addMsg('<div id="feedProgress" style="color:var(--dim)">Processing...</div>', 'shifu');
+  addMsg('<div style="color:var(--dim)">' + files.length + ' file(s) selected</div>', 'user');
+  const loading = addMsg('<div id="feedProgress" style="color:var(--dim)">Starting...</div>', 'shifu');
   const prog = loading.querySelector('#feedProgress');
-  let totalFed = 0, totalFiles = files.length, doneFiles = 0;
+  let totalFed = 0, doneFiles = 0;
+  const CHUNK = 50;
 
-  function updateProgress(fileIdx, fileName, status, detail) {
-    const pct = Math.round((fileIdx / totalFiles) * 100);
-    let bar = '<div style="background:var(--border);border-radius:4px;height:6px;margin:8px 0;overflow:hidden"><div style="background:var(--accent);height:100%;width:' + pct + '%;transition:width 0.3s"></div></div>';
-    bar += '<div style="font-size:11px;color:var(--dim)">' + fileIdx + '/' + totalFiles + ' files &middot; ' + totalFed + ' passages fed</div>';
-    if (fileName) bar += '<div style="font-size:12px;margin-top:4px">' + status + ' <b>' + fileName + '</b>' + (detail ? ' &middot; ' + detail : '') + '</div>';
-    prog.innerHTML = bar;
+  function showBar(pct, detail) {
+    prog.innerHTML = '<div style="background:var(--border);border-radius:4px;height:6px;margin:8px 0;overflow:hidden"><div style="background:var(--accent);height:100%;width:'+pct+'%;transition:width 0.3s"></div></div><div style="font-size:12px;color:var(--dim)">'+detail+'</div>';
   }
 
-  let resultsHtml = '';
+  let results = '';
   for (let fi = 0; fi < files.length; fi++) {
     const file = files[fi];
-    updateProgress(fi, file.name, 'Processing', '');
     try {
-      if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-        updateProgress(fi, file.name, 'Extracting text from', '');
-        const res = await fetch('/api/upload?filename=' + encodeURIComponent(file.name), { method: 'POST', body: file });
-        const data = await res.json();
-        if (data.error) { resultsHtml += '<div style="color:var(--red)">' + file.name + ': ' + data.error + '</div>'; continue; }
-        const lines = (data.lines || []).map(l => l.corrected || l.output || l.input || '').filter(l => l.length > 10);
-        resultsHtml += '<div style="margin-bottom:8px"><b>' + file.name + '</b>: ' + (data.pageCount || '?') + ' pages, ' + lines.length + ' lines</div>';
-        if (lines.length > 0) {
-          // Feed in chunks of 50 so progress bar updates between chunks
-          let fileAccepted = 0;
-          const CHUNK = 50;
-          for (let ci = 0; ci < lines.length; ci += CHUNK) {
-            const chunk = lines.slice(ci, ci + CHUNK);
-            updateProgress(fi + ci/lines.length, file.name, 'Feeding', (ci+chunk.length) + '/' + lines.length + ' lines');
-            const fr = await api('/api/mind/feed-batch', { texts: chunk });
-            fileAccepted += fr.accepted || 0;
-            totalFed += fr.accepted || 0;
-          }
-          resultsHtml += '<div class="trace"><span class="lbl">fed</span> ' + fileAccepted + '/' + lines.length + ' accepted</div>';
-        }
+      let sentences = [];
+      if (file.name.endsWith('.pdf') || file.type === 'application/pdf') {
+        // Extract PDF client-side — no upload needed
+        showBar(fi/files.length*100, 'Extracting ' + file.name + '...');
+        const pdf = await extractPdfText(file, (p, total) => {
+          showBar((fi + p/total) / files.length * 100, file.name + ': page ' + p + '/' + total);
+        });
+        sentences = pdf.lines.flatMap(l => l.split(/[.!?]+/).map(s=>s.trim()).filter(s=>s.length>15));
+        results += '<div style="margin-bottom:6px"><b>' + file.name + '</b>: ' + pdf.pages + ' pages, ' + sentences.length + ' sentences</div>';
       } else {
-        updateProgress(fi, file.name, 'Reading', '');
+        showBar(fi/files.length*100, 'Reading ' + file.name + '...');
         const text = await file.text();
-        const sentences = text.split(/[.!?\\n]+/).map(s => s.trim()).filter(s => s.length > 10);
-        resultsHtml += '<div style="margin-bottom:8px"><b>' + file.name + '</b>: ' + sentences.length + ' sentences</div>';
-        if (sentences.length > 0) {
-          let fileAccepted = 0;
-          const CHUNK = 50;
-          for (let ci = 0; ci < sentences.length; ci += CHUNK) {
-            const chunk = sentences.slice(ci, ci + CHUNK);
-            updateProgress(fi + ci/sentences.length, file.name, 'Feeding', (ci+chunk.length) + '/' + sentences.length + ' sentences');
-            const fr = await api('/api/mind/feed-batch', { texts: chunk });
-            fileAccepted += fr.accepted || 0;
-            totalFed += fr.accepted || 0;
-          }
-          resultsHtml += '<div class="trace"><span class="lbl">fed</span> ' + fileAccepted + '/' + sentences.length + ' accepted</div>';
-        }
+        sentences = text.split(/[.!?\\n]+/).map(s=>s.trim()).filter(s=>s.length>15);
+        results += '<div style="margin-bottom:6px"><b>' + file.name + '</b>: ' + sentences.length + ' sentences</div>';
       }
-    } catch (e) { resultsHtml += '<div style="color:var(--red)">' + file.name + ': ' + e.message + '</div>'; }
+      // Feed in chunks with progress
+      let accepted = 0;
+      for (let ci = 0; ci < sentences.length; ci += CHUNK) {
+        const chunk = sentences.slice(ci, ci + CHUNK);
+        showBar((fi + (ci+chunk.length)/sentences.length) / files.length * 100, file.name + ': feeding ' + (ci+chunk.length) + '/' + sentences.length);
+        const fr = await api('/api/mind/feed-batch', { texts: chunk });
+        accepted += fr.accepted || 0;
+        totalFed += fr.accepted || 0;
+      }
+      results += '<div class="trace"><span class="lbl">fed</span> ' + accepted + '/' + sentences.length + ' accepted</div>';
+    } catch (e) {
+      results += '<div style="color:var(--red)">' + file.name + ': ' + e.message + '</div>';
+    }
     doneFiles++;
   }
-  updateProgress(totalFiles, null, '', '');
-  resultsHtml += '<div style="margin-top:8px;color:var(--green);font-weight:600">Done: ' + totalFed + ' passages fed to mind from ' + doneFiles + ' file(s)</div>';
-  prog.innerHTML = resultsHtml;
+  showBar(100, 'Complete');
+  results += '<div style="margin-top:8px;color:var(--green);font-weight:600">' + totalFed + ' passages fed from ' + doneFiles + ' file(s)</div>';
+  prog.innerHTML = results;
   event.target.value = '';
   updateStats();
 }
