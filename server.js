@@ -476,6 +476,8 @@ body{display:flex;flex-direction:column}
   </div></div>
 </div>
 <div class="bottom">
+  <button class="btn" style="background:transparent;border:1px solid var(--border);color:var(--dim);font-size:15px" onclick="document.getElementById('fileInput').click()" title="Upload PDFs / text files">+</button>
+  <input type="file" id="fileInput" accept=".pdf,.txt,.csv,.tsv,.md,.html,.json,text/*,application/pdf" multiple onchange="handleFiles(event)" style="display:none">
   <textarea id="input" placeholder="Ask Shifu anything..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'"></textarea>
   <button class="btn btn-send" onclick="send()">&rarr;</button>
 </div>
@@ -535,6 +537,50 @@ async function send(){
     else if(d.i==='stats'){const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);h='<div class="trace"><span class="lbl">JS Engine</span><br>Vocab: '+(js.core?.vocabulary||0)+' &middot; Resonance: '+(js.core?.resonancePairs||0)+'<br><br><span class="lbl">Python Mind</span><br>Vocab: '+(m.vocabulary||0)+' &middot; Domains: '+(m.domains||0)+' &middot; Assemblies: '+(m.assemblies||0)+' &middot; Myelinated: '+(m.myelinated||0)+'</div>'}
     ld.querySelector('.bubble').innerHTML=h||'<div style="color:var(--dim)">No response.</div>';
   }catch(e){ld.querySelector('.bubble').innerHTML='<div style="color:var(--red)">Error: '+e.message+'</div>'}
+  updateStats();
+}
+
+// ── File upload handler (multi-file, auto-feed to mind) ──
+async function handleFiles(event) {
+  const files = event.target.files;
+  if (!files || !files.length) return;
+  addMsg('<div style="color:var(--dim)">Uploading ' + files.length + ' file(s)...</div>', 'user');
+  const loading = addMsg('<div style="color:var(--dim);font-style:italic">Processing...</div>', 'shifu');
+  let html = '';
+  let totalFed = 0;
+  for (const file of files) {
+    try {
+      if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+        // Upload PDF to /api/upload endpoint
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch('/api/upload?filename=' + encodeURIComponent(file.name), { method: 'POST', body: file });
+        const data = await res.json();
+        if (data.error) { html += '<div style="color:var(--red)">' + file.name + ': ' + data.error + '</div>'; continue; }
+        // Extract text lines and feed to mind
+        const lines = (data.lines || []).map(l => l.corrected || l.output || l.input || '').filter(l => l.length > 10);
+        html += '<div style="margin-bottom:8px"><b>' + file.name + '</b>: ' + (data.pageCount || '?') + ' pages, ' + lines.length + ' lines extracted</div>';
+        if (lines.length > 0) {
+          const feedResult = await api('/api/mind/feed-batch', { texts: lines });
+          html += '<div class="trace"><span class="lbl">mind fed</span> ' + (feedResult.accepted || 0) + '/' + (feedResult.total || 0) + ' accepted</div>';
+          totalFed += feedResult.accepted || 0;
+        }
+      } else {
+        // Text file — read and feed
+        const text = await file.text();
+        const sentences = text.split(/[.!?\\n]+/).map(s => s.trim()).filter(s => s.length > 10);
+        html += '<div style="margin-bottom:8px"><b>' + file.name + '</b>: ' + sentences.length + ' sentences</div>';
+        if (sentences.length > 0) {
+          const feedResult = await api('/api/mind/feed-batch', { texts: sentences });
+          html += '<div class="trace"><span class="lbl">mind fed</span> ' + (feedResult.accepted || 0) + '/' + (feedResult.total || 0) + ' accepted</div>';
+          totalFed += feedResult.accepted || 0;
+        }
+      }
+    } catch (e) { html += '<div style="color:var(--red)">' + file.name + ': ' + e.message + '</div>'; }
+  }
+  html += '<div style="margin-top:8px;color:var(--green)">Total fed to mind: ' + totalFed + ' passages</div>';
+  loading.querySelector('.bubble').innerHTML = html;
+  event.target.value = '';
   updateStats();
 }
 

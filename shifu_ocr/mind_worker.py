@@ -97,7 +97,9 @@ def handle(cmd):
         return {'ok': True, **r}
 
     elif op == 'feed_batch':
-        r = mind.feed_batch(cmd.get('texts', []))
+        texts = cmd.get('texts', [])
+        cycles = cmd.get('cycles', 1)
+        r = mind.feed_batch(texts, cycles=cycles)
         save()
         return {'ok': True, **r}
 

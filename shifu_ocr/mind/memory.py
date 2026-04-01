@@ -61,6 +61,8 @@ class Memory:
         self._active_topic: Optional[str] = None
         self._topic_strength: int = 0
         self._recent_focus: List[List[str]] = []
+        # Inverted index: word -> set of episode indices for O(1) recall
+        self._word_index: Dict[str, Set[int]] = {}
 
     def record(self, epoch: int, tokens: List[str],
                significance: float, context: Optional[dict] = None,
@@ -78,44 +80,68 @@ class Memory:
             context=context or {},
             timestamp=timestamp,
         )
+        idx = len(self.episodes)
         self.episodes.append(ep)
+
+        # Update inverted index
+        for t in tokens:
+            if t not in self._word_index:
+                self._word_index[t] = set()
+            self._word_index[t].add(idx)
 
         # Update topic tracking
         self._update_topic(tokens)
 
         # Evict if over capacity
         if len(self.episodes) > self._capacity:
-            # Remove least significant
             min_idx = 0
             min_sig = self.episodes[0].significance
             for i, e in enumerate(self.episodes):
                 if e.significance < min_sig:
                     min_sig = e.significance
                     min_idx = i
+            # Remove from inverted index
+            evicted = self.episodes[min_idx]
+            for t in evicted.tokens:
+                if t in self._word_index:
+                    self._word_index[t].discard(min_idx)
             self.episodes.pop(min_idx)
+            # Rebuild index (indices shifted)
+            self._rebuild_index()
 
         return ep
+
+    def _rebuild_index(self) -> None:
+        """Rebuild inverted index after eviction."""
+        self._word_index.clear()
+        for i, ep in enumerate(self.episodes):
+            for t in ep.tokens:
+                if t not in self._word_index:
+                    self._word_index[t] = set()
+                self._word_index[t].add(i)
 
     def recall(self, query_tokens: List[str], k: int = 5) -> List[Episode]:
         """
         Retrieve episodes most relevant to query.
-        Scored by token overlap weighted by significance.
+        Uses inverted index for O(query_words) lookup instead of O(episodes).
         """
         if not self.episodes or not query_tokens:
             return []
 
-        query_set = set(query_tokens)
-        scored = []
-        for ep in self.episodes:
-            ep_set = set(ep.tokens)
-            overlap = len(query_set & ep_set)
-            if overlap == 0:
-                continue
-            score = overlap * ep.significance
-            scored.append((score, ep))
+        # Gather candidate episode indices from inverted index
+        candidate_scores: Dict[int, float] = {}
+        for qt in query_tokens:
+            indices = self._word_index.get(qt, set())
+            for idx in indices:
+                if idx < len(self.episodes):
+                    ep = self.episodes[idx]
+                    candidate_scores[idx] = candidate_scores.get(idx, 0) + ep.significance
 
-        scored.sort(key=lambda x: -x[0])
-        return [ep for _, ep in scored[:k]]
+        if not candidate_scores:
+            return []
+
+        ranked = sorted(candidate_scores.items(), key=lambda x: -x[1])[:k]
+        return [self.episodes[idx] for idx, _ in ranked]
 
     def _update_topic(self, tokens: List[str]) -> None:
         """Track active topic from recent episodes."""
@@ -177,7 +203,7 @@ class Memory:
             'capacity': self._capacity,
             'sig_threshold': self._sig_threshold,
             'topic_window': self._topic_window,
-            'episodes': [e.to_dict() for e in self.episodes[-self._capacity:]],
+            'episodes': [e.to_dict() for e in self.episodes[-200:]],
             'active_topic': self._active_topic,
             'topic_strength': self._topic_strength,
         }

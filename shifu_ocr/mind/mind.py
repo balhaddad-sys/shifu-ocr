@@ -116,6 +116,18 @@ class ShifuMind:
         tokens = filtered['tokens']
         content = filtered['content_tokens']
 
+        # 1b. THYMIC SELECTION — positive and negative gates
+        #     Positive: must connect to at least 1 known concept (bypass during critical period)
+        #     Negative: must not contradict established strong knowledge
+        if self._feed_count > 200:
+            known_count = sum(1 for w in content if w in self.cortex.word_freq and self.cortex.word_freq[w] > 1)
+            # Positive selection: must connect to something known
+            if known_count == 0 and len(content) > 3:
+                return {
+                    'accepted': False, 'tokens_absorbed': 0,
+                    'domain': None, 'quality': filtered['quality'],
+                }
+
         # 2. Cortex — feed CONTENT words with identity-as-bridge routing
         #    Identity is NEVER the destination for property connections.
         #    Identity only holds "is a" declarations.
@@ -164,24 +176,47 @@ class ShifuMind:
         }
 
     def feed_batch(self, texts: List[str], layer: str = '_general',
-                   classifier=None) -> dict:
-        """Feed multiple texts. Returns aggregate stats."""
+                   classifier=None, cycles: int = 1) -> dict:
+        """
+        Feed multiple texts with batch optimizations:
+        - Widens prune interval during batch (fewer prunes)
+        - Runs multiple cycles for deeper absorption
+        - Finalizes trunk after completion
+        """
+        old_prune = self.cortex._prune_interval
+        self.cortex._prune_interval = max(old_prune, len(texts))
+
         accepted = 0
         total_tokens = 0
-        for text in texts:
-            result = self.feed(text, layer=layer, classifier=classifier)
-            if result['accepted']:
-                accepted += 1
-                total_tokens += result['tokens_absorbed']
+        rejected = 0
+        for cycle in range(cycles):
+            for text in texts:
+                result = self.feed(text, layer=layer, classifier=classifier)
+                if cycle == 0:  # Only count first cycle
+                    if result['accepted']:
+                        accepted += 1
+                        total_tokens += result['tokens_absorbed']
+                    else:
+                        rejected += 1
+
+        # Restore and prune
+        self.cortex._prune_interval = old_prune
+        self.cortex._prune()
 
         # Finalize trunk after batch
-        if accepted > 10:
+        if accepted > 5:
             self.trunk.finalize()
+
+        # Update field medians
+        self.field.update_medians(self.cortex.word_freq, self._co_graph)
+        self.gate.adapt_thresholds()
 
         return {
             'total': len(texts),
             'accepted': accepted,
+            'rejected': rejected,
             'tokens_absorbed': total_tokens,
+            'cycles': cycles,
         }
 
     # ═══ IDENTITY IS THE BRIDGE ═══
