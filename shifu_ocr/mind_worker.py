@@ -213,16 +213,21 @@ if __name__ == '__main__':
 
     def _background_practice():
         """Runs continuously in a background thread. Practices when idle."""
+        practice_count = 0
         while True:
-            _time.sleep(30)  # Every 30 seconds
-            if mind._feed_count < 10:
-                continue  # Not enough knowledge yet
+            _time.sleep(30)
+            vocab_size = len(mind.cortex.word_freq)
+            if vocab_size < 20:
+                continue
             try:
-                # 3 rounds of self-practice
-                mind.practice(rounds=3)
-                # Occasional study at current curriculum level
-                if mind._feed_count % 100 < 3:
+                r = mind.practice(rounds=3)
+                practice_count += 1
+                # Every 5th cycle, also do curriculum study
+                if practice_count % 5 == 0:
                     mind.study(rounds=2)
+                # Every 10th cycle, consolidate
+                if practice_count % 10 == 0:
+                    mind.consolidate()
             except Exception:
                 pass
 

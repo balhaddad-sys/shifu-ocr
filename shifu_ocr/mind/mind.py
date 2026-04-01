@@ -1016,6 +1016,11 @@ class ShifuMind:
 
             # Generate a sentence from this concept
             generated = self.generate([word], max_length=10)
+            # If generation is too short, use co-graph neighbors directly
+            if len(generated) < 3:
+                co = self._co_graph.get(word, {})
+                neighbors = sorted(co.items(), key=lambda x: -x[1])[:5]
+                generated = [word] + [n for n, _ in neighbors]
             sentence = ' '.join(generated)
 
             # Score it
