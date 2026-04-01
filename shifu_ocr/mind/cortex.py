@@ -53,7 +53,7 @@ class Layer:
         return count
 
     def connect(self, source: str, target: str, weight: float, epoch: int) -> Synapse:
-        """Create or strengthen a connection. Returns the synapse."""
+        """Create or strengthen a connection. Cap at 50 targets per source."""
         self._node_set.add(source)
         self._node_set.add(target)
         if source not in self._connections:
@@ -62,6 +62,9 @@ class Layer:
         if existing is not None:
             existing.strengthen(weight, epoch)
             return existing
+        # Cap: don't create new synapse if source already has 50 targets
+        if len(self._connections[source]) >= 50:
+            return existing or Synapse(source=source, target=target)  # Dummy, not stored
         syn = Synapse(
             source=source, target=target, weight=weight,
             birth_epoch=epoch, last_active=epoch, activation_count=1,

@@ -291,8 +291,11 @@ class ShifuMind:
                     self.cortex.total_words += 1
                     if w not in self.cortex._connection_birth:
                         self.cortex._connection_birth[w] = self.cortex._epoch
+                    # Cap breadth at 50 per word to prevent memory explosion
                     if w not in self.cortex.breadth:
                         self.cortex.breadth[w] = set()
+                    elif len(self.cortex.breadth[w]) >= 50:
+                        pass  # Already full — don't grow
                 self.cortex._feed_count += 1
                 self.cortex._epoch += 1
 
@@ -306,7 +309,9 @@ class ShifuMind:
                         for j in range(max(0, i - 4), min(len(fc), i + 5)):
                             if i != j:
                                 gen_layer.connect(fc[i], fc[j], weight_mult / abs(i - j), self.cortex._epoch)
-                                self.cortex.breadth[fc[i]].add(fc[j])
+                                b = self.cortex.breadth.get(fc[i])
+                                if b is not None and len(b) < 50:
+                                    b.add(fc[j])
                                 connections += 1
 
                     # Co-graph (capped at 100 neighbors)
