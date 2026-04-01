@@ -125,6 +125,8 @@ def handle(cmd):
                 'syntax': mind.language.syntax.stats(),
                 'semantics': mind.language.semantics.stats(),
                 'curriculum': mind.language.curriculum.stats()}
+    elif op == 'heartbeat':
+        return {'ok': True, **mind.heartbeat()}
     elif op == 'compass':
         return {'ok': True, **mind.compass()}
     elif op == 'introspect':

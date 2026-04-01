@@ -303,19 +303,13 @@ class ShifuMind:
 
                 connections = 0
 
-                if novelty >= 0.2:
-                    # ═══ MEDIUM + DEEP: build connections ═══
-                    fc = content[:12]
-                    weight_mult = 2.0 if novelty > 0.5 else 1.0  # Deep gets 2× weight
-                    for i in range(len(fc)):
-                        for j in range(max(0, i - 4), min(len(fc), i + 5)):
-                            if i != j:
-                                gen_layer.connect(fc[i], fc[j], weight_mult / abs(i - j), self.cortex._epoch)
-                                b = self.cortex.breadth.get(fc[i])
-                                if b is not None and len(b) < 50:
-                                    b.add(fc[j])
-                                connections += 1
+                # ═══ BATCH FEED: only build PLAIN DICT graphs ═══
+                # NO Synapse objects. NO cortex.connect().
+                # Co-graph and nx-graph are plain {word: {word: count}} dicts.
+                # Cortex connections get built during CONSOLIDATION.
+                # This keeps memory at ~50MB instead of 500MB for 125K sentences.
 
+                if novelty >= 0.2:
                     # Co-graph (capped at 100 neighbors)
                     n = len(content)
                     for i in range(n):
@@ -330,6 +324,7 @@ class ShifuMind:
                                     co_w[nb] += 1
                                 elif len(co_w) < 100:
                                     co_w[nb] = 1
+                        connections += 1
 
                     # Nx-graph (capped at 50)
                     for i in range(len(tokens) - 1):
@@ -343,8 +338,17 @@ class ShifuMind:
                         elif len(nx_w) < 50:
                             nx_w[nxt] = 1
 
+                    # Breadth (capped at 50)
+                    for i in range(min(n, 12)):
+                        w = content[i]
+                        b = self.cortex.breadth.get(w)
+                        if b is not None and len(b) < 50:
+                            for j in range(max(0, i - 4), min(n, i + 5)):
+                                if i != j:
+                                    b.add(content[j])
+
                 if novelty > 0.5:
-                    # ═══ DEEP ONLY: identity + speaker + syntax (expensive) ═══
+                    # Deep: identity + speaker + syntax (no cortex.connect)
                     self._extract_identity(text, content)
                     self.speaker.learn_frame(tokens)
                     self.language.syntax.feed(tokens)
@@ -781,12 +785,28 @@ class ShifuMind:
 
         Phase 6: Prune, myelinate, rebuild caches.
         """
-        gen = self.cortex.get_layer('_general')
-        if not gen:
-            return {'routed': 0, 'identities': 0, 'pruned': 0}
-
+        gen = self.cortex.ensure_layer('_general')
         routed = 0
         identities = 0
+
+        # ═══ PHASE 0: BUILD CORTEX from co-graph ═══
+        # Batch feed only built co_graph (plain dicts).
+        # Now promote the strongest co-graph edges into cortex synapses.
+        # Only top 20 neighbors per word — keeps memory bounded.
+        cortex_built = 0
+        for word, neighbors in self._co_graph.items():
+            if len(word) <= 2:
+                continue
+            top = sorted(neighbors.items(), key=lambda x: -x[1])[:20]
+            for neighbor, weight in top:
+                if len(neighbor) <= 2 or weight < 2:
+                    continue
+                gen.connect(word, neighbor, min(weight, 10.0), self.cortex._epoch)
+                cortex_built += 1
+                if cortex_built > 50000:  # Hard cap to prevent OOM
+                    break
+            if cortex_built > 50000:
+                break
 
         # ═══ PHASE 1: IDENTITY from bigram chains ═══
         id_layer = self.cortex.ensure_layer('identity')
@@ -1213,6 +1233,79 @@ class ShifuMind:
             result['conviction'] = conviction_result
             result['voice'] = self.conviction._voice[-1] if self.conviction._voice else None
         return result
+
+    # ═══ METABOLISM — the brain's heartbeat ═══
+
+    def heartbeat(self) -> dict:
+        """
+        Continuous maintenance. Like blood + glucose supply.
+        Called periodically to keep the mind alive.
+
+        1. MYELINATION: connections used in recent deliberation/practice
+           get their activation count incremented. Those reaching
+           threshold get myelinated.
+        2. SALTATORY CONDUCTION: myelinated connections create SHORTCUTS
+           in the co-graph — direct links that skip intermediate nodes.
+        3. DECAY: unused connections weaken slightly. Myelinated resist.
+        """
+        myelinated_new = 0
+        shortcuts_created = 0
+
+        # Phase 1: Myelinate connections that appear in co-graph with high weight
+        # (proxy for "used repeatedly" — co-graph weight = co-occurrence count)
+        gen = self.cortex.get_layer('_general')
+        if gen:
+            for source, targets in gen._connections.items():
+                for target, syn in targets.items():
+                    if syn.myelinated:
+                        continue
+                    # Check co-graph: how often do these words actually co-occur?
+                    co_weight = self._co_graph.get(source, {}).get(target, 0)
+                    if co_weight >= 3:
+                        # Co-occurring 3+ times = reliable connection. Myelinate.
+                        syn.myelinate()
+                        myelinated_new += 1
+                        self.cortex._myel_count += 1
+
+        # Phase 2: Saltatory conduction — myelinated paths create shortcuts
+        # If A→B myelinated and B→C myelinated, create A→→C shortcut
+        if gen:
+            new_shortcuts = []
+            for source, targets in gen._connections.items():
+                for target, syn in targets.items():
+                    if not syn.myelinated:
+                        continue
+                    # This connection is myelinated. Look for myelinated extensions.
+                    ext_targets = gen._connections.get(target, {})
+                    for ext_target, ext_syn in ext_targets.items():
+                        if not ext_syn.myelinated or ext_target == source:
+                            continue
+                        # A→B→C both myelinated. Create A→→C shortcut.
+                        existing = gen.get_synapse(source, ext_target)
+                        if not existing:
+                            new_shortcuts.append((source, ext_target, min(syn.weight, ext_syn.weight) * 0.7))
+                            shortcuts_created += 1
+                            if shortcuts_created > 100:
+                                break
+                    if shortcuts_created > 100:
+                        break
+                if shortcuts_created > 100:
+                    break
+            for src, tgt, wt in new_shortcuts:
+                s = gen.connect(src, tgt, wt, self.cortex._epoch)
+                s.myelinate()  # Shortcuts are born myelinated
+                self.cortex._myel_count += 1
+
+        # Phase 3: Gentle decay (metabolism cost)
+        self.cortex.tick()
+
+        self.cortex._invalidate_cache()
+        self.field.invalidate_cache()
+
+        return {
+            'myelinated_new': myelinated_new,
+            'shortcuts': shortcuts_created,
+        }
 
     def save(self, path: str) -> None:
         """Save full state to JSON file."""

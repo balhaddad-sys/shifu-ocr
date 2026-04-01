@@ -430,6 +430,9 @@ const server = http.createServer(async (req, res) => {
     const body = await parseBody(req);
     return jsonResponse(res, await mindCommand({ cmd: 'connect', from: body.from, to: body.to }));
   }
+  if (path === '/api/mind/heartbeat' && req.method === 'POST') {
+    return jsonResponse(res, await mindCommand({ cmd: 'heartbeat' }));
+  }
   if (path === '/api/mind/compass') {
     return jsonResponse(res, await mindCommand({ cmd: 'compass' }));
   }
@@ -640,7 +643,15 @@ async function send(){
     else if(d.i==='score'){const[js,m]=await Promise.all([api('/api/score',{text:d.p}),api('/api/mind/score',{text:d.p})]);h='<div class="trace"><span class="lbl">js</span> '+(js.coherence||0).toFixed(3)+' &middot; <span class="lbl">mind</span> '+(m.coherence||0).toFixed(3)+'</div>'}
     else if(d.i==='consolidate'){
       const r=await api('/api/mind/consolidate',{});
+      // Run heartbeats to myelinate the new connections
+      let totalMyel=0,totalShort=0;
+      for(let hb=0;hb<5;hb++){
+        const hr=await api('/api/mind/heartbeat',{});
+        totalMyel+=(hr.myelinated_new||0);
+        totalShort+=(hr.shortcuts||0);
+      }
       h='<div><b>Consolidated:</b> '+r.routed+' routed, '+r.identities+' identities, '+r.pruned+' pruned</div>';
+      h+='<div class="trace"><span class="lbl">myelinated</span> '+totalMyel+' new &middot; <span class="lbl">shortcuts</span> '+totalShort+' saltatory paths</div>';
       if(r.morphology)h+='<div class="trace"><span class="lbl">morphology</span> '+r.morphology.roots+' roots, '+r.morphology.prefixes+' prefixes, '+r.morphology.suffixes+' suffixes</div>';
     }
     else if(d.i==='compass'){
@@ -810,8 +821,11 @@ function updateStats(){
   _statsTimer=setTimeout(async()=>{
     _statsTimer=null;
     try{
+      // Heartbeat: maintain connections, myelinate, create shortcuts
+      // This IS the blood supply — runs every stats poll
+      api('/api/mind/heartbeat',{}).catch(()=>{});
       const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);
-      if(!m.ok&&!m.vocabulary)return; // Mind not ready — don't overwrite with zeros
+      if(!m.ok&&!m.vocabulary)return;
       const vocab=m.vocabulary||0;
       const myel=m.myelinated||0;
       const feeds=m.feed_count||0;
