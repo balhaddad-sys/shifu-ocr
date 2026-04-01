@@ -24,19 +24,50 @@ import json, sys, os, traceback
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shifu_ocr.mind import ShifuMind
-from shifu_ocr.mind.nervous_system import export_graphs, export_cortex, write_epoch
+from shifu_ocr.mind.nervous_system import (
+    export_graphs, export_cortex, write_epoch,
+    import_graphs, import_cortex, read_epoch,
+)
 
 mind = ShifuMind(initial_layers=['identity', 'appearance', 'function', 'mechanism', 'relation'])
+_last_epoch = 0
 
-# Seed
-for t in [
-    'Stroke is a disease caused by arterial occlusion in the brain',
-    'Dopamine is a neurotransmitter affected in parkinsons disease',
-    'Thrombolysis is a treatment that dissolves blood clots',
-    'The cerebral artery supplies blood to the cortex',
-    'Hypertension is a major risk factor for cerebral stroke',
-]:
-    mind.feed(t)
+def reload_shared_state():
+    """Reload what feed worker and maintenance worker wrote."""
+    global _last_epoch
+    epoch = read_epoch()
+    if epoch > _last_epoch:
+        import_graphs(mind)
+        import_cortex(mind)
+        mind.cortex._invalidate_cache()
+        mind.field.invalidate_cache()
+        mind.field.update_medians(mind.cortex.word_freq, mind._co_graph)
+        # Rebuild neural field from updated graphs
+        if mind._co_graph:
+            myel_pairs = set()
+            gen = mind.cortex.get_layer('_general')
+            cortex_conns = {}
+            if gen:
+                for src, targets in gen._connections.items():
+                    cortex_conns[src] = {t: s.weight for t, s in targets.items()}
+                    for tgt, syn in targets.items():
+                        if syn.myelinated:
+                            myel_pairs.add((src, tgt))
+            mind.neural_field.build_from_graphs(mind._co_graph, cortex_conns, myel_pairs)
+        _last_epoch = epoch
+
+# Seed only if no shared state exists
+import_graphs(mind)
+import_cortex(mind)
+if len(mind.cortex.word_freq) < 10:
+    for t in [
+        'Stroke is a disease caused by arterial occlusion in the brain',
+        'Dopamine is a neurotransmitter affected in parkinsons disease',
+        'Thrombolysis is a treatment that dissolves blood clots',
+        'The cerebral artery supplies blood to the cortex',
+        'Hypertension is a major risk factor for cerebral stroke',
+    ]:
+        mind.feed(t)
 
 
 # ═══ CORTICAL AREAS — each processes one modality ═══
@@ -170,10 +201,10 @@ AREAS = [area_meta, area_absorb, area_comprehend, area_produce,
 def thalamus_route(cmd):
     """
     The thalamus receives a signal and routes it.
-    Tries each cortical area in order.
-    First area that handles it wins.
-    If an area fails, the next one is tried (fault tolerance).
+    First: reload shared state from disk (what feed/maintenance wrote).
+    Then: route to cortical areas.
     """
+    reload_shared_state()
     for area in AREAS:
         try:
             result = area(cmd)
