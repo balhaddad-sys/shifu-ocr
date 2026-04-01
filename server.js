@@ -423,6 +423,9 @@ const server = http.createServer(async (req, res) => {
     const body = await parseBody(req);
     return jsonResponse(res, await mindCommand({ cmd: 'connect', from: body.from, to: body.to }));
   }
+  if (path === '/api/mind/consolidate' && req.method === 'POST') {
+    return jsonResponse(res, await mindCommand({ cmd: 'consolidate' }));
+  }
   if (path === '/api/mind/save' && req.method === 'POST') {
     return jsonResponse(res, await mindCommand({ cmd: 'save' }));
   }
@@ -646,6 +649,12 @@ async function handleFiles(event) {
     totalFed = fr.accepted || 0;
     const rate = Math.round(allSentences.length / ((Date.now() - t0) / 1000));
     results += '<div class="trace"><span class="lbl">fed</span> ' + totalFed + '/' + allSentences.length + ' accepted in ' + elapsed + 's (' + rate + ' sent/sec)</div>';
+
+    // PHASE 3: CONSOLIDATE — discipline after wild feeding
+    // Routes _general into typed layers, extracts identities, prunes weak connections
+    showBar(90, 'Consolidating knowledge...');
+    const cr = await api('/api/mind/consolidate', {});
+    if (cr.ok) results += '<div class="trace"><span class="lbl">consolidated</span> ' + (cr.routed||0) + ' routed, ' + (cr.identities||0) + ' identities, ' + (cr.pruned||0) + ' pruned</div>';
   }
 
   showBar(100, 'Complete');

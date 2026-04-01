@@ -154,6 +154,10 @@ def handle(cmd):
     elif op == 'hungry':
         return {'ok': True, 'gaps': mind.hungry()}
 
+    elif op == 'consolidate':
+        r = mind.consolidate()
+        return {'ok': True, **r}
+
     elif op == 'save':
         save()
         return {'ok': True}

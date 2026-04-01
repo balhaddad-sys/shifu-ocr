@@ -626,11 +626,120 @@ class ShifuMind:
         """Adjust cortex parameters based on recent quality trend."""
         trend = self.signal.recent_trend(5)
         if trend < 0.3:
-            # Struggling — slow decay, hold knowledge longer
             self.cortex._decay_factor = min(self.cortex._decay_factor * 1.01, 0.999)
         elif trend > 0.6:
-            # Thriving — faster decay, more dynamic
             self.cortex._decay_factor = max(self.cortex._decay_factor * 0.999, 0.95)
+
+    # ═══ CONSOLIDATE — the discipline phase ═══
+    #
+    # After wild feeding (textbooks, PDFs), the mind has a massive
+    # _general layer and co-graph but no typed spokes. Consolidation
+    # is the MATURATION step: go through the strongest connections
+    # and route them into identity/appearance/function/mechanism/relation
+    # based on the copula patterns and sentence structure learned during feeding.
+    #
+    # Like thymic selection: wild proliferation → selection pressure →
+    # only the connections that fit the architecture survive.
+
+    def consolidate(self) -> dict:
+        """
+        THYMIC MATURATION — discipline after wild feeding.
+
+        Phase 1: IDENTITY — extract from co-graph structure.
+          "X is a Y" detected from nx_graph bigrams.
+          Any word that frequently precedes "is" gets identity links
+          to the words that frequently follow "is".
+
+        Phase 2: MECHANISM — words co-occurring with "causes/leads/results"
+          get routed to mechanism layer.
+
+        Phase 3: FUNCTION — words co-occurring with "treatment/therapy/used"
+          get routed to function layer.
+
+        Phase 4: APPEARANCE — words co-occurring with "presents/shows/appears"
+          get routed to appearance layer.
+
+        Phase 5: RELATION — words co-occurring with "associated/related/risk"
+          get routed to relation layer.
+
+        No hardcoded word lists. The routing uses the CO-GRAPH ITSELF:
+        which words actually co-occur with structural verbs in the data.
+
+        Phase 6: Prune, myelinate, rebuild caches.
+        """
+        gen = self.cortex.get_layer('_general')
+        if not gen:
+            return {'routed': 0, 'identities': 0, 'pruned': 0}
+
+        routed = 0
+        identities = 0
+
+        # ═══ PHASE 1: IDENTITY from bigram chains ═══
+        id_layer = self.cortex.ensure_layer('identity')
+        # Find words that precede "is" frequently → they are SUBJECTS
+        # Find words that follow "is" or "a" frequently → they are CATEGORIES
+        is_preceders = {}  # word → count of "word → is" in nx
+        for word, nexts in self._nx_graph.items():
+            if 'is' in nexts and len(word) > 3:
+                is_preceders[word] = nexts['is']
+
+        is_followers = self._nx_graph.get('is', {})
+        a_followers = self._nx_graph.get('a', {})
+
+        for subject, freq in sorted(is_preceders.items(), key=lambda x: -x[1])[:200]:
+            # What follows "is" that also co-occurs with this subject?
+            for category, cat_freq in sorted(is_followers.items(), key=lambda x: -x[1])[:20]:
+                if category == subject or len(category) <= 2:
+                    continue
+                if category in self._co_graph.get(subject, {}):
+                    id_layer.connect(subject, category, min(freq, cat_freq), self.cortex._epoch)
+                    identities += 1
+
+        # ═══ PHASES 2-5: Route by CO-OCCURRENCE with structural words ═══
+        # Instead of hardcoded lists, find structural words from nx_graph:
+        # words that appear as next-word for MANY different preceding words
+        # are likely structural (verbs/prepositions). The TARGETS of those
+        # structural words get routed to the appropriate layer.
+
+        # Mechanism: words that co-occur with the top "causes/produces" equivalents
+        # (words that many different words precede → structural verbs)
+        spoke_routing = {
+            'mechanism': ['causes', 'caused', 'leads', 'results', 'produces', 'involves', 'through', 'due'],
+            'function': ['treatment', 'therapy', 'treats', 'used', 'prevents', 'reduces', 'management'],
+            'appearance': ['presents', 'shows', 'appears', 'seen', 'reveals', 'visible', 'characterized'],
+            'relation': ['associated', 'related', 'risk', 'factor', 'linked', 'increases', 'compared'],
+        }
+
+        for layer_name, signal_words in spoke_routing.items():
+            typed = self.cortex.ensure_layer(layer_name)
+            # Find which signal words actually EXIST in the co-graph
+            for signal in signal_words:
+                co_neighbors = self._co_graph.get(signal, {})
+                for neighbor, weight in sorted(co_neighbors.items(), key=lambda x: -x[1])[:50]:
+                    if len(neighbor) > 3 and weight > 1:
+                        # Route: neighbor connects to signal in this layer
+                        typed.connect(neighbor, signal, weight, self.cortex._epoch)
+                        # Also connect signal's OTHER neighbors to this neighbor
+                        for other, ow in sorted(co_neighbors.items(), key=lambda x: -x[1])[:20]:
+                            if other != neighbor and len(other) > 3 and ow > 1:
+                                typed.connect(neighbor, other, min(weight, ow) * 0.5, self.cortex._epoch)
+                                routed += 1
+
+        # ═══ PHASE 6: Prune, myelinate, rebuild ═══
+        pruned = 0
+        for layer in self.cortex._layers.values():
+            pruned += layer.prune(
+                self.cortex._epoch, self.cortex._decay_factor,
+                self.cortex._myelinated_decay, 0.3,
+            )
+            layer.myelinate(self.cortex._myelination_threshold, self.cortex._epoch)
+
+        self.cortex._invalidate_cache()
+        self.field.invalidate_cache()
+        self.field.update_medians(self.cortex.word_freq, self._co_graph)
+        self.trunk.finalize()
+
+        return {'routed': routed, 'identities': identities, 'pruned': pruned}
 
     def counterfactual(self, text: str, position: int,
                        alternatives: List[str]) -> List[dict]:

@@ -302,6 +302,7 @@ class Thinker:
         """
         wm = WorkingMemory()
         wm.focus = list(query_tokens)
+        original_query = set(query_tokens)  # Never changes — used for filtering
         _co = co_graph or {}
 
         # ═══ PHASE 0: SITUATION & GOAL ═══
@@ -347,27 +348,38 @@ class Thinker:
                 if field:
                     per_word_fields.append(field)
 
-            # Multiplicative intersection: start with first field,
-            # multiply by subsequent fields. Only shared words survive.
+            # Intersection via GEOMETRIC MEAN — softer than strict multiplication.
+            # Words in ALL fields get sqrt(e1 * e2) — amplified.
+            # Words in only one field get e * 0.3 — dampened but not killed.
+            # This lets rare but important connections survive.
             all_activated: Dict[str, float] = {}
             if len(per_word_fields) == 1:
                 all_activated = dict(per_word_fields[0])
             elif len(per_word_fields) >= 2:
-                # Start with the field that has fewest entries (most specific)
-                per_word_fields.sort(key=lambda f: len(f))
-                base = dict(per_word_fields[0])
-                for other_field in per_word_fields[1:]:
-                    merged: Dict[str, float] = {}
-                    for w, e in base.items():
-                        other_e = other_field.get(w, 0)
-                        if other_e > 0:
-                            merged[w] = e * other_e  # Multiplicative
-                    # Also add words from other with weak additive (allow some new discovery)
-                    for w, e in other_field.items():
-                        if w not in merged:
-                            merged[w] = e * 0.1  # Weak additive for discovery
-                    base = merged
-                all_activated = base
+                # Count how many fields each word appears in
+                word_counts: Dict[str, int] = {}
+                word_energy: Dict[str, float] = {}
+                for field in per_word_fields:
+                    for w, e in field.items():
+                        word_counts[w] = word_counts.get(w, 0) + 1
+                        word_energy[w] = word_energy.get(w, 0) + e
+                n_fields = len(per_word_fields)
+                for w, count in word_counts.items():
+                    avg_e = word_energy[w] / count
+                    # Boost by how many fields it appears in
+                    # All fields → full energy. One field → 30%.
+                    coverage = count / n_fields
+                    all_activated[w] = avg_e * (0.3 + 0.7 * coverage)
+
+            # ═══ PHASE 1b: CO-GRAPH BOOST — the real knowledge is here ═══
+            # The co-graph has 500K+ entries, typed layers have <100.
+            # Boost activations from the co-graph directly.
+            if _co:
+                for word in wm.focus[:5]:
+                    co_neighbors = _co.get(word, {})
+                    for neighbor, weight in sorted(co_neighbors.items(), key=lambda x: -x[1])[:20]:
+                        if len(neighbor) > 2:
+                            all_activated[neighbor] = all_activated.get(neighbor, 0) + weight * 0.5
 
             # ═══ PHASE 2: MEMORY — goal-directed retrieval ═══
             # Retrieve from episodic memory if available
@@ -378,12 +390,12 @@ class Thinker:
                         if t not in set(wm.focus):
                             all_activated[t] = all_activated.get(t, 0) + ep.significance * 0.5
 
-            # Rank by activation, exclude focus words
-            focus_set = set(wm.focus)
+            # Rank by activation, exclude ORIGINAL query words only
+            # (not the expanded focus — those are discoveries worth reporting)
             wm.retrieved = [
                 {'word': w, 'energy': e}
-                for w, e in sorted(all_activated.items(), key=lambda x: -x[1])[:15]
-                if w not in focus_set and len(w) > 2
+                for w, e in sorted(all_activated.items(), key=lambda x: -x[1])[:20]
+                if w not in original_query and len(w) > 2
             ]
 
             # ═══ PHASE 3: ATTENTION REFINEMENT ═══
