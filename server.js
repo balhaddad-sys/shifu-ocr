@@ -634,7 +634,14 @@ async function send(){
     }
     else if(d.i==='deliberate'){
       // Before answering: ask the compass. If it needs something, do it silently.
-      try{const c=await api('/api/mind/compass',{});if(c.ok&&c.action==='consolidate')await api('/api/mind/consolidate',{});}catch{}
+      // After doing it, ping the thalamus to force reload from disk.
+      try{
+        const c=await api('/api/mind/compass',{});
+        if(c.ok&&c.action==='consolidate'){
+          await api('/api/mind/consolidate',{});
+          await api('/api/mind/stats');  // Force thalamus to reload shared state
+        }
+      }catch{}
       const r=await api('/api/mind/deliberate',{query:d.p});
       if(r.ok){
         h='<div style="margin-bottom:4px"><b>Focus:</b> '+(r.focus||[]).join(', ')+'</div>';

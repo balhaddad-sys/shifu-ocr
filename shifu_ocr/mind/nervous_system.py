@@ -39,6 +39,8 @@ PATHS = {
     'vocab': os.path.join(STATE_DIR, 'mind_vocab.json'),
     'cortex': os.path.join(STATE_DIR, 'mind_cortex.json'),
     'signal': os.path.join(STATE_DIR, 'mind_signal.json'),
+    'trunk': os.path.join(STATE_DIR, 'mind_trunk.json'),
+    'neural': os.path.join(STATE_DIR, 'mind_neural.json'),
     'epoch': os.path.join(STATE_DIR, 'mind_epoch.txt'),
 }
 
@@ -141,15 +143,19 @@ def import_graphs(mind) -> dict:
 
 
 def export_cortex(mind) -> dict:
-    """Export cortex state (maintenance worker writes after consolidation)."""
+    """Export cortex + trunk + neural field (maintenance worker writes)."""
     ensure_dir()
     write_json('cortex', mind.cortex.to_dict())
     write_json('signal', mind.signal.to_dict())
+    if mind.trunk.domains:
+        write_json('trunk', mind.trunk.to_dict())
+    if mind.neural_field.neurons:
+        write_json('neural', mind.neural_field.to_dict())
     return {'layers': len(mind.cortex._layers), 'myel': mind.cortex._myel_count}
 
 
 def import_cortex(mind) -> dict:
-    """Import cortex state (query worker reads)."""
+    """Import cortex + trunk + neural field."""
     from .cortex import Cortex
     cortex_d = read_json('cortex')
     if cortex_d:
@@ -158,4 +164,12 @@ def import_cortex(mind) -> dict:
     if signal_d:
         from .signal import Signal
         mind.signal = Signal.from_dict(signal_d)
+    trunk_d = read_json('trunk')
+    if trunk_d:
+        from .trunk import Trunk
+        mind.trunk = Trunk.from_dict(trunk_d)
+    neural_d = read_json('neural')
+    if neural_d:
+        from .neuron import NeuralField
+        mind.neural_field = NeuralField.from_dict(neural_d)
     return {'layers': len(mind.cortex._layers), 'myel': mind.cortex._myel_count}

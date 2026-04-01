@@ -646,8 +646,9 @@ class ShifuMind:
                 'action': None,
             }
 
-        # Absorbed but unorganized — has words but no typed layers
-        if vocab > 50 and typed_layers == 0:
+        # Absorbed but unorganized — has words but no typed layers OR no domains
+        domains = len(self.trunk.domains)
+        if vocab > 50 and (typed_layers == 0 or domains == 0):
             return {
                 'state': 'absorbing',
                 'desire': 'I have taken in a lot. Let me organize.',
@@ -881,6 +882,20 @@ class ShifuMind:
         self.cortex._invalidate_cache()
         self.field.invalidate_cache()
         self.field.update_medians(self.cortex.word_freq, self._co_graph)
+
+        # Phase 6b: DOMAIN DISCOVERY from co-graph
+        # The trunk needs to see word clusters. Instead of replaying every sentence,
+        # scan the co-graph: each word's top neighbors form a mini-sentence.
+        # The trunk observes these synthetic "sentences" to discover domains.
+        observed = 0
+        for word in list(self.cortex.word_freq.keys())[:2000]:
+            if len(word) <= 3:
+                continue
+            co = self._co_graph.get(word, {})
+            top_neighbors = [n for n, _ in sorted(co.items(), key=lambda x: -x[1])[:5] if len(n) > 3]
+            if top_neighbors:
+                self.trunk.observe([word] + top_neighbors, self._co_graph)
+                observed += 1
         self.trunk.finalize()
 
         # Phase 7: BUILD NEURAL FIELD — each word becomes a neuron
@@ -1067,8 +1082,9 @@ class ShifuMind:
             'plasticity': cx['plasticity'],
             'domains': tr['domains'],
             'trunk_words': tr['trunk_words'],
-            'feed_count': self._feed_count,
-            'epoch': self._epoch,
+            'feed_count': max(self._feed_count, self.cortex._feed_count),
+            'epoch': max(self._epoch, self.cortex._epoch),
+            'neural_neurons': self.neural_field.stats()['neurons'] if self.neural_field.neurons else 0,
             'co_graph_size': sum(len(v) for v in self._co_graph.values()),
             'nx_graph_size': sum(len(v) for v in self._nx_graph.values()),
             'res_graph_size': sum(len(v) for v in self._res_graph.values()),
