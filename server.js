@@ -23,82 +23,91 @@ const feedback = new FeedbackLoop(shifu, { stateDir: '.state' });
 const metrics = new MetricsTracker({ stateDir: '.state' });
 const ingestor = new DocumentIngestor(pipeline, { outputDir: '.ingested' });
 
-// ── Boot Python Mind subprocess ─────────────────────────────
+// ── THREE NERVOUS SYSTEMS ────────────────────────────────────
+// Enteric (feed): absorbs recklessly, can bloat
+// Cerebral (query): answers fast, stays light
+// Autonomic (maintenance): consolidates, practices, myelinates
 const { spawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
-let mindProcess = null;
-let mindReady = false;
-let mindPending = {};  // id → {resolve, timer}
-let mindSeq = 0;
-let mindRestarts = 0;
 
-function bootMind() {
-  const script = path.join(__dirname, 'shifu_ocr', 'mind_worker.py');
-  mindProcess = spawn('python', [script], { cwd: __dirname, stdio: ['pipe', 'pipe', 'pipe'] });
-  const rl = readline.createInterface({ input: mindProcess.stdout });
-  rl.on('line', (line) => {
-    try {
-      const data = JSON.parse(line);
-      if (data.status === 'ready') {
-        mindReady = true;
-        mindRestarts = 0;  // Successful boot — reset counter
-        console.log('  Mind ready: ' + (data.vocabulary || 0) + ' words');
-        return;
+function createWorker(name, script, timeout) {
+  const w = { process: null, ready: false, pending: {}, seq: 0, restarts: 0, name, timeout: timeout || 120000 };
+
+  w.boot = function() {
+    w.process = spawn('python', [path.join(__dirname, 'shifu_ocr', script)], { cwd: __dirname, stdio: ['pipe', 'pipe', 'pipe'] });
+    const rl = readline.createInterface({ input: w.process.stdout });
+    rl.on('line', (line) => {
+      try {
+        const data = JSON.parse(line);
+        if (data.status === 'ready') {
+          w.ready = true;
+          w.restarts = 0;
+          console.log('  ' + name + ' ready: ' + (data.vocabulary || 0) + 'w');
+          return;
+        }
+        const id = data._id;
+        if (id !== undefined && w.pending[id]) {
+          const { resolve, timer } = w.pending[id];
+          clearTimeout(timer);
+          delete w.pending[id];
+          delete data._id;
+          resolve(data);
+        }
+      } catch (e) {}
+    });
+    w.process.stderr.on('data', (d) => {
+      const msg = d.toString().trim();
+      if (msg) console.warn('  ' + name + ':', msg.slice(0, 150));
+    });
+    w.process.on('exit', (code) => {
+      console.warn(name + ' exited:', code);
+      w.ready = false;
+      for (const id of Object.keys(w.pending)) {
+        w.pending[id].resolve({ ok: false, error: name + ' crashed' });
+        clearTimeout(w.pending[id].timer);
       }
-      // Match response to request by _id
-      const id = data._id;
-      if (id !== undefined && mindPending[id]) {
-        const { resolve, timer } = mindPending[id];
-        clearTimeout(timer);
-        delete mindPending[id];
-        delete data._id;
-        resolve(data);
-      }
-    } catch (e) {}
-  });
-  mindProcess.stderr.on('data', (d) => {
-    const msg = d.toString().trim();
-    if (msg) console.warn('  Mind stderr:', msg.slice(0, 200));
-  });
-  mindProcess.on('exit', (code) => {
-    console.warn('Mind process exited:', code, '— restarting...');
-    mindReady = false;
-    mindProcess = null;
-    // Reject all pending
-    for (const id of Object.keys(mindPending)) {
-      const { resolve, timer } = mindPending[id];
-      clearTimeout(timer);
-      resolve({ ok: false, error: 'mind crashed' });
-    }
-    mindPending = {};
-    // Auto-restart after 1 second
-    if (mindRestarts < 3) {
-      mindRestarts++;
-      setTimeout(bootMind, 2000);
-    } else {
-      console.warn('Mind exceeded 3 restarts. Restart the server.');
-    }
-  });
+      w.pending = {};
+      if (w.restarts < 3) { w.restarts++; setTimeout(() => w.boot(), 2000); }
+    });
+  };
+
+  w.command = function(cmd) {
+    return new Promise((resolve) => {
+      if (!w.process || !w.ready) return resolve({ ok: false, error: name + ' not ready' });
+      const id = ++w.seq;
+      const timer = setTimeout(() => {
+        if (w.pending[id]) { delete w.pending[id]; resolve({ ok: false, error: name + ' timeout' }); }
+      }, w.timeout);
+      w.pending[id] = { resolve, timer };
+      cmd._id = id;
+      w.process.stdin.write(JSON.stringify(cmd) + '\n');
+    });
+  };
+
+  return w;
 }
+
+// Three nervous systems — each a separate OS process
+const feedWorker = createWorker('Feed', 'feed_worker.py', 180000);      // 3 min for large batches
+const queryWorker = createWorker('Query', 'query_worker.py', 15000);    // 15s — must be fast
+const maintWorker = createWorker('Maintenance', 'maintenance_worker.py', 60000); // 1 min
+
+feedWorker.boot();
+queryWorker.boot();
+maintWorker.boot();
+
+// Route commands to the right worker
+const FEED_OPS = new Set(['feed', 'feed_batch']);
+const MAINT_OPS = new Set(['consolidate', 'practice', 'study', 'heartbeat', 'assess', 'save']);
 
 function mindCommand(cmd) {
-  return new Promise((resolve) => {
-    if (!mindProcess || !mindReady) return resolve({ ok: false, error: 'mind not ready' });
-    const id = ++mindSeq;
-    const timer = setTimeout(() => {
-      if (mindPending[id]) {
-        delete mindPending[id];
-        resolve({ ok: false, error: 'timeout' });
-      }
-    }, 120000); // 2 minutes — batch feed of 130K sentences needs time
-    mindPending[id] = { resolve, timer };
-    cmd._id = id;
-    mindProcess.stdin.write(JSON.stringify(cmd) + '\n');
-  });
+  const op = cmd.cmd || '';
+  if (FEED_OPS.has(op)) return feedWorker.command(cmd);
+  if (MAINT_OPS.has(op)) return maintWorker.command(cmd);
+  // Everything else → query worker (fast path)
+  return queryWorker.command(cmd);
 }
-
-bootMind();
 console.log('Shifu OCR ready.');
 
 // Prevent crashes from killing the server
