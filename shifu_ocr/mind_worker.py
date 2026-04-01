@@ -207,6 +207,28 @@ if __name__ == '__main__':
     sys.stdout.write(json.dumps({'ok': True, 'status': 'ready', 'vocabulary': mind.stats()['vocabulary']}) + '\n')
     sys.stdout.flush()
 
+    # ═══ BACKGROUND PRACTICE — the baby never stops learning ═══
+    # Between requests, practice. Like dreaming: consolidate + rehearse.
+    import threading, time as _time
+
+    def _background_practice():
+        """Runs continuously in a background thread. Practices when idle."""
+        while True:
+            _time.sleep(30)  # Every 30 seconds
+            if mind._feed_count < 10:
+                continue  # Not enough knowledge yet
+            try:
+                # 3 rounds of self-practice
+                mind.practice(rounds=3)
+                # Occasional study at current curriculum level
+                if mind._feed_count % 100 < 3:
+                    mind.study(rounds=2)
+            except Exception:
+                pass
+
+    practice_thread = threading.Thread(target=_background_practice, daemon=True)
+    practice_thread.start()
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
