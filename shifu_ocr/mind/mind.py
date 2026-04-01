@@ -844,47 +844,59 @@ class ShifuMind:
         routed = 0
         identities = 0
 
-        # ═══ PHASE 0: BUILD CORTEX from co-graph ═══
-        # Batch feed only built co_graph (plain dicts).
-        # Now promote the strongest co-graph edges into cortex synapses.
-        # Only top 20 neighbors per word — keeps memory bounded.
+        # ═══ INCREMENTAL CONSOLIDATION ═══
+        # First time: process everything. Subsequent: only NEW words.
+        # Like organizing a room: first time is slow,
+        # second time only the new stuff needs a place.
+        last_epoch = getattr(self, '_last_consolidation_epoch', 0)
+        current_epoch = self.cortex._epoch
+
+        # Which words are NEW since last consolidation?
+        new_words = set()
+        for word, birth in self.cortex._connection_birth.items():
+            if birth > last_epoch:
+                new_words.add(word)
+
+        # If first consolidation or >50% new, process everything
+        process_all = last_epoch == 0 or len(new_words) > len(self.cortex.word_freq) * 0.5
+        words_to_process = self._co_graph.keys() if process_all else new_words
+
+        # ═══ PHASE 0: BUILD CORTEX from co-graph (only new words) ═══
         cortex_built = 0
-        for word, neighbors in self._co_graph.items():
+        for word in words_to_process:
             if len(word) <= 2:
                 continue
+            neighbors = self._co_graph.get(word, {})
             top = sorted(neighbors.items(), key=lambda x: -x[1])[:20]
             for neighbor, weight in top:
                 if len(neighbor) <= 2 or weight < 2:
                     continue
-                gen.connect(word, neighbor, min(weight, 10.0), self.cortex._epoch)
+                gen.connect(word, neighbor, min(weight, 10.0), current_epoch)
                 cortex_built += 1
-                if cortex_built > 50000:  # Hard cap to prevent OOM
+                if cortex_built > 50000:
                     break
             if cortex_built > 50000:
                 break
 
-        # ═══ PHASE 1: IDENTITY from bigram chains ═══
+        # ═══ PHASE 1: IDENTITY (only for new words) ═══
         id_layer = self.cortex.ensure_layer('identity')
-        # Find words that precede "is" frequently → they are SUBJECTS
-        # Find words that follow "is" or "a" frequently → they are CATEGORIES
-        is_preceders = {}  # word → count of "word → is" in nx
+        is_preceders = {}
         for word, nexts in self._nx_graph.items():
             if 'is' in nexts and len(word) > 3:
-                is_preceders[word] = nexts['is']
+                if process_all or word in new_words:
+                    is_preceders[word] = nexts['is']
 
         is_followers = self._nx_graph.get('is', {})
-        a_followers = self._nx_graph.get('a', {})
 
         for subject, freq in sorted(is_preceders.items(), key=lambda x: -x[1])[:200]:
-            # What follows "is" that also co-occurs with this subject?
             for category, cat_freq in sorted(is_followers.items(), key=lambda x: -x[1])[:20]:
                 if category == subject or len(category) <= 2:
                     continue
                 if category in self._co_graph.get(subject, {}):
-                    id_layer.connect(subject, category, min(freq, cat_freq), self.cortex._epoch)
+                    id_layer.connect(subject, category, min(freq, cat_freq), current_epoch)
                     identities += 1
 
-        # ═══ PHASES 2-5: Route by CO-OCCURRENCE with structural words ═══
+        # ═══ PHASES 2-5: Route by CO-OCCURRENCE (only new words) ═══
         # Instead of hardcoded lists, find structural words from nx_graph:
         # words that appear as next-word for MANY different preceding words
         # are likely structural (verbs/prepositions). The TARGETS of those
@@ -901,17 +913,17 @@ class ShifuMind:
 
         for layer_name, signal_words in spoke_routing.items():
             typed = self.cortex.ensure_layer(layer_name)
-            # Find which signal words actually EXIST in the co-graph
             for signal in signal_words:
                 co_neighbors = self._co_graph.get(signal, {})
+                # Only process new neighbors or all if first consolidation
                 for neighbor, weight in sorted(co_neighbors.items(), key=lambda x: -x[1])[:50]:
                     if len(neighbor) > 3 and weight > 1:
-                        # Route: neighbor connects to signal in this layer
-                        typed.connect(neighbor, signal, weight, self.cortex._epoch)
-                        # Also connect signal's OTHER neighbors to this neighbor
+                        if not process_all and neighbor not in new_words:
+                            continue
+                        typed.connect(neighbor, signal, weight, current_epoch)
                         for other, ow in sorted(co_neighbors.items(), key=lambda x: -x[1])[:20]:
                             if other != neighbor and len(other) > 3 and ow > 1:
-                                typed.connect(neighbor, other, min(weight, ow) * 0.5, self.cortex._epoch)
+                                typed.connect(neighbor, other, min(weight, ow) * 0.5, current_epoch)
                                 routed += 1
 
         # ═══ PHASE 6: Prune, myelinate, rebuild ═══
@@ -927,12 +939,10 @@ class ShifuMind:
         self.field.invalidate_cache()
         self.field.update_medians(self.cortex.word_freq, self._co_graph)
 
-        # Phase 6b: DOMAIN DISCOVERY from co-graph
-        # The trunk needs to see word clusters. Instead of replaying every sentence,
-        # scan the co-graph: each word's top neighbors form a mini-sentence.
-        # The trunk observes these synthetic "sentences" to discover domains.
+        # Phase 6b: DOMAIN DISCOVERY — only for NEW words
         observed = 0
-        for word in list(self.cortex.word_freq.keys())[:2000]:
+        scan_words = new_words if not process_all else set(list(self.cortex.word_freq.keys())[:2000])
+        for word in scan_words:
             if len(word) <= 3:
                 continue
             co = self._co_graph.get(word, {})
@@ -940,7 +950,12 @@ class ShifuMind:
             if top_neighbors:
                 self.trunk.observe([word] + top_neighbors, self._co_graph)
                 observed += 1
+            if observed > 2000:
+                break
         self.trunk.finalize()
+
+        # Mark consolidation epoch — next time only process what's new
+        self._last_consolidation_epoch = current_epoch
 
         # Phase 7: BUILD NEURAL FIELD — each word becomes a neuron
         # Connections from co-graph become axons.
@@ -974,6 +989,8 @@ class ShifuMind:
             'routed': routed, 'identities': identities, 'pruned': pruned,
             'morphology': morph, 'semantics': syn,
             'neural_field': neural_built,
+            'incremental': not process_all,
+            'new_words_processed': len(new_words) if not process_all else len(self.cortex.word_freq),
         }
 
     def counterfactual(self, text: str, position: int,
