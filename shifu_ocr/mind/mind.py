@@ -222,15 +222,10 @@ class ShifuMind:
                         rejected += 1
                     continue
 
-                # Thymic selection
-                if self._feed_count > 200:
-                    known = sum(1 for w in content
-                                if w in self.cortex.word_freq
-                                and self.cortex.word_freq[w] > 1)
-                    if known == 0 and len(content) > 3:
-                        if cycle == 0:
-                            rejected += 1
-                        continue
+                # NO thymic selection during batch feed.
+                # Batch = intentional bulk ingestion (textbooks, PDFs).
+                # The user chose to feed this. Accept everything.
+                # Thymic selection only applies to single feed() calls.
 
                 # Deduplicate: skip if exact same content was just fed
                 content_key = tuple(sorted(content[:8]))
