@@ -163,6 +163,36 @@ def handle(cmd):
         r = mind.practice(rounds=rounds)
         return {'ok': True, **r}
 
+    elif op == 'study':
+        rounds = cmd.get('rounds', 5)
+        level = cmd.get('level', None)
+        r = mind.study(rounds=rounds, level=level)
+        return {'ok': True, **r}
+
+    elif op == 'assess':
+        r = mind.assess_language()
+        return {'ok': True, **r}
+
+    elif op == 'decompose':
+        word = cmd.get('word', '')
+        r = mind.language.morphology.decompose(word)
+        return {'ok': True, **r}
+
+    elif op == 'synonyms':
+        word = cmd.get('word', '')
+        return {'ok': True, 'synonyms': mind.language.semantics.synonyms(word)}
+
+    elif op == 'explain_semantic':
+        word = cmd.get('word', '')
+        return {'ok': True, 'explanation': mind.language.semantics.explain(word)}
+
+    elif op == 'language_stats':
+        return {'ok': True,
+                'morphology': mind.language.morphology.stats(),
+                'syntax': mind.language.syntax.stats(),
+                'semantics': mind.language.semantics.stats(),
+                'curriculum': mind.language.curriculum.stats()}
+
     elif op == 'save':
         save()
         return {'ok': True}

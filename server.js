@@ -430,6 +430,28 @@ const server = http.createServer(async (req, res) => {
     const { rounds } = await parseBody(req);
     return jsonResponse(res, await mindCommand({ cmd: 'practice', rounds: rounds || 10 }));
   }
+  if (path === '/api/mind/study' && req.method === 'POST') {
+    const { rounds, level } = await parseBody(req);
+    return jsonResponse(res, await mindCommand({ cmd: 'study', rounds: rounds || 5, level: level || null }));
+  }
+  if (path === '/api/mind/assess' && req.method === 'POST') {
+    return jsonResponse(res, await mindCommand({ cmd: 'assess' }));
+  }
+  if (path.startsWith('/api/mind/decompose/')) {
+    const word = decodeURIComponent(path.split('/').pop());
+    return jsonResponse(res, await mindCommand({ cmd: 'decompose', word }));
+  }
+  if (path.startsWith('/api/mind/synonyms/')) {
+    const word = decodeURIComponent(path.split('/').pop());
+    return jsonResponse(res, await mindCommand({ cmd: 'synonyms', word }));
+  }
+  if (path.startsWith('/api/mind/semantic/')) {
+    const word = decodeURIComponent(path.split('/').pop());
+    return jsonResponse(res, await mindCommand({ cmd: 'explain_semantic', word }));
+  }
+  if (path === '/api/mind/language') {
+    return jsonResponse(res, await mindCommand({ cmd: 'language_stats' }));
+  }
   if (path === '/api/mind/save' && req.method === 'POST') {
     return jsonResponse(res, await mindCommand({ cmd: 'save' }));
   }
@@ -510,7 +532,7 @@ body{display:flex;flex-direction:column}
     <div style="color:var(--accent);font-weight:500">Model the medium. Detect the perturbation. Let experience shape the landscape.</div>
     <div style="font-size:12px;color:var(--dim);margin-top:8px">
       <b>Ask</b> anything &middot; <b>Paste OCR text</b> to correct &middot; <b>Feed</b> text to teach me<br>
-      <span style="color:var(--faint)">Commands: /correct &middot; /describe &middot; /generate &middot; /connect &middot; /stats &middot; /feed &middot; /practice</span>
+      <span style="color:var(--faint)">/correct &middot; /describe &middot; /generate &middot; /connect &middot; /stats &middot; /feed &middot; /practice &middot; /study &middot; /assess &middot; /roots &middot; /meaning &middot; /synonyms</span>
     </div>
   </div></div>
 </div>
@@ -536,6 +558,11 @@ function detect(t){
   if(t.startsWith('/connect ')){const p=t.slice(9).trim().split(/\\s+/);return{i:'connect',f:p[0],t:p[1]||p[0]}}
   if(t==='/stats'||t.startsWith('/stats'))return{i:'stats'};
   if(t.startsWith('/practice'))return{i:'practice',p:parseInt(t.split(/\\s+/)[1])||10};
+  if(t.startsWith('/study'))return{i:'study',p:parseInt(t.split(/\\s+/)[1])||5};
+  if(t==='/assess')return{i:'assess'};
+  if(t.startsWith('/roots ')||t.startsWith('/decompose '))return{i:'decompose',p:t.split(/\\s+/)[1]};
+  if(t.startsWith('/synonyms '))return{i:'synonyms',p:t.split(/\\s+/)[1]};
+  if(t.startsWith('/meaning '))return{i:'meaning',p:t.split(/\\s+/)[1]};
   if(t.startsWith('/score '))return{i:'score',p:t.slice(7)};
   if(/^(what|how|why|describe|explain|define|tell|discuss)\\b/i.test(t))return{i:'deliberate',p:t};
   if(t.endsWith('?')||/^(is|are|does|can|should|when|which)\\b/i.test(t))return{i:'deliberate',p:t};
@@ -580,6 +607,51 @@ async function send(){
     else if(d.i==='generate'){const r=await api('/api/mind/generate/'+d.p);h='<div style="font-style:italic;color:var(--accent)">'+(r.text||'...')+'</div>'}
     else if(d.i==='connect'){const r=await api('/api/mind/connect',{from:d.f,to:d.t});h=r.connected&&r.path?'<div>'+r.path.join(' \\u2192 ')+'</div>':'<div style="color:var(--dim)">No path found</div>'}
     else if(d.i==='score'){const[js,m]=await Promise.all([api('/api/score',{text:d.p}),api('/api/mind/score',{text:d.p})]);h='<div class="trace"><span class="lbl">js</span> '+(js.coherence||0).toFixed(3)+' &middot; <span class="lbl">mind</span> '+(m.coherence||0).toFixed(3)+'</div>'}
+    else if(d.i==='study'){
+      const r=await api('/api/mind/study',{rounds:d.p||5});
+      if(r.ok){
+        h='<div style="margin-bottom:8px"><b>Language Study</b> Level '+r.level+' ('+['','Word','Phrase','Sentence','Paragraph','Reasoning'][r.level||1]+')</div>';
+        h+='<div class="trace"><span class="lbl">score</span> '+r.avg_score+' / '+r.threshold+' &middot; '+(r.passed?'<span style="color:var(--green)">PASSED</span>':'<span style="color:var(--red)">needs practice</span>')+' &middot; current level: '+r.current_level+'</div>';
+        for(const ex of (r.exercises||[])){
+          const color=ex.score>0.5?'var(--green)':ex.score>0.3?'var(--amber)':'var(--red)';
+          h+='<div style="margin:4px 0;font-size:12px"><span style="color:'+color+'">['+ex.type+'] '+ex.score+'</span>';
+          if(ex.sentence)h+=' <span style="color:var(--dim);font-style:italic">"'+ex.sentence+'"</span>';
+          if(ex.phrase)h+=' <span style="color:var(--dim);font-style:italic">"'+ex.phrase+'"</span>';
+          if(ex.query)h+=' <span style="color:var(--accent)">'+ex.query+'</span> &rarr; '+(ex.retrieved||[]).join(', ');
+          if(ex.sentences)for(const s of ex.sentences)h+='<br><span style="color:var(--dim);font-style:italic">"'+s+'"</span>';
+          h+='</div>';
+        }
+      }
+    }
+    else if(d.i==='assess'){
+      const r=await api('/api/mind/assess',{});
+      if(r.ok){
+        h='<div style="margin-bottom:8px"><b>Language Assessment</b> — Current Level: <span style="color:var(--accent);font-weight:700">'+r.level+'</span></div>';
+        const labels=['','Word','Phrase','Sentence','Paragraph','Reasoning'];
+        for(let l=1;l<=5;l++){
+          const s=r.scores?.[l]||0;
+          const bar='#'.repeat(Math.round(s*20));
+          const color=s>0.5?'var(--green)':s>0.3?'var(--amber)':'var(--red)';
+          h+='<div style="font-size:12px"><span style="color:'+color+'">L'+l+' '+labels[l].padEnd(10)+' '+bar+' '+s.toFixed(2)+'</span></div>';
+        }
+      }
+    }
+    else if(d.i==='decompose'){
+      const r=await api('/api/mind/decompose/'+d.p);
+      h='<div><b>'+d.p+'</b></div>';
+      if(r.root)h+='<div>Root: <span style="color:var(--accent)">'+r.root+'</span></div>';
+      if(r.prefix)h+='<div>Prefix: '+r.prefix+'</div>';
+      if(r.suffix)h+='<div>Suffix: '+r.suffix+'</div>';
+      if(r.family?.length)h+='<div>Family: '+(r.family||[]).join(', ')+'</div>';
+    }
+    else if(d.i==='synonyms'){
+      const r=await api('/api/mind/synonyms/'+d.p);
+      h='<div><b>Synonyms of '+d.p+':</b> '+(r.synonyms||[]).map(s=>s[0]+' ('+s[1]+')').join(', ')+'</div>';
+    }
+    else if(d.i==='meaning'){
+      const r=await api('/api/mind/semantic/'+d.p);
+      h='<div>'+r.explanation+'</div>';
+    }
     else if(d.i==='practice'){
       const r=await api('/api/mind/practice',{rounds:d.p||10});
       if(r.ok){

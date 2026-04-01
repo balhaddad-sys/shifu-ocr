@@ -26,6 +26,7 @@ from .speaker import Speaker
 from .thinker import Thinker
 from .imagination import Imagination
 from .attention import Attention
+from .language import Morphology, Syntax, Semantics, Curriculum
 
 
 class ShifuMind:
@@ -65,6 +66,14 @@ class ShifuMind:
         self.thinker = Thinker(max_steps=thinker_max_steps)
         self.imagination = Imagination()
         self.attention = Attention()
+
+        # Language acquisition modules
+        self.language = type('Language', (), {
+            'morphology': Morphology(),
+            'syntax': Syntax(),
+            'semantics': Semantics(),
+            'curriculum': Curriculum(),
+        })()
 
         # ═══ SHARED GRAPH STATE ═══
         # These are the graphs that field.py operates on.
@@ -328,9 +337,10 @@ class ShifuMind:
                             nx_w[nxt] = 1
 
                 if novelty > 0.5:
-                    # ═══ DEEP ONLY: identity + speaker (expensive) ═══
+                    # ═══ DEEP ONLY: identity + speaker + syntax (expensive) ═══
                     self._extract_identity(text, content)
                     self.speaker.learn_frame(tokens)
+                    self.language.syntax.feed(tokens)
 
                 if cycle == 0:
                     accepted += 1
@@ -742,7 +752,20 @@ class ShifuMind:
         self.field.update_medians(self.cortex.word_freq, self._co_graph)
         self.trunk.finalize()
 
-        return {'routed': routed, 'identities': identities, 'pruned': pruned}
+        # Phase 7: Language acquisition — analyze morphology, syntax, semantics
+        morph = self.language.morphology.feed_vocabulary(self.cortex.word_freq)
+        self.language.morphology.feed_bigrams(self._nx_graph)
+        syn = 0
+        if self.cortex.word_freq:
+            syn_result = self.language.semantics.feed(
+                self._co_graph, self._nx_graph, self.cortex.word_freq,
+            )
+            syn = sum(syn_result.values())
+
+        return {
+            'routed': routed, 'identities': identities, 'pruned': pruned,
+            'morphology': morph, 'semantics': syn,
+        }
 
     def counterfactual(self, text: str, position: int,
                        alternatives: List[str]) -> List[dict]:
@@ -940,6 +963,19 @@ class ShifuMind:
         mind._feed_count = d.get('feed_count', 0)
         mind._epoch = d.get('epoch', 0)
         return mind
+
+    def study(self, rounds: int = 5, level: Optional[int] = None) -> dict:
+        """
+        Language curriculum: structured practice at adaptive level.
+        Level 1: word decomposition. Level 2: phrases. Level 3: sentences.
+        Level 4: paragraphs. Level 5: reasoning.
+        Auto-levels up/down based on performance.
+        """
+        return self.language.curriculum.practice(self, rounds=rounds, level=level)
+
+    def assess_language(self) -> dict:
+        """Assess current language ability across all levels."""
+        return self.language.curriculum.assess(self)
 
     # ═══ LEARNING LAB — endless self-practice ═══
     #
