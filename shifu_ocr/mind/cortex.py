@@ -536,6 +536,41 @@ class Cortex:
 
         return total_pruned
 
+    # ═══ HARMONIZE — cross-layer resonance ═══
+
+    def harmonize(self, words_a: List[str], words_b: List[str],
+                  weight: float = 0.15) -> None:
+        """
+        Connect two word groups across layers via _general.
+        Expands each group through breadth neighbors, then cross-links.
+        """
+        expand_a = set(words_a)
+        expand_b = set(words_b)
+        for w in words_a:
+            if w in self.breadth:
+                for n in list(self.breadth[w])[:10]:
+                    expand_a.add(n)
+        for w in words_b:
+            if w in self.breadth:
+                for n in list(self.breadth[w])[:10]:
+                    expand_b.add(n)
+
+        gen = self.ensure_layer('_general')
+        for a in expand_a:
+            if len(a) <= 2:
+                continue
+            for b in expand_b:
+                if len(b) <= 2 or a == b:
+                    continue
+                gen.connect(a, b, weight, self._epoch)
+                gen.connect(b, a, weight, self._epoch)
+                if a not in self.breadth:
+                    self.breadth[a] = set()
+                if b not in self.breadth:
+                    self.breadth[b] = set()
+                self.breadth[a].add(b)
+                self.breadth[b].add(a)
+
     # ═══ TEMPORAL QUERIES ═══
 
     def birth_of(self, word: str) -> int:

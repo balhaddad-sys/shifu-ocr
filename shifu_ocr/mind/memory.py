@@ -63,6 +63,8 @@ class Memory:
         self._recent_focus: List[List[str]] = []
         # Inverted index: word -> set of episode indices for O(1) recall
         self._word_index: Dict[str, Set[int]] = {}
+        # Correction detection
+        self._corrections: List[dict] = []  # {rejected, wanted, ts}
 
     def record(self, epoch: int, tokens: List[str],
                significance: float, context: Optional[dict] = None,
@@ -187,6 +189,32 @@ class Memory:
         continuity = overlap / max(total, 1)
         return 1.0 - continuity
 
+    def detect_correction(self, input_tokens: List[str],
+                          last_output_tokens: Optional[List[str]] = None) -> Optional[dict]:
+        """
+        Detect "not X, I want Y" patterns.
+        Short input + low overlap with last output = rejection signal.
+        """
+        if not last_output_tokens or not input_tokens:
+            return None
+        # Short input that doesn't overlap much with last output
+        if len(input_tokens) > 8:
+            return None  # Not a correction, too long
+        input_set = set(input_tokens)
+        output_set = set(last_output_tokens)
+        overlap = len(input_set & output_set)
+        if overlap <= 1 and len(input_tokens) <= 5:
+            correction = {
+                'rejected': list(output_set - input_set)[:5],
+                'wanted': list(input_set - output_set)[:5],
+                'ts': time.time() if 'time' in dir() else 0,
+            }
+            self._corrections.append(correction)
+            if len(self._corrections) > 20:
+                self._corrections = self._corrections[-10:]
+            return correction
+        return None
+
     def get_context(self) -> dict:
         """Current episodic context for the thinker."""
         return {
@@ -194,6 +222,7 @@ class Memory:
             'topic_strength': self._topic_strength,
             'last_focus': self._recent_focus[-1] if self._recent_focus else [],
             'turn_count': len(self.episodes),
+            'corrections': self._corrections[-3:],
         }
 
     # ═══ SERIALIZATION ═══

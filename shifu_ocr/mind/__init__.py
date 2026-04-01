@@ -1,5 +1,5 @@
 """
-shifu_ocr.mind -- Unified Cognitive Architecture
+shifu_ocr.mind — Unified Cognitive Architecture
 
 The mind that sees. Bridges cognitive language understanding
 with perceptual character recognition.
@@ -13,12 +13,19 @@ with perceptual character recognition.
                             context_words=['patient', 'cerebral'])
 """
 
-# Lazy imports: only ShifuMind is loaded eagerly since it's the primary API.
-# Other modules are imported on first access to avoid pulling in numpy
-# and all submodules when only ShifuMind is needed.
-
 from .mind import ShifuMind
+from .cortex import Cortex, Layer
+from .field import Field
+from .gate import Gate
+from .signal import Signal
+from .trunk import Trunk
+from .memory import Memory, Episode
+from .speaker import Speaker
+from .thinker import Thinker, WorkingMemory
+from .imagination import Imagination
+from .landscape import Landscape
 from ._types import Synapse, Assembly, Domain
+from ._protocols import Feedable, Queryable, Temporal, Serializable
 
 __all__ = [
     'ShifuMind',
@@ -29,30 +36,8 @@ __all__ = [
     'Trunk',
     'Memory', 'Episode',
     'Speaker',
-    'Thinker', 'WorkingMemory',
-    'SemanticLandscape',
+    'Thinker', 'WorkingMemory', 'Imagination',
+    'Landscape',
     'Synapse', 'Assembly', 'Domain',
     'Feedable', 'Queryable', 'Temporal', 'Serializable',
 ]
-
-
-def __getattr__(name):
-    """Lazy import for non-core symbols."""
-    _lazy = {
-        'Cortex': '.cortex', 'Layer': '.cortex',
-        'Field': '.field',
-        'Gate': '.gate',
-        'Signal': '.signal',
-        'Trunk': '.trunk',
-        'Memory': '.memory', 'Episode': '.memory',
-        'Speaker': '.speaker',
-        'Thinker': '.thinker', 'WorkingMemory': '.thinker',
-        'SemanticLandscape': '.landscape',
-        'Feedable': '._protocols', 'Queryable': '._protocols',
-        'Temporal': '._protocols', 'Serializable': '._protocols',
-    }
-    if name in _lazy:
-        import importlib
-        module = importlib.import_module(_lazy[name], __package__)
-        return getattr(module, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

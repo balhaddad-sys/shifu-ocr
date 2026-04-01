@@ -23,6 +23,7 @@ from .trunk import Trunk
 from .memory import Memory
 from .speaker import Speaker
 from .thinker import Thinker
+from .imagination import Imagination
 
 
 class ShifuMind:
@@ -60,6 +61,7 @@ class ShifuMind:
         self.memory = Memory(capacity=memory_capacity)
         self.speaker = Speaker()
         self.thinker = Thinker(max_steps=thinker_max_steps)
+        self.imagination = Imagination()
 
         # ═══ SHARED GRAPH STATE ═══
         # These are the graphs that field.py operates on.
@@ -470,22 +472,53 @@ class ShifuMind:
 
     def deliberate(self, query: str) -> dict:
         """
-        Multi-step reasoning about a query.
-        Uses the thinker with bound activate/score/signal functions.
+        Multi-step reasoning with full 6-phase cognitive cycle.
+        Passes imagination, cross-layer activation, confidence,
+        memory recall, and co-occurrence graph to the thinker.
         """
         tokens = _tokenize(query)
         content = [t for t in tokens if len(t) > 2]
         if not content:
             return {'focus': [], 'retrieved': [], 'coherence': 0.0,
-                    'steps': 0, 'converged': False, 'trace': []}
+                    'steps': 0, 'converged': False, 'trace': [],
+                    'situation': 'general', 'goal': 'general'}
 
-        return self.thinker.deliberate(
+        result = self.thinker.deliberate(
             query_tokens=content,
             activate_fn=self.activate,
             score_fn=self.score,
             signal_fn=lambda s, q: self.signal.observe(s, q),
+            cross_layer_fn=self.cortex.cross_layer_activation,
+            confidence_fn=self.cortex.confidence,
+            imagination=self.imagination,
+            co_graph=self._co_graph,
             episodic_context=self.memory.get_context(),
+            memory_recall_fn=self.memory.recall,
         )
+
+        # Consolidation: high-quality imagined links → cortex
+        for word in result.get('consolidated', []):
+            if word and result['focus']:
+                primary = result['focus'][0]
+                general = self.cortex.ensure_layer('_general')
+                general.connect(primary, word, 0.5, self.cortex._epoch)
+                general.connect(word, primary, 0.3, self.cortex._epoch)
+
+        # Self-tune every 10 deliberations
+        if len(self.thinker._history) % 10 == 0:
+            self._self_tune()
+
+        return result
+
+    def _self_tune(self) -> None:
+        """Adjust cortex parameters based on recent quality trend."""
+        trend = self.signal.recent_trend(5)
+        if trend < 0.3:
+            # Struggling — slow decay, hold knowledge longer
+            self.cortex._decay_factor = min(self.cortex._decay_factor * 1.01, 0.999)
+        elif trend > 0.6:
+            # Thriving — faster decay, more dynamic
+            self.cortex._decay_factor = max(self.cortex._decay_factor * 0.999, 0.95)
 
     def counterfactual(self, text: str, position: int,
                        alternatives: List[str]) -> List[dict]:
@@ -651,6 +684,7 @@ class ShifuMind:
             'memory': self.memory.to_dict(),
             'speaker': self.speaker.to_dict(),
             'thinker': self.thinker.to_dict(),
+            'imagination': self.imagination.to_dict(),
             'co_graph': self._co_graph,
             'nx_graph': self._nx_graph,
             'px_graph': self._px_graph,
@@ -671,6 +705,7 @@ class ShifuMind:
         mind.memory = Memory.from_dict(d.get('memory', {}))
         mind.speaker = Speaker.from_dict(d.get('speaker', {}))
         mind.thinker = Thinker.from_dict(d.get('thinker', {}))
+        mind.imagination = Imagination.from_dict(d.get('imagination', {}))
         mind._co_graph = d.get('co_graph', {})
         mind._nx_graph = d.get('nx_graph', {})
         mind._px_graph = d.get('px_graph', {})
