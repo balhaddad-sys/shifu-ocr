@@ -814,9 +814,13 @@ class ShifuMind:
     # Like thymic selection: wild proliferation → selection pressure →
     # only the connections that fit the architecture survive.
 
-    def consolidate(self) -> dict:
+    def consolidate(self, focus_size: int = 500) -> dict:
         """
-        THYMIC MATURATION — discipline after wild feeding.
+        FOCUSED CONSOLIDATION — one chapter at a time.
+
+        Not 57K words at once. 500 words the baby ATTENDS to.
+        Focus selected by: conviction target, recent queries,
+        then highest-frequency content words.
 
         Phase 1: IDENTITY — extract from co-graph structure.
           "X is a Y" detected from nx_graph bigrams.
@@ -840,6 +844,7 @@ class ShifuMind:
 
         Phase 6: Prune, myelinate, rebuild caches.
         """
+        t0 = time.time()
         gen = self.cortex.ensure_layer('_general')
         routed = 0
         identities = 0
@@ -859,13 +864,63 @@ class ShifuMind:
 
         # If first consolidation or >50% new, process everything
         process_all = last_epoch == 0 or len(new_words) > len(self.cortex.word_freq) * 0.5
-        words_to_process = self._co_graph.keys() if process_all else new_words
 
-        # ═══ PHASE 0: BUILD CORTEX from co-graph (only new words) ═══
+        # ═══ FOCUSED ATTENTION: what does the baby care about? ═══
+        # Not top-by-frequency. Top-by-RELEVANCE-TO-CURRENT-FOCUS.
+        # 1. Conviction target words (what it's reaching toward)
+        # 2. Recent attention words (what was just activated)
+        # 3. Then fill with frequency-ranked content words
+        # Only focus_size words get processed. One chapter at a time.
+
+        focus_words = set()
+
+        # Priority 1: Conviction — what the baby is reaching toward
+        purpose = self.conviction.discover_purpose(self)
+        if purpose:
+            goal_info = self.conviction._goals.get(purpose, {})
+            core = goal_info.get('core', '')
+            frontier = goal_info.get('frontier', '')
+            if core:
+                focus_words.add(core)
+                # Add core's co-graph neighborhood
+                for n in list(self._co_graph.get(core, {}).keys())[:50]:
+                    if len(n) > 3:
+                        focus_words.add(n)
+            if frontier and len(frontier) > 3:
+                focus_words.add(frontier)
+                for n in list(self._co_graph.get(frontier, {}).keys())[:50]:
+                    if len(n) > 3:
+                        focus_words.add(n)
+
+        # Priority 2: Recent attention (what was just queried)
+        for ep in self.memory.episodes[-5:]:
+            for t in ep.tokens:
+                if len(t) > 3:
+                    focus_words.add(t)
+
+        # Priority 3: Fill with frequency-ranked content words
+        freq = self.cortex.word_freq
+        if len(focus_words) < focus_size:
+            remaining = focus_size - len(focus_words)
+            ranked = sorted(
+                [(w, freq.get(w, 0)) for w in self._co_graph
+                 if len(w) > 3 and w not in focus_words],
+                key=lambda x: -x[1],
+            )[:remaining]
+            for w, _ in ranked:
+                focus_words.add(w)
+
+        if process_all:
+            words_to_process = list(focus_words)[:focus_size]
+        else:
+            # Incremental: only new words, but prioritize focused ones
+            focused_new = [w for w in new_words if w in focus_words and len(w) > 2]
+            other_new = [w for w in new_words if w not in focus_words and len(w) > 2]
+            words_to_process = focused_new + other_new[:100]  # New non-focused get light treatment
+
+        # ═══ PHASE 0: BUILD CORTEX from co-graph ═══
         cortex_built = 0
         for word in words_to_process:
-            if len(word) <= 2:
-                continue
             neighbors = self._co_graph.get(word, {})
             top = sorted(neighbors.items(), key=lambda x: -x[1])[:20]
             for neighbor, weight in top:
@@ -873,10 +928,6 @@ class ShifuMind:
                     continue
                 gen.connect(word, neighbor, min(weight, 10.0), current_epoch)
                 cortex_built += 1
-                if cortex_built > 50000:
-                    break
-            if cortex_built > 50000:
-                break
 
         # ═══ PHASE 1: IDENTITY (only for new words) ═══
         id_layer = self.cortex.ensure_layer('identity')
@@ -888,12 +939,12 @@ class ShifuMind:
 
         is_followers = self._nx_graph.get('is', {})
 
-        for subject, freq in sorted(is_preceders.items(), key=lambda x: -x[1])[:200]:
+        for subject, subj_freq in sorted(is_preceders.items(), key=lambda x: -x[1])[:200]:
             for category, cat_freq in sorted(is_followers.items(), key=lambda x: -x[1])[:20]:
                 if category == subject or len(category) <= 2:
                     continue
                 if category in self._co_graph.get(subject, {}):
-                    id_layer.connect(subject, category, min(freq, cat_freq), current_epoch)
+                    id_layer.connect(subject, category, min(subj_freq, cat_freq), current_epoch)
                     identities += 1
 
         # ═══ PHASES 2-5: Route by CO-OCCURRENCE (only new words) ═══
@@ -911,20 +962,18 @@ class ShifuMind:
             'relation': ['associated', 'related', 'risk', 'factor', 'linked', 'increases', 'compared'],
         }
 
+        # FOCUSED spoke routing: only route words IN the focus set.
+        # Top 10 neighbors per signal word. No nested fan-out.
+        # 4 layers × 8 signals × 10 neighbors = 320 connections. Not 32,000.
+        focus_set = set(words_to_process)
         for layer_name, signal_words in spoke_routing.items():
             typed = self.cortex.ensure_layer(layer_name)
             for signal in signal_words:
                 co_neighbors = self._co_graph.get(signal, {})
-                # Only process new neighbors or all if first consolidation
-                for neighbor, weight in sorted(co_neighbors.items(), key=lambda x: -x[1])[:50]:
-                    if len(neighbor) > 3 and weight > 1:
-                        if not process_all and neighbor not in new_words:
-                            continue
+                for neighbor, weight in sorted(co_neighbors.items(), key=lambda x: -x[1])[:10]:
+                    if len(neighbor) > 3 and weight > 1 and neighbor in focus_set:
                         typed.connect(neighbor, signal, weight, current_epoch)
-                        for other, ow in sorted(co_neighbors.items(), key=lambda x: -x[1])[:20]:
-                            if other != neighbor and len(other) > 3 and ow > 1:
-                                typed.connect(neighbor, other, min(weight, ow) * 0.5, current_epoch)
-                                routed += 1
+                        routed += 1
 
         # ═══ PHASE 6: Prune, myelinate, rebuild ═══
         pruned = 0
@@ -939,9 +988,9 @@ class ShifuMind:
         self.field.invalidate_cache()
         self.field.update_medians(self.cortex.word_freq, self._co_graph)
 
-        # Phase 6b: DOMAIN DISCOVERY — only for NEW words
+        # Phase 6b: DOMAIN DISCOVERY — only for focused words
         observed = 0
-        scan_words = new_words if not process_all else set(list(self.cortex.word_freq.keys())[:2000])
+        scan_words = focus_set if process_all else (new_words & focus_set)
         for word in scan_words:
             if len(word) <= 3:
                 continue
@@ -958,8 +1007,8 @@ class ShifuMind:
         self._last_consolidation_epoch = current_epoch
 
         # Phase 7: BUILD NEURAL FIELD — each word becomes a neuron
-        # Connections from co-graph become axons.
-        # Myelinated cortex synapses become myelinated axons.
+        # Feed only top 5000 words by frequency to neural field.
+        # The neurons that matter most get built first.
         myel_pairs = set()
         for ly in self.cortex._layers.values():
             for src, targets in ly._connections.items():
@@ -967,12 +1016,18 @@ class ShifuMind:
                     if syn.myelinated:
                         myel_pairs.add((src, tgt))
         cortex_conns = {}
-        gen = self.cortex.get_layer('_general')
-        if gen:
-            for src, targets in gen._connections.items():
+        gen_layer = self.cortex.get_layer('_general')
+        if gen_layer:
+            for src, targets in gen_layer._connections.items():
                 cortex_conns[src] = {t: s.weight for t, s in targets.items()}
+        # Frequency-ranked co-graph subset
+        neural_ranked = sorted(
+            [(w, freq.get(w, 0)) for w in self._co_graph if len(w) > 2],
+            key=lambda x: -x[1],
+        )[:5000]
+        neural_co = {w: self._co_graph[w] for w, _ in neural_ranked if w in self._co_graph}
         neural_built = self.neural_field.build_from_graphs(
-            self._co_graph, cortex_conns, myel_pairs, self.golgi,
+            neural_co, cortex_conns, myel_pairs, self.golgi,
         )
 
         # Phase 8: Language acquisition — analyze morphology, syntax, semantics
@@ -985,12 +1040,14 @@ class ShifuMind:
             )
             syn = sum(syn_result.values())
 
+        elapsed = round(time.time() - t0, 1)
         return {
             'routed': routed, 'identities': identities, 'pruned': pruned,
             'morphology': morph, 'semantics': syn,
             'neural_field': neural_built,
             'incremental': not process_all,
-            'new_words_processed': len(new_words) if not process_all else len(self.cortex.word_freq),
+            'new_words_processed': len(new_words) if not process_all else len(words_to_process),
+            'elapsed_seconds': elapsed,
         }
 
     def counterfactual(self, text: str, position: int,
