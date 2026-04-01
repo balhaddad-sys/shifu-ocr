@@ -84,7 +84,7 @@ function mindCommand(cmd) {
         delete mindPending[id];
         resolve({ ok: false, error: 'timeout' });
       }
-    }, 15000);
+    }, 120000); // 2 minutes — batch feed of 130K sentences needs time
     mindPending[id] = { resolve, timer };
     cmd._id = id;
     mindProcess.stdin.write(JSON.stringify(cmd) + '\n');
@@ -766,6 +766,7 @@ function updateStats(){
     _statsTimer=null;
     try{
       const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);
+      if(!m.ok&&!m.vocabulary)return; // Mind not ready — don't overwrite with zeros
       const vocab=m.vocabulary||0;
       const myel=m.myelinated||0;
       const feeds=m.feed_count||0;

@@ -241,6 +241,13 @@ if __name__ == '__main__':
     t = threading.Thread(target=_background_practice, daemon=True)
     t.start()
 
+    import signal as _signal
+    _signal.signal(_signal.SIGINT, lambda *a: None)  # Ignore Ctrl+C
+    try:
+        _signal.signal(_signal.SIGPIPE, lambda *a: None)  # Ignore broken pipe
+    except AttributeError:
+        pass  # Windows doesn't have SIGPIPE
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -255,5 +262,8 @@ if __name__ == '__main__':
                 result = {'ok': False, 'error': str(e)}
         if req_id is not None:
             result['_id'] = req_id
-        sys.stdout.write(json.dumps(result, ensure_ascii=False) + '\n')
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(json.dumps(result, ensure_ascii=False) + '\n')
+            sys.stdout.flush()
+        except (BrokenPipeError, OSError):
+            break  # Node closed the pipe — exit gracefully
