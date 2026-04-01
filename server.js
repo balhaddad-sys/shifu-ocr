@@ -633,6 +633,8 @@ async function send(){
       if(ms.ok)h+='<div class="trace"><span class="lbl">mind coherence</span> '+(ms.coherence||0).toFixed(3)+'</div>';
     }
     else if(d.i==='deliberate'){
+      // Before answering: ask the compass. If it needs something, do it silently.
+      try{const c=await api('/api/mind/compass',{});if(c.ok&&c.action==='consolidate')await api('/api/mind/consolidate',{});}catch{}
       const r=await api('/api/mind/deliberate',{query:d.p});
       if(r.ok){
         h='<div style="margin-bottom:4px"><b>Focus:</b> '+(r.focus||[]).join(', ')+'</div>';
@@ -816,11 +818,20 @@ async function handleFiles(event) {
     const rate = Math.round(allSentences.length / ((Date.now() - t0) / 1000));
     results += '<div class="trace"><span class="lbl">fed</span> ' + totalFed + '/' + allSentences.length + ' accepted in ' + elapsed + 's (' + rate + ' sent/sec)</div>';
 
-    // PHASE 3: CONSOLIDATE — discipline after wild feeding
-    // Routes _general into typed layers, extracts identities, prunes weak connections
-    showBar(90, 'Consolidating knowledge...');
-    const cr = await api('/api/mind/consolidate', {});
-    if (cr.ok) results += '<div class="trace"><span class="lbl">consolidated</span> ' + (cr.routed||0) + ' routed, ' + (cr.identities||0) + ' identities, ' + (cr.pruned||0) + ' pruned</div>';
+    // PHASE 3: Ask the baby what it needs — don't force consolidation
+    showBar(90, 'Asking the baby...');
+    const compass = await api('/api/mind/compass', {});
+    if (compass.ok) {
+      results += '<div class="trace"><span class="lbl">' + compass.state + '</span> ' + compass.desire + '</div>';
+      // Do what the baby asks
+      if (compass.action === 'consolidate') {
+        const cr = await api('/api/mind/consolidate', {});
+        if (cr.ok) results += '<div class="trace"><span class="lbl">consolidated</span> ' + (cr.routed||0) + ' routed, ' + (cr.identities||0) + ' identities</div>';
+      } else if (compass.action === 'practice') {
+        const pr = await api('/api/mind/practice', {rounds: 3});
+        if (pr.ok) results += '<div class="trace"><span class="lbl">practiced</span> ' + (pr.improved||0) + ' improved</div>';
+      }
+    }
   }
 
   showBar(100, 'Complete');
