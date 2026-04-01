@@ -216,25 +216,55 @@ if __name__ == '__main__':
     _state = [0]  # [practice_count] — mutable container, no nonlocal needed
 
     def _background_practice():
+        # ═══ RELATIVISTIC TIME ═══
+        #
+        # E = mc² — energy and mass are the same thing.
+        # In the mind: LEARNING and TIME are the same thing.
+        # Time that produces no learning is wasted time.
+        #
+        # The baby practices at CPU speed — not wall clock speed.
+        # It BURSTS: practice hard until learning rate drops,
+        # then rest briefly, then burst again.
+        #
+        # Between bursts: yield to let requests through (10ms).
+        # During burst: 10 practice + 3 study + consolidate.
+        # After burst: check if learning rate is still positive.
+        # If dopamine surprise is near zero → learning saturated → rest longer.
+        # If dopamine surprise is high → still learning → keep going.
+
         while True:
-            _time.sleep(30)
+            _time.sleep(0.01)  # 10ms yield for requests
             if len(mind.cortex.word_freq) < 20:
+                _time.sleep(1)
                 continue
-            # Only practice if not handling a request
             if _busy.locked():
                 continue
-            acquired = _busy.acquire(timeout=0.1)
+            acquired = _busy.acquire(timeout=0.001)
             if not acquired:
                 continue
             try:
-                mind.practice(rounds=2)
+                # BURST: practice until learning saturates
+                r = mind.practice(rounds=10)
                 _state[0] += 1
-                if _state[0] % 5 == 0:
-                    mind.study(rounds=1)
+
+                if _state[0] % 3 == 0:
+                    mind.study(rounds=3)
                 if _state[0] % 10 == 0:
                     mind.consolidate()
+
+                # RELATIVISTIC REST: check learning rate
+                # If recent dopamine surprises are near zero → saturated
+                trend = mind.signal.recent_trend(5)
+                if trend > 0.4:
+                    # Still learning — minimal rest
+                    pass  # Loop immediately (10ms yield)
+                else:
+                    # Learning saturated — rest proportional to saturation
+                    # Low trend → longer rest. The mind sleeps when bored.
+                    rest = max(0.1, (1.0 - trend) * 2.0)  # 0.1s to 2s
+                    _time.sleep(rest)
             except Exception:
-                pass
+                _time.sleep(0.5)
             finally:
                 _busy.release()
 

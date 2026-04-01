@@ -1005,15 +1005,17 @@ class ShifuMind:
         improved = 0
         degraded = 0
 
-        # Find concepts worth practicing: "learning" or "glimpsed" state
+        # Find concepts worth practicing — FAST: skip confidence() call
+        # (it's expensive). Use word_freq + breadth as proxy.
         candidates = []
         for word, freq in self.cortex.word_freq.items():
             if len(word) <= 3 or freq < 2:
                 continue
-            conf = self.cortex.confidence(word)
-            if conf['state'] in ('learning', 'glimpsed'):
-                candidates.append((word, conf['score']))
-        # Sort by confidence ascending — practice weakest first
+            # Proxy for "still learning": has frequency but few connections
+            breadth = len(self.cortex.breadth.get(word, set()))
+            if breadth < 30:  # Not yet well-connected
+                candidates.append((word, breadth))
+        # Sort by breadth ascending — practice least connected first
         candidates.sort(key=lambda x: x[1])
 
         for i in range(min(rounds, len(candidates))):
