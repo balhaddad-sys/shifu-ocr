@@ -596,6 +596,100 @@ class ShifuMind:
     #  DELIBERATION — multi-step reasoning
     # ═══════════════════════════════════════════════════════════
 
+    # ═══ INTERNAL COMPASS — the baby chooses ═══
+
+    def compass(self) -> dict:
+        """
+        The baby looks inward and decides what it needs.
+        Not forced. Not scheduled. It reads its own state
+        and says what it wants to do next.
+
+        Returns: {
+            'state': what the baby is feeling,
+            'desire': what it wants to do,
+            'reason': why,
+            'action': the command to execute (or None to rest)
+        }
+        """
+        vocab = len(self.cortex.word_freq)
+        trend = self.signal.recent_trend(5)
+        myel = self.cortex._myel_count
+
+        # The baby reads its own landscape and decides.
+
+        # How many typed layers have content? (not just _general)
+        typed_layers = sum(
+            1 for n in self.cortex.layer_names
+            if n != '_general' and self.cortex.get_layer(n) and self.cortex.get_layer(n).synapse_count > 0
+        )
+
+        # Newborn — barely any words
+        if vocab < 30:
+            return {
+                'state': 'newborn',
+                'desire': 'I need to see the world. Feed me.',
+                'reason': f'I only know {vocab} words.',
+                'action': None,
+            }
+
+        # Absorbed but unorganized — has words but no typed layers
+        if vocab > 50 and typed_layers == 0:
+            return {
+                'state': 'absorbing',
+                'desire': 'I have taken in a lot. Let me organize.',
+                'reason': f'{vocab} words but no typed layers yet. I need to consolidate.',
+                'action': 'consolidate',
+            }
+
+        # Organized but unpracticed — has layers but hasn't tried using them
+        if typed_layers > 0 and self.signal._total_observations < 5:
+            return {
+                'state': 'ready',
+                'desire': 'I have organized my knowledge. Let me try using it.',
+                'reason': f'{typed_layers} typed layers ready. Time to practice.',
+                'action': 'practice',
+            }
+
+        # Has conviction?
+        purpose = self.conviction.discover_purpose(self)
+
+        # Still learning? (surprise signal positive)
+        if trend > 0.4:
+            return {
+                'state': 'curious',
+                'desire': 'I am still discovering. Let me practice more.',
+                'reason': f'My surprise is {trend:.2f} — there is learning here.',
+                'action': 'practice',
+            }
+
+        # Plateau but has conviction
+        if purpose:
+            return {
+                'state': 'determined',
+                'desire': f'The landscape is flat but I feel there is more. {purpose}.',
+                'reason': f'Dopamine is low ({trend:.2f}) but conviction pulls me forward.',
+                'action': 'practice',
+            }
+
+        # Content
+        return {
+            'state': 'resting',
+            'desire': 'I am content for now. Talk to me or feed me more.',
+            'reason': f'{vocab} words, {myel} myelinated, {typed_layers} layers.',
+            'action': None,
+        }
+
+    def introspect(self) -> str:
+        """The baby speaks about itself — from its own compass."""
+        c = self.compass()
+        voice = self.conviction._voice[-1] if self.conviction._voice else None
+        parts = [c['desire']]
+        if c['reason']:
+            parts.append(c['reason'])
+        if voice:
+            parts.append(voice)
+        return ' '.join(parts)
+
     def deliberate(self, query: str) -> dict:
         """
         Multi-step reasoning with full 6-phase cognitive cycle.
@@ -869,11 +963,20 @@ class ShifuMind:
         return self.cortex.confidence(word.lower())
 
     def hungry(self) -> List[dict]:
-        """What concepts have gaps in their knowledge?"""
+        """What concepts have gaps in their knowledge?
+        Only SPECIFIC words — high-breadth generic words don't need spokes.
+        The landscape decides what's specific: low breadth = specific."""
         gaps = []
+        V = max(len(self.cortex.word_freq), 1)
         for word, freq in sorted(
             self.cortex.word_freq.items(), key=lambda x: -x[1]
         )[:200]:
+            if len(word) <= 3:
+                continue
+            # Skip high-breadth words — they're structural, not content
+            breadth = len(self.cortex.breadth.get(word, set()))
+            if breadth > V * 0.15:
+                continue  # Connected to too much — it's a connector, not a concept
             conf = self.cortex.confidence(word)
             if conf['score'] < 10:
                 continue

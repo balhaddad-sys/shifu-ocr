@@ -430,6 +430,12 @@ const server = http.createServer(async (req, res) => {
     const body = await parseBody(req);
     return jsonResponse(res, await mindCommand({ cmd: 'connect', from: body.from, to: body.to }));
   }
+  if (path === '/api/mind/compass') {
+    return jsonResponse(res, await mindCommand({ cmd: 'compass' }));
+  }
+  if (path === '/api/mind/introspect') {
+    return jsonResponse(res, await mindCommand({ cmd: 'introspect' }));
+  }
   if (path === '/api/mind/consolidate' && req.method === 'POST') {
     return jsonResponse(res, await mindCommand({ cmd: 'consolidate' }));
   }
@@ -571,6 +577,8 @@ function detect(t){
   if(t.startsWith('/generate '))return{i:'generate',p:t.slice(10).trim().split(/\\s+/)[0]};
   if(t.startsWith('/connect ')){const p=t.slice(9).trim().split(/\\s+/);return{i:'connect',f:p[0],t:p[1]||p[0]}}
   if(t==='/stats'||t.startsWith('/stats'))return{i:'stats'};
+  if(t==='/compass'||t==='/how are you'||t==='/what do you need')return{i:'compass'};
+  if(t==='/consolidate')return{i:'consolidate'};
   if(t.startsWith('/practice'))return{i:'practice',p:parseInt(t.split(/\\s+/)[1])||10};
   if(t.startsWith('/study'))return{i:'study',p:parseInt(t.split(/\\s+/)[1])||5};
   if(t==='/assess')return{i:'assess'};
@@ -581,6 +589,15 @@ function detect(t){
   if(/^(what|how|why|describe|explain|define|tell|discuss)\\b/i.test(t))return{i:'deliberate',p:t};
   if(t.endsWith('?')||/^(is|are|does|can|should|when|which)\\b/i.test(t))return{i:'deliberate',p:t};
   return{i:'correct',p:t};
+}
+
+function send_action(action){
+  // The baby asked to do something — execute it
+  if(action==='consolidate')inp.value='/consolidate';
+  else if(action==='practice')inp.value='/practice 5';
+  else if(action==='conviction')inp.value='/practice 3';
+  else inp.value='/'+action;
+  send();
 }
 
 async function send(){
@@ -621,6 +638,27 @@ async function send(){
     else if(d.i==='generate'){const r=await api('/api/mind/generate/'+d.p);h='<div style="font-style:italic;color:var(--accent)">'+(r.text||'...')+'</div>'}
     else if(d.i==='connect'){const r=await api('/api/mind/connect',{from:d.f,to:d.t});h=r.connected&&r.path?'<div>'+r.path.join(' \\u2192 ')+'</div>':'<div style="color:var(--dim)">No path found</div>'}
     else if(d.i==='score'){const[js,m]=await Promise.all([api('/api/score',{text:d.p}),api('/api/mind/score',{text:d.p})]);h='<div class="trace"><span class="lbl">js</span> '+(js.coherence||0).toFixed(3)+' &middot; <span class="lbl">mind</span> '+(m.coherence||0).toFixed(3)+'</div>'}
+    else if(d.i==='consolidate'){
+      const r=await api('/api/mind/consolidate',{});
+      h='<div><b>Consolidated:</b> '+r.routed+' routed, '+r.identities+' identities, '+r.pruned+' pruned</div>';
+      if(r.morphology)h+='<div class="trace"><span class="lbl">morphology</span> '+r.morphology.roots+' roots, '+r.morphology.prefixes+' prefixes, '+r.morphology.suffixes+' suffixes</div>';
+    }
+    else if(d.i==='compass'){
+      const c=await api('/api/mind/compass');
+      if(c.ok){
+        const stateColors={newborn:'var(--purple)',absorbing:'var(--amber)',curious:'var(--green)',determined:'var(--accent)',hungry:'var(--amber)',resting:'var(--dim)'};
+        h='<div style="margin-bottom:8px"><span style="color:'+(stateColors[c.state]||'var(--dim)')+';font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:1px">'+c.state+'</span></div>';
+        h+='<div style="font-size:15px;font-weight:500;margin-bottom:6px">'+c.desire+'</div>';
+        h+='<div style="color:var(--dim);font-size:12px">'+c.reason+'</div>';
+        // If the baby wants to do something, offer to do it
+        if(c.action){
+          h+='<div style="margin-top:10px"><button onclick=\"send_action(\\\''+c.action+'\\\')\" style=\"padding:6px 16px;background:var(--accent);color:white;border:none;border-radius:8px;cursor:pointer;font-size:12px\">Let me '+c.action+'</button></div>';
+        }
+        // Show conviction voice if available
+        const intr=await api('/api/mind/introspect');
+        if(intr.ok&&intr.voice)h+='<div style="margin-top:8px;font-style:italic;color:var(--dim);font-size:12px">"'+intr.voice+'"</div>';
+      }
+    }
     else if(d.i==='study'){
       const r=await api('/api/mind/study',{rounds:d.p||5});
       if(r.ok){
