@@ -31,6 +31,7 @@ let mindProcess = null;
 let mindReady = false;
 let mindPending = {};  // id → {resolve, timer}
 let mindSeq = 0;
+let mindRestarts = 0;
 
 function bootMind() {
   const script = path.join(__dirname, 'shifu_ocr', 'mind_worker.py');
@@ -41,6 +42,7 @@ function bootMind() {
       const data = JSON.parse(line);
       if (data.status === 'ready') {
         mindReady = true;
+        mindRestarts = 0;  // Successful boot — reset counter
         console.log('  Mind ready: ' + (data.vocabulary || 0) + ' words');
         return;
       }
@@ -71,7 +73,12 @@ function bootMind() {
     }
     mindPending = {};
     // Auto-restart after 1 second
-    setTimeout(bootMind, 1000);
+    if (mindRestarts < 3) {
+      mindRestarts++;
+      setTimeout(bootMind, 2000);
+    } else {
+      console.warn('Mind exceeded 3 restarts. Restart the server.');
+    }
   });
 }
 
