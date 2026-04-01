@@ -83,6 +83,10 @@ class Field:
         # Cached median values for inhibition
         self._median_freq: float = 1.0
         self._median_degree: float = 1.0
+        # Inhibition cache: word -> weight. Cleared by update_medians().
+        self._inh_cache: Dict[str, float] = {}
+        # Activation cache: word -> field. Cleared by invalidate_cache().
+        self._act_cache: Dict[str, Dict[str, float]] = {}
 
     # ═══ INHIBITION ═══
 
@@ -95,15 +99,19 @@ class Field:
         degrees = sorted(len(co_graph.get(w, {})) for w in word_freqs)
         if degrees:
             self._median_degree = max(degrees[len(degrees) // 2], 1.0)
+        self._inh_cache.clear()
 
     def _inhibition_weight(self, word: str, word_freqs: Dict[str, float],
                            co_graph: Dict[str, Dict[str, float]]) -> float:
         """
-        Frequency + degree based inhibition.
-        High-frequency, high-degree words are dampened to prevent dominance.
+        Frequency + degree based inhibition. CACHED per word.
         """
+        cached = self._inh_cache.get(word)
+        if cached is not None:
+            return cached
         freq = word_freqs.get(word, 0)
         if freq == 0:
+            self._inh_cache[word] = self._inh_ceiling
             return self._inh_ceiling
         freq_ratio = freq / max(self._median_freq, 1)
         freq_inh = 1.0 / math.log2(freq_ratio + 2)
@@ -111,7 +119,9 @@ class Field:
         deg_ratio = degree / max(self._median_degree, 1)
         deg_inh = 1.0 / math.log2(deg_ratio + 2)
         raw = freq_inh * 0.5 + deg_inh * 0.5
-        return max(self._inh_floor, min(self._inh_ceiling, raw))
+        result = max(self._inh_floor, min(self._inh_ceiling, raw))
+        self._inh_cache[word] = result
+        return result
 
     # ═══ WAVE PROPAGATION ═══
 
@@ -148,6 +158,10 @@ class Field:
 
         Returns: Dict[word -> energy]
         """
+        # Check cache
+        if word in self._act_cache:
+            return self._act_cache[word]
+
         field: Dict[str, float] = {}
         field[word] = 1.0
         wf = word_freqs or {}
@@ -186,7 +200,12 @@ class Field:
                 inh = self._inhibition_weight(tgt, wf, co_graph)
                 field[tgt] = field.get(tgt, 0.0) + energy * inh
 
+        self._act_cache[word] = field
         return field
+
+    def invalidate_cache(self) -> None:
+        """Clear activation cache. Call after feeding."""
+        self._act_cache.clear()
 
     def activate_in_context(
         self,
@@ -390,8 +409,8 @@ class Field:
             'inhibition_ceiling': self._inh_ceiling,
             'settle_max_iter': self._settle_max_iter,
             'settle_epsilon': self._settle_epsilon,
-            'settle_reactivate_top': self._settle_top,
-            'settle_iter_decay': self._settle_decay,
+            'settle_top': self._settle_top,
+            'settle_decay': self._settle_decay,
             'gate_dampen': self._gate_dampen,
             'gate_boost': self._gate_boost,
         }
@@ -411,8 +430,8 @@ class Field:
             inhibition_ceiling=d.get('inhibition_ceiling', 1.0),
             settle_max_iter=d.get('settle_max_iter', 3),
             settle_epsilon=d.get('settle_epsilon', 0.01),
-            settle_reactivate_top=d.get('settle_reactivate_top', d.get('settle_top', 8)),
-            settle_iter_decay=d.get('settle_iter_decay', d.get('settle_decay', 0.5)),
+            settle_reactivate_top=d.get('settle_top', 8),
+            settle_iter_decay=d.get('settle_decay', 0.5),
             gate_dampen=d.get('gate_dampen', 0.4),
             gate_boost=d.get('gate_boost', 1.5),
         )

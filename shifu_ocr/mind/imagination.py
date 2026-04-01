@@ -182,17 +182,17 @@ class Imagination:
         adjusted = max(0.05, min(0.5, adjusted))
 
         neighbors = co_graph.get(concept, {})
-        # Collect 2-hop candidates
+        # Collect 2-hop candidates — limit to top 10 neighbors × top 5 hops
         two_hop: Dict[str, float] = {}
-        for mid, w1 in list(neighbors.items())[:20]:
-            for hop2, w2 in list(co_graph.get(mid, {}).items())[:10]:
+        for mid, w1 in sorted(neighbors.items(), key=lambda x: -x[1])[:10]:
+            for hop2, w2 in sorted(co_graph.get(mid, {}).items(), key=lambda x: -x[1])[:5]:
                 if hop2 == concept or hop2 in neighbors:
                     continue
                 two_hop[hop2] = two_hop.get(hop2, 0) + w1 * w2
 
-        # Score each by probability
+        # Score only top 5 candidates (not 15) — imagination should be focused
         results = []
-        for candidate, energy in sorted(two_hop.items(), key=lambda x: -x[1])[:15]:
+        for candidate, energy in sorted(two_hop.items(), key=lambda x: -x[1])[:5]:
             prob = self._probability(concept, candidate, co_graph, cortex_activate)
             if prob['score'] >= adjusted:
                 results.append({

@@ -63,7 +63,7 @@ class Thinker:
     Full cognitive cycle with dopamine feedback and policy learning.
     """
 
-    def __init__(self, max_steps: int = 5):
+    def __init__(self, max_steps: int = 3):
         self._max_steps = max_steps
         self._history: List[dict] = []
         # Dopamine policy: situation:goal → {count, total_quality, avg_quality, best_layers}
@@ -390,12 +390,13 @@ class Thinker:
                         changed = True
 
             # ═══ PHASE 5: IMAGINATION — fill gaps ═══
-            if imagination and _co:
-                # Explore from each focus concept
-                for word in wm.focus[:2]:
+            if imagination and _co and step < 2:
+                # Explore from primary focus concept ONLY, and only in early steps
+                primary_word = next((w for w in wm.focus if len(w) > 3), None)
+                if primary_word:
                     explored = imagination.explore(
-                        word, _co, activate_fn,
-                        threshold=0.15,
+                        primary_word, _co, activate_fn,
+                        threshold=0.2,
                     )
                     for item in explored[:2]:
                         if item['word'] not in focus_set and item['word'] not in {r['word'] for r in wm.retrieved}:

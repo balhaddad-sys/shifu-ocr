@@ -166,6 +166,7 @@ class ShifuMind:
         # 7. Field medians
         if self._feed_count % 50 == 0:
             self.field.update_medians(self.cortex.word_freq, self._co_graph)
+            self.field.invalidate_cache()
             self.gate.adapt_thresholds()
 
         self._feed_count += 1
