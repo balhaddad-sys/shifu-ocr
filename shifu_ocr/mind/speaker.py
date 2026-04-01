@@ -77,14 +77,14 @@ class Speaker:
             # Source 1: learned bigram transitions
             bg = self._bigrams.get(current, {})
             for w, count in bg.items():
-                if w not in used or len(w) > 3:
+                if w not in used:
                     candidates[w] = candidates.get(w, 0) + count
 
             # Source 2: next-word graph
             if nx_graph:
                 nx = nx_graph.get(current, {})
                 for w, weight in nx.items():
-                    if w not in used or len(w) > 3:
+                    if w not in used:
                         candidates[w] = candidates.get(w, 0) + weight * 0.5
 
             # Source 3: co-occurrence graph (weaker signal)

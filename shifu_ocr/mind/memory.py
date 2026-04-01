@@ -177,7 +177,7 @@ class Memory:
             'capacity': self._capacity,
             'sig_threshold': self._sig_threshold,
             'topic_window': self._topic_window,
-            'episodes': [e.to_dict() for e in self.episodes[-200:]],
+            'episodes': [e.to_dict() for e in self.episodes[-self._capacity:]],
             'active_topic': self._active_topic,
             'topic_strength': self._topic_strength,
         }

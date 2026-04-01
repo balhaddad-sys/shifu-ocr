@@ -390,8 +390,8 @@ class Field:
             'inhibition_ceiling': self._inh_ceiling,
             'settle_max_iter': self._settle_max_iter,
             'settle_epsilon': self._settle_epsilon,
-            'settle_top': self._settle_top,
-            'settle_decay': self._settle_decay,
+            'settle_reactivate_top': self._settle_top,
+            'settle_iter_decay': self._settle_decay,
             'gate_dampen': self._gate_dampen,
             'gate_boost': self._gate_boost,
         }
@@ -411,8 +411,8 @@ class Field:
             inhibition_ceiling=d.get('inhibition_ceiling', 1.0),
             settle_max_iter=d.get('settle_max_iter', 3),
             settle_epsilon=d.get('settle_epsilon', 0.01),
-            settle_reactivate_top=d.get('settle_top', 8),
-            settle_iter_decay=d.get('settle_decay', 0.5),
+            settle_reactivate_top=d.get('settle_reactivate_top', d.get('settle_top', 8)),
+            settle_iter_decay=d.get('settle_iter_decay', d.get('settle_decay', 0.5)),
             gate_dampen=d.get('gate_dampen', 0.4),
             gate_boost=d.get('gate_boost', 1.5),
         )

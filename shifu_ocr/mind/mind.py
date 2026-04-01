@@ -11,11 +11,11 @@ Everything injectable. No hardcoded knowledge.
 """
 
 from __future__ import annotations
-import re
 import time
 from typing import Dict, List, Set, Optional, Tuple, Any
 
-from .cortex import Cortex, _tokenize
+from ._types import tokenize as _tokenize
+from .cortex import Cortex
 from .field import Field
 from .gate import Gate
 from .signal import Signal
@@ -35,6 +35,9 @@ class ShifuMind:
     Deliberate → multi-step reasoning
 
     All subsystems communicate through shared graph state.
+
+    Note: Not thread-safe. Use external synchronization if accessing
+    from multiple threads.
     """
 
     def __init__(
@@ -66,13 +69,14 @@ class ShifuMind:
         # Built incrementally by feed().
         self._co_graph: Dict[str, Dict[str, float]] = {}   # co-occurrence
         self._nx_graph: Dict[str, Dict[str, float]] = {}   # next-word
-        self._px_graph: Dict[str, Dict[str, float]] = {}   # prev-word
         self._res_graph: Dict[str, Dict[str, float]] = {}  # resonance
         self._snx_graph: Dict[str, Dict[str, float]] = {}  # skip-gram
 
         # ═══ TRACKING ═══
         self._feed_count = 0
         self._epoch = 0
+        self._graph_prune_interval = 500
+        self._graph_max_neighbors = 200
 
     # ═══════════════════════════════════════════════════════════
     #  FEEDING — absorb information
@@ -86,7 +90,7 @@ class ShifuMind:
         Sequence:
         1. Gate filters input
         2. Cortex absorbs connections
-        3. Shared graphs update (co, nx, px, res, snx)
+        3. Shared graphs update (co, nx, res, snx)
         4. Speaker learns bigram frames
         5. Trunk observes for domain emergence
         6. Memory records if topic shifted
@@ -176,7 +180,7 @@ class ShifuMind:
         }
 
     def _update_shared_graphs(self, tokens: List[str]) -> None:
-        """Update co-occurrence, next-word, prev-word, skip-gram, resonance."""
+        """Update co-occurrence, next-word, skip-gram, resonance."""
         n = len(tokens)
         if n < 2:
             return
@@ -200,13 +204,6 @@ class ShifuMind:
                     self._nx_graph[w] = {}
                 self._nx_graph[w][nxt] = self._nx_graph[w].get(nxt, 0) + 1
 
-            # Prev-word
-            if i > 0:
-                prv = tokens[i - 1]
-                if w not in self._px_graph:
-                    self._px_graph[w] = {}
-                self._px_graph[w][prv] = self._px_graph[w].get(prv, 0) + 1
-
             # Skip-gram (window=7, min_dist=2)
             for j in range(max(0, i - 7), min(n, i + 8)):
                 dist = abs(i - j)
@@ -222,19 +219,36 @@ class ShifuMind:
         if self._feed_count % 20 == 0:
             self._update_resonance(tokens)
 
+        # Periodic graph pruning to prevent unbounded growth
+        if self._feed_count > 0 and self._feed_count % self._graph_prune_interval == 0:
+            self._prune_shared_graphs()
+
+    def _prune_shared_graphs(self) -> None:
+        """Prune shared graphs: keep only top-N neighbors per node by weight."""
+        limit = self._graph_max_neighbors
+        for graph in (self._co_graph, self._nx_graph, self._res_graph, self._snx_graph):
+            for node in list(graph.keys()):
+                neighbors = graph[node]
+                if len(neighbors) > limit:
+                    top = sorted(neighbors.items(), key=lambda x: -x[1])[:limit]
+                    graph[node] = dict(top)
+
     def _update_resonance(self, tokens: List[str]) -> None:
         """Build resonance links between words sharing neighbors."""
         unique = list(set(tokens))
-        for i in range(len(unique)):
-            a = unique[i]
-            a_neighbors = set(self._co_graph.get(a, {}).keys())
-            if len(a_neighbors) < 3:
-                continue
-            for j in range(i + 1, len(unique)):
-                b = unique[j]
-                b_neighbors = set(self._co_graph.get(b, {}).keys())
-                if len(b_neighbors) < 3:
-                    continue
+        # Pre-compute neighbor sets to avoid repeated set() calls
+        neighbor_sets: Dict[str, set] = {}
+        for w in unique:
+            co = self._co_graph.get(w, {})
+            if len(co) >= 3:
+                neighbor_sets[w] = set(co.keys())
+        words = list(neighbor_sets.keys())
+        for i in range(len(words)):
+            a = words[i]
+            a_neighbors = neighbor_sets[a]
+            for j in range(i + 1, len(words)):
+                b = words[j]
+                b_neighbors = neighbor_sets[b]
                 shared = len(a_neighbors & b_neighbors)
                 if shared >= 2:
                     amount = shared * 0.1
@@ -440,7 +454,6 @@ class ShifuMind:
             'thinker': self.thinker.to_dict(),
             'co_graph': self._co_graph,
             'nx_graph': self._nx_graph,
-            'px_graph': self._px_graph,
             'res_graph': self._res_graph,
             'snx_graph': self._snx_graph,
             'feed_count': self._feed_count,
@@ -449,7 +462,7 @@ class ShifuMind:
 
     @classmethod
     def from_dict(cls, d: dict) -> ShifuMind:
-        mind = cls.__new__(cls)
+        mind = cls()
         mind.cortex = Cortex.from_dict(d.get('cortex', {}))
         mind.field = Field.from_dict(d.get('field', {}))
         mind.gate = Gate.from_dict(d.get('gate', {}))
@@ -460,7 +473,6 @@ class ShifuMind:
         mind.thinker = Thinker.from_dict(d.get('thinker', {}))
         mind._co_graph = d.get('co_graph', {})
         mind._nx_graph = d.get('nx_graph', {})
-        mind._px_graph = d.get('px_graph', {})
         mind._res_graph = d.get('res_graph', {})
         mind._snx_graph = d.get('snx_graph', {})
         mind._feed_count = d.get('feed_count', 0)

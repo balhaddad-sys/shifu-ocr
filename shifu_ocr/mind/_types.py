@@ -8,8 +8,17 @@ The structures hold whatever the system discovers.
 
 from __future__ import annotations
 import math
+import re
 from dataclasses import dataclass, field
-from typing import Dict, Set, Optional, Any
+from typing import Dict, List, Set, Optional, Any
+
+# Shared token regex — used by cortex and gate
+TOKEN_RE = re.compile(r'[a-z][a-z0-9-]*')
+
+
+def tokenize(text: str) -> List[str]:
+    """Extract lowercase alphabetic tokens."""
+    return TOKEN_RE.findall(text.lower())
 
 
 # ═══════════════════════════════════════════════════════════════

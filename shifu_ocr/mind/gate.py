@@ -11,7 +11,8 @@ import re
 import math
 from typing import Dict, List, Set, Optional, Tuple
 
-_TOKEN_RE = re.compile(r'[a-z][a-z0-9-]*')
+from ._types import TOKEN_RE
+
 _URL_RE = re.compile(r'https?://\S+')
 _BRACKET_RE = re.compile(r'\[[^\]]{0,100}\]')
 _PAREN_LONG_RE = re.compile(r'\([^)]{40,}\)')
@@ -66,13 +67,9 @@ class Gate:
             return set()
         sorted_words = sorted(word_freqs.items(), key=lambda x: -x[1])
         n = max(1, int(len(sorted_words) * frac))
-        # Also include very short words (length <= 2) as likely function words
         stops = set()
         for w, _ in sorted_words[:n]:
             stops.add(w)
-        for w in word_freqs:
-            if len(w) <= 2:
-                stops.add(w)
         return stops
 
     # ═══ CLEANING ═══
@@ -119,7 +116,7 @@ class Gate:
 
     def tokenize(self, text: str) -> List[str]:
         """Extract lowercase alphabetic tokens."""
-        return _TOKEN_RE.findall(text.lower())
+        return TOKEN_RE.findall(text.lower())
 
     # ═══ FILTERING ═══
 

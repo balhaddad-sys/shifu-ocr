@@ -16,10 +16,9 @@ than late experience, but learning never stops.
 
 from __future__ import annotations
 import math
-import re
 from typing import Dict, List, Set, Optional, Tuple, Any
 
-from ._types import Synapse, Assembly
+from ._types import Synapse, Assembly, tokenize as _tokenize
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -146,14 +145,6 @@ class Layer:
 #  CORTEX — the full multi-layer semantic memory
 # ═══════════════════════════════════════════════════════════════
 
-_TOKEN_RE = re.compile(r'[a-z][a-z0-9-]*')
-
-
-def _tokenize(text: str) -> List[str]:
-    """Extract lowercase alphabetic tokens. No hardcoded stop words."""
-    return _TOKEN_RE.findall(text.lower())
-
-
 class Cortex:
     """
     Multi-layer weighted directed graph with temporal dynamics.
@@ -173,6 +164,7 @@ class Cortex:
         min_plasticity: float = 0.1,
         min_weight: float = 0.01,
         max_assembly_size: int = 25,
+        max_feed_tokens: int = 50,
     ):
         self._layers: Dict[str, Layer] = {}
         self._prune_interval = prune_interval
@@ -183,6 +175,7 @@ class Cortex:
         self._min_plasticity = min_plasticity
         self._min_weight = min_weight
         self._max_assembly_size = max_assembly_size
+        self._max_feed_tokens = max_feed_tokens
 
         # Global state
         self._epoch = 0
@@ -288,7 +281,7 @@ class Cortex:
         connections_made = 0
 
         # Cap per-feed to prevent quadratic blowup on long inputs
-        feed_content = content[:20] if len(content) > 20 else content
+        feed_content = content[:self._max_feed_tokens]
 
         for i, src in enumerate(feed_content):
             if src not in self.breadth:
@@ -366,8 +359,12 @@ class Cortex:
                             if aid not in self._word_assemblies[nw]:
                                 self._word_assemblies[nw].append(aid)
 
-        # Create new assembly
+        # Only create new assembly if no existing one has high overlap
         if len(content_set) >= 2:
+            for aid in reinforced:
+                asm = self._assemblies.get(aid)
+                if asm and asm.overlap_with_set(content_set) > 0.5:
+                    return aid  # existing assembly covers this content
             aid = f'a{self._assembly_seq}'
             self._assembly_seq += 1
             asm = Assembly(
@@ -471,13 +468,16 @@ class Cortex:
             'layers': lc, 'assemblies': ac, 'myelinated': ms,
         }
 
-    # ═══ IDF ═══
+    # ═══ INVERSE BREADTH ═══
 
-    def idf(self, word: str) -> float:
-        """Inverse document frequency analog. Rare words score higher."""
+    def inverse_breadth(self, word: str) -> float:
+        """Inverse breadth score. Words with fewer connections score higher."""
         b = len(self.breadth.get(word, set())) or 1
         V = max(len(self.word_freq), 1)
         return math.log(1 + V / b)
+
+    # Keep backward compat
+    idf = inverse_breadth
 
     # ═══ PRUNING ═══
 
@@ -549,10 +549,14 @@ class Cortex:
                         rate = myel_decay if syn.myelinated else decay_mod
                         syn.weight = max(floor, syn.weight * rate)
 
-        # Gentle frequency decay for unused words
-        for w in self.word_freq:
-            if w not in used:
-                self.word_freq[w] *= 0.9995
+        # Gentle frequency decay for unused words (keep int type)
+        decay_candidates = [w for w in self.word_freq if w not in used]
+        for w in decay_candidates:
+            decayed = int(self.word_freq[w] * 0.9995)
+            if decayed < 1:
+                del self.word_freq[w]
+            else:
+                self.word_freq[w] = decayed
 
     # ═══ STATS ═══
 
@@ -604,6 +608,7 @@ class Cortex:
                 'min_plasticity': self._min_plasticity,
                 'min_weight': self._min_weight,
                 'max_assembly_size': self._max_assembly_size,
+                'max_feed_tokens': self._max_feed_tokens,
             },
         }
 
@@ -619,6 +624,7 @@ class Cortex:
             min_plasticity=params.get('min_plasticity', 0.1),
             min_weight=params.get('min_weight', 0.01),
             max_assembly_size=params.get('max_assembly_size', 25),
+            max_feed_tokens=params.get('max_feed_tokens', 50),
         )
         # Restore layers
         for name, ly_d in d.get('layers', {}).items():

@@ -21,7 +21,7 @@ except ImportError:
     np = None
 
 
-class Landscape:
+class SemanticLandscape:
     """
     A probability terrain for one concept/character/entity.
 
@@ -64,7 +64,7 @@ class Landscape:
             self.expected_dim = len(fv)
         elif len(fv) != self.expected_dim:
             raise ValueError(
-                f"Landscape '{self.label}': expected {self.expected_dim}-dim, "
+                f"SemanticLandscape '{self.label}': expected {self.expected_dim}-dim, "
                 f"got {len(fv)}-dim."
             )
 
@@ -121,7 +121,7 @@ class Landscape:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> Landscape:
+    def from_dict(cls, d: dict) -> SemanticLandscape:
         ls = cls(d['label'], expected_dim=d.get('expected_dim'))
         ls.n = d['n']
         if d.get('mean') is not None and np is not None:
