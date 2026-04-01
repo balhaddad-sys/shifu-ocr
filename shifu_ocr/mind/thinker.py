@@ -24,27 +24,10 @@ from collections import deque
 from typing import Dict, List, Optional, Callable, Any, Tuple, Set
 
 
-# ═══ INTENT BIASES — which layers to prioritize per intent ═══
-# NOT hardcoded knowledge — just routing weights.
-# The layers themselves are learned from data.
-INTENT_BIASES = {
-    'define':     {'identity': 3.0, 'appearance': 1.5, 'mechanism': 1.0, 'function': 0.5, 'relation': 1.0, '_general': 0.8},
-    'explain':    {'mechanism': 3.0, 'identity': 1.5, 'relation': 1.5, 'function': 1.0, 'appearance': 0.5, '_general': 0.8},
-    'management': {'function': 3.0, 'mechanism': 1.5, 'relation': 1.0, 'identity': 0.5, 'appearance': 0.5, '_general': 0.8},
-    'describe':   {'appearance': 3.0, 'identity': 1.5, 'mechanism': 1.0, 'function': 0.5, 'relation': 0.5, '_general': 0.8},
-    'discuss':    {'identity': 2.0, 'mechanism': 2.0, 'appearance': 1.5, 'function': 1.5, 'relation': 1.5, '_general': 1.0},
-    'general':    {'identity': 1.5, 'mechanism': 1.5, 'appearance': 1.0, 'function': 1.0, 'relation': 1.0, '_general': 1.0},
-}
-
-# Goal → which layers to search first
-GOAL_LAYERS = {
-    'describe_identity': ['identity', 'mechanism', 'appearance', 'relation', 'function', '_general'],
-    'explain_mechanism': ['mechanism', 'identity', 'relation', '_general', 'appearance', 'function'],
-    'list_treatment':    ['function', 'mechanism', 'relation', '_general', 'identity', 'appearance'],
-    'describe_appearance': ['appearance', 'identity', 'mechanism', '_general', 'function', 'relation'],
-    'explore_relations': ['relation', 'mechanism', 'identity', '_general', 'function', 'appearance'],
-    'general':           ['identity', 'mechanism', 'appearance', 'function', 'relation', '_general'],
-}
+    # No hardcoded intent biases or goal layers.
+    # Biases are computed from the SITUATION: whichever layer dominates
+    # in the landscape gets 3× boost, adjacent layers get 1.5×, rest 1×.
+    # This emerges from the data, not from a lookup table.
 
 
 class WorkingMemory:
@@ -95,8 +78,9 @@ class Thinker:
         Deduce situation from the landscape — which layers dominate
         for the focus concepts?
         """
-        cmd_words = {'what', 'how', 'why', 'does', 'the', 'for', 'is', 'are', 'can', 'who', 'when', 'where'}
-        content_focus = [w for w in focus if w not in cmd_words and len(w) > 3]
+        # Content words: filter by length (>3 chars). No hardcoded list.
+        # Short words are structural/grammatical, not domain content.
+        content_focus = [w for w in focus if len(w) > 3]
         if not content_focus:
             content_focus = focus[:3]
         layer_strength: Dict[str, float] = {}
@@ -131,22 +115,45 @@ class Thinker:
 
     # ═══ INTENT-BIASED ACTIVATION ═══
 
+    def _compute_biases(self, focus: List[str], cross_layer_fn) -> Dict[str, float]:
+        """
+        Compute layer biases from the landscape — NOT from a lookup table.
+        Whichever layer has the strongest connections for focus words
+        gets the highest boost. This EMERGES from the data.
+        """
+        layer_totals: Dict[str, float] = {}
+        for word in focus[:3]:
+            layers = cross_layer_fn(word)
+            for layer_name, neighbors in layers.items():
+                total = sum(neighbors.values())
+                layer_totals[layer_name] = layer_totals.get(layer_name, 0) + total
+
+        if not layer_totals:
+            return {}
+
+        # Normalize: strongest layer → 3.0, weakest → 1.0
+        max_v = max(layer_totals.values())
+        if max_v < 0.01:
+            return {k: 1.0 for k in layer_totals}
+        return {k: 1.0 + 2.0 * (v / max_v) for k, v in layer_totals.items()}
+
     def _biased_activate(self, word: str, goal: str,
                          cross_layer_fn,
-                         activate_fn) -> Dict[str, float]:
+                         activate_fn,
+                         biases: Optional[Dict[str, float]] = None) -> Dict[str, float]:
         """
-        Activate with intent bias — boost layers relevant to the goal.
+        Activate with landscape-derived bias — no hardcoded weights.
         """
         layers = cross_layer_fn(word)
-        biases = INTENT_BIASES.get(goal.split('_')[0] if '_' in goal else goal, INTENT_BIASES['general'])
+        bias_map = biases or {}
 
         biased: Dict[str, float] = {}
         for layer_name, neighbors in layers.items():
-            bias = biases.get(layer_name, 1.0)
+            bias = bias_map.get(layer_name, 1.0)
             for tgt, weight in neighbors.items():
                 biased[tgt] = biased.get(tgt, 0) + weight * bias
 
-        # Also get field activation (unbiased but broader)
+        # Also get field activation (broader)
         field = activate_fn(word)
         for w, e in field.items():
             biased[w] = biased.get(w, 0) + e * 0.3
@@ -244,10 +251,12 @@ class Thinker:
 
         # 1. Epistemic humility — check CONTENT words, not command words
         # Skip short/common command words to find the real primary concept
-        cmd_words = {'what', 'how', 'why', 'does', 'the', 'for', 'is', 'are', 'can', 'who'}
+        # Find primary concept: first word with actual cortex knowledge
+        # Not by length — by whether the cortex KNOWS it
         primary = None
         for w in wm.focus:
-            if w not in cmd_words and len(w) > 3:
+            conf = confidence_fn(w)
+            if conf.get('score', 0) > 5:
                 primary = w
                 break
         if not primary:
@@ -323,8 +332,10 @@ class Thinker:
             # ═══ PHASE 1: IDENTITY — build spoke star ═══
             all_activated: Dict[str, float] = {}
             if cross_layer_fn:
+                # Compute biases from the landscape (no hardcoded table)
+                biases = self._compute_biases(wm.focus, cross_layer_fn)
                 for word in wm.focus[:3]:
-                    biased = self._biased_activate(word, wm.goal, cross_layer_fn, activate_fn)
+                    biased = self._biased_activate(word, wm.goal, cross_layer_fn, activate_fn, biases)
                     for w, e in biased.items():
                         all_activated[w] = all_activated.get(w, 0) + e
             else:
@@ -361,20 +372,22 @@ class Thinker:
                         changed = True
 
             # ═══ PHASE 4: GOAL REFINEMENT ═══
-            # If current goal's target layer is empty for primary concept, fall back
+            # If the dominant spoke is empty for primary concept, fall back
+            # to whichever spoke HAS data. No hardcoded layer ordering.
             if cross_layer_fn and wm.focus:
-                goal_layers = GOAL_LAYERS.get(wm.goal, GOAL_LAYERS['general'])
-                primary_layers = cross_layer_fn(wm.focus[0])
-                primary_layer = goal_layers[0] if goal_layers else 'identity'
-                if primary_layer not in primary_layers or not primary_layers.get(primary_layer):
-                    # Target spoke empty — fall back to next available
-                    for fallback in goal_layers[1:]:
-                        if fallback in primary_layers and primary_layers[fallback]:
-                            old_goal = wm.goal
-                            wm.goal = f"{fallback}_fallback"
-                            wm.trace.append(f"  goal_fallback: {old_goal} -> {wm.goal}")
-                            changed = True
-                            break
+                primary_word = next((w for w in wm.focus if len(w) > 3), wm.focus[0])
+                primary_layers = cross_layer_fn(primary_word)
+                # Find which layers have data, sorted by connection count
+                available = sorted(
+                    [(ln, sum(n.values())) for ln, n in primary_layers.items() if n],
+                    key=lambda x: -x[1],
+                )
+                if available and wm.goal != available[0][0]:
+                    old_goal = wm.goal
+                    wm.goal = f"{available[0][0]}_dominant"
+                    if old_goal != wm.goal:
+                        wm.trace.append(f"  goal_refine: {old_goal} -> {wm.goal}")
+                        changed = True
 
             # ═══ PHASE 5: IMAGINATION — fill gaps ═══
             if imagination and _co:

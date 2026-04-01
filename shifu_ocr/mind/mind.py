@@ -226,82 +226,57 @@ class ShifuMind:
     # Identity is NEVER a destination for property connections.
     # Identity only holds "X is a Y" declarations — the name tag.
     #
-    # When routing connections to layers:
-    # 1. Check if nearby words signal a specific layer
-    # 2. If the signal is "identity" — DON'T USE IT, keep searching
-    # 3. Only the _extract_identity method writes to the identity layer
-    #
-    # This makes identity the HUB through which all spokes connect.
-    # "Stroke" has an identity ("is a disease").
-    # Its properties (appearance, function, mechanism, relation)
-    # radiate FROM that identity. Without the bridge,
-    # properties float disconnected.
-
-    # Layer signal words — words that indicate which spoke is active.
-    # These are NOT the content words. They are the GLUE that tells
-    # the classifier where to route.
-    _SPOKE_SIGNALS = {
-        'appearance': {
-            'appears', 'shows', 'presents', 'displays', 'reveals',
-            'bright', 'dark', 'large', 'small', 'visible', 'seen',
-            'acute', 'chronic', 'progressive', 'sudden', 'bilateral',
-        },
-        'function': {
-            'used', 'treats', 'manages', 'prevents', 'reduces',
-            'treatment', 'therapy', 'management', 'intervention',
-            'for', 'purpose', 'restores', 'dissolves', 'inhibits',
-        },
-        'mechanism': {
-            'causes', 'produces', 'leads', 'results', 'through',
-            'mechanism', 'pathway', 'process', 'involves',
-            'by', 'via', 'because', 'due', 'from', 'affects',
-        },
-        'relation': {
-            'associated', 'related', 'linked', 'connected',
-            'compared', 'versus', 'with', 'combined', 'risk',
-            'factor', 'increases', 'decreases',
-        },
-    }
-
-    # Identity signals — ONLY used by _extract_identity, not by the classifier
-    _IDENTITY_PATTERNS = [
-        r'(?:is a|is an|is the|are|defined as|refers to|known as)\s+(\w{3,})',
-        r'\b(\w{3,})\s+(?:\w+\s+)?is\s+(\w{4,})',
-    ]
+    # Spoke routing is LEARNED from the co-occurrence graph:
+    # - Words that co-occur with MANY other content words → likely function words (go to _general)
+    # - Words whose neighbors cluster in a single spoke → route to that spoke
+    # - The routing is discovered, not prescribed
 
     def _classify_word_bridge(self, word: str) -> Optional[str]:
         """
-        Route a word to a semantic spoke — but NEVER to identity.
+        Route a word to a semantic spoke — NEVER to identity.
         Identity is the bridge, not a destination.
-        """
-        # Signal words themselves go to _general
-        for signals in self._SPOKE_SIGNALS.values():
-            if word in signals:
-                return None
 
-        # Check co-occurrence: which spoke signals does this word appear near?
+        Classification is LEARNED from the graph:
+        - Which typed layers already have the strongest connections
+          for this word's neighbors? Route there.
+        - No hardcoded signal word lists.
+        """
         co_neighbors = self._co_graph.get(word, {})
         if not co_neighbors:
             return None
 
+        # Score each non-identity layer by how many of THIS word's
+        # co-occurrence neighbors already live in that layer
         spoke_scores: Dict[str, float] = {}
-        for spoke, signals in self._SPOKE_SIGNALS.items():
-            score = sum(co_neighbors.get(s, 0) for s in signals)
+        for spoke_name in self.cortex.layer_names:
+            if spoke_name in ('_general', 'identity'):
+                continue
+            layer = self.cortex.get_layer(spoke_name)
+            if not layer:
+                continue
+            score = 0.0
+            for neighbor in co_neighbors:
+                neighbor_conns = layer.get_neighbors(neighbor)
+                if neighbor_conns:
+                    score += sum(neighbor_conns.values())
             if score > 0:
-                spoke_scores[spoke] = score
+                spoke_scores[spoke_name] = score
 
         if not spoke_scores:
             return None
 
         best = max(spoke_scores, key=spoke_scores.get)
-        if spoke_scores[best] >= 1.0:
+        if spoke_scores[best] >= 0.5:
             return best
         return None
 
     def _extract_identity(self, raw_text: str, content: List[str]) -> None:
         """
-        Extract "X is a Y" patterns and write ONLY those to the identity layer.
+        Extract copula patterns ("X is a Y") and write to identity layer.
         This is the ONLY way identity connections form.
+
+        The patterns detected are structural (copula verbs), not
+        domain-specific word lists.
         """
         if not content:
             return
@@ -309,15 +284,15 @@ class ShifuMind:
         identity_layer = self.cortex.ensure_layer('identity')
         subject = content[0]
 
-        # Pattern 1: "X is a Y", "X are Y", "X defined as Y"
+        # Copula detection: "X is a Y", "X are Y", "X defined as Y"
+        # These are GRAMMATICAL structures, not domain words
         import re
         match = re.search(
             r'(?:is a|is an|is the|are|defined as|refers to|known as)\s+(\w{3,})',
             text_lower,
         )
         if not match:
-            # Pattern 2: "X ... is Y" (bare copula)
-            match2 = re.search(r'\b(\w{3,})\s+(?:\w+\s+)?is\s+(\w{4,})', text_lower)
+            match2 = re.search(r'\b(\w{3,})\s+(?:\w+ )?is\s+(\w{4,})', text_lower)
             if match2:
                 a = match2.group(1)
                 b = match2.group(2)
@@ -329,11 +304,8 @@ class ShifuMind:
         if match:
             b = match.group(1)
             if b != subject and len(b) > 2:
-                # Subject IS b (strong: weight 2)
                 identity_layer.connect(subject, b, 2.0, self.cortex._epoch)
-                # b IS-INSTANCE subject (weaker: weight 1)
                 identity_layer.connect(b, subject, 1.0, self.cortex._epoch)
-                # Second content word also gets identity link
                 if len(content) > 1 and content[1] != subject and content[1] != b:
                     identity_layer.connect(content[1], b, 1.0, self.cortex._epoch)
 
