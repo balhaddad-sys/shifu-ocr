@@ -158,6 +158,11 @@ def handle(cmd):
         r = mind.consolidate()
         return {'ok': True, **r}
 
+    elif op == 'practice':
+        rounds = cmd.get('rounds', 10)
+        r = mind.practice(rounds=rounds)
+        return {'ok': True, **r}
+
     elif op == 'save':
         save()
         return {'ok': True}

@@ -426,6 +426,10 @@ const server = http.createServer(async (req, res) => {
   if (path === '/api/mind/consolidate' && req.method === 'POST') {
     return jsonResponse(res, await mindCommand({ cmd: 'consolidate' }));
   }
+  if (path === '/api/mind/practice' && req.method === 'POST') {
+    const { rounds } = await parseBody(req);
+    return jsonResponse(res, await mindCommand({ cmd: 'practice', rounds: rounds || 10 }));
+  }
   if (path === '/api/mind/save' && req.method === 'POST') {
     return jsonResponse(res, await mindCommand({ cmd: 'save' }));
   }
@@ -506,7 +510,7 @@ body{display:flex;flex-direction:column}
     <div style="color:var(--accent);font-weight:500">Model the medium. Detect the perturbation. Let experience shape the landscape.</div>
     <div style="font-size:12px;color:var(--dim);margin-top:8px">
       <b>Ask</b> anything &middot; <b>Paste OCR text</b> to correct &middot; <b>Feed</b> text to teach me<br>
-      <span style="color:var(--faint)">Commands: /correct &middot; /describe &middot; /generate &middot; /connect &middot; /stats &middot; /feed</span>
+      <span style="color:var(--faint)">Commands: /correct &middot; /describe &middot; /generate &middot; /connect &middot; /stats &middot; /feed &middot; /practice</span>
     </div>
   </div></div>
 </div>
@@ -531,6 +535,7 @@ function detect(t){
   if(t.startsWith('/generate '))return{i:'generate',p:t.slice(10).trim().split(/\\s+/)[0]};
   if(t.startsWith('/connect ')){const p=t.slice(9).trim().split(/\\s+/);return{i:'connect',f:p[0],t:p[1]||p[0]}}
   if(t==='/stats'||t.startsWith('/stats'))return{i:'stats'};
+  if(t.startsWith('/practice'))return{i:'practice',p:parseInt(t.split(/\\s+/)[1])||10};
   if(t.startsWith('/score '))return{i:'score',p:t.slice(7)};
   if(/^(what|how|why|describe|explain|define|tell|discuss)\\b/i.test(t))return{i:'deliberate',p:t};
   if(t.endsWith('?')||/^(is|are|does|can|should|when|which)\\b/i.test(t))return{i:'deliberate',p:t};
@@ -575,6 +580,17 @@ async function send(){
     else if(d.i==='generate'){const r=await api('/api/mind/generate/'+d.p);h='<div style="font-style:italic;color:var(--accent)">'+(r.text||'...')+'</div>'}
     else if(d.i==='connect'){const r=await api('/api/mind/connect',{from:d.f,to:d.t});h=r.connected&&r.path?'<div>'+r.path.join(' \\u2192 ')+'</div>':'<div style="color:var(--dim)">No path found</div>'}
     else if(d.i==='score'){const[js,m]=await Promise.all([api('/api/score',{text:d.p}),api('/api/mind/score',{text:d.p})]);h='<div class="trace"><span class="lbl">js</span> '+(js.coherence||0).toFixed(3)+' &middot; <span class="lbl">mind</span> '+(m.coherence||0).toFixed(3)+'</div>'}
+    else if(d.i==='practice'){
+      const r=await api('/api/mind/practice',{rounds:d.p||10});
+      if(r.ok){
+        h='<div style="margin-bottom:8px"><b>Practice Report</b>: '+r.rounds+' rounds, '+r.improved+' reinforced, '+r.degraded+' weakened</div>';
+        for(const p of (r.practice||[])){
+          const bar='#'.repeat(Math.round(p.coherence*20));
+          const color=p.coherence>0.4?'var(--green)':p.coherence>0.2?'var(--amber)':'var(--red)';
+          h+='<div style="margin:4px 0;font-size:12px"><span style="color:var(--accent);font-weight:600">'+p.word+'</span> <span style="color:var(--dim);font-style:italic">"'+p.sentence+'"</span><br><span style="color:'+color+'">'+bar+' '+p.coherence+'</span> surprise:'+p.surprise+'</div>';
+        }
+      }else{h='<div style="color:var(--dim)">Practice failed: '+(r.error||'?')+'</div>'}
+    }
     else if(d.i==='stats'){const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);h='<div class="trace"><span class="lbl">JS Engine</span><br>Vocab: '+(js.core?.vocabulary||0)+' &middot; Resonance: '+(js.core?.resonancePairs||0)+'<br><br><span class="lbl">Python Mind</span><br>Vocab: '+(m.vocabulary||0)+' &middot; Domains: '+(m.domains||0)+' &middot; Assemblies: '+(m.assemblies||0)+' &middot; Myelinated: '+(m.myelinated||0)+'</div>'}
     ld.querySelector('.bubble').innerHTML=h||'<div style="color:var(--dim)">No response.</div>';
   }catch(e){ld.querySelector('.bubble').innerHTML='<div style="color:var(--red)">Error: '+e.message+'</div>'}

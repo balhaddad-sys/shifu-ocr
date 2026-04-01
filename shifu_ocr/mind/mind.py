@@ -25,6 +25,7 @@ from .memory import Memory
 from .speaker import Speaker
 from .thinker import Thinker
 from .imagination import Imagination
+from .attention import Attention
 
 
 class ShifuMind:
@@ -63,6 +64,7 @@ class ShifuMind:
         self.speaker = Speaker()
         self.thinker = Thinker(max_steps=thinker_max_steps)
         self.imagination = Imagination()
+        self.attention = Attention()
 
         # ═══ SHARED GRAPH STATE ═══
         # These are the graphs that field.py operates on.
@@ -606,6 +608,7 @@ class ShifuMind:
             co_graph=self._co_graph,
             episodic_context=self.memory.get_context(),
             memory_recall_fn=self.memory.recall,
+            attention_fn=self.attention.attend,
         )
 
         # Consolidation: high-quality imagined links → cortex
@@ -906,6 +909,7 @@ class ShifuMind:
             'speaker': self.speaker.to_dict(),
             'thinker': self.thinker.to_dict(),
             'imagination': self.imagination.to_dict(),
+            'attention': self.attention.to_dict(),
             'co_graph': self._co_graph,
             'nx_graph': self._nx_graph,
             'px_graph': self._px_graph,
@@ -927,6 +931,7 @@ class ShifuMind:
         mind.speaker = Speaker.from_dict(d.get('speaker', {}))
         mind.thinker = Thinker.from_dict(d.get('thinker', {}))
         mind.imagination = Imagination.from_dict(d.get('imagination', {}))
+        mind.attention = Attention.from_dict(d.get('attention', {}))
         mind._co_graph = d.get('co_graph', {})
         mind._nx_graph = d.get('nx_graph', {})
         mind._px_graph = d.get('px_graph', {})
@@ -935,6 +940,96 @@ class ShifuMind:
         mind._feed_count = d.get('feed_count', 0)
         mind._epoch = d.get('epoch', 0)
         return mind
+
+    # ═══ LEARNING LAB — endless self-practice ═══
+    #
+    # The baby practices by:
+    # 1. Pick a concept it's learning (not yet "know")
+    # 2. GENERATE a sentence about it from its connections
+    # 3. SCORE the sentence for coherence
+    # 4. If coherence is high → reinforce those connections (reward)
+    # 5. If coherence is low → weaken those connections (punish)
+    # 6. Record the dopamine signal (surprise = learning)
+    # 7. Repeat
+    #
+    # Like a child talking to itself, testing what it knows,
+    # and learning from whether its own sentences make sense.
+
+    def practice(self, rounds: int = 10) -> dict:
+        """
+        Self-practice loop. Pick concepts, generate, score, reinforce/punish.
+        Returns summary of what was practiced and what improved.
+        """
+        results = []
+        improved = 0
+        degraded = 0
+
+        # Find concepts worth practicing: "learning" or "glimpsed" state
+        candidates = []
+        for word, freq in self.cortex.word_freq.items():
+            if len(word) <= 3 or freq < 2:
+                continue
+            conf = self.cortex.confidence(word)
+            if conf['state'] in ('learning', 'glimpsed'):
+                candidates.append((word, conf['score']))
+        # Sort by confidence ascending — practice weakest first
+        candidates.sort(key=lambda x: x[1])
+
+        for i in range(min(rounds, len(candidates))):
+            word, before_conf = candidates[i]
+
+            # Generate a sentence from this concept
+            generated = self.generate([word], max_length=10)
+            sentence = ' '.join(generated)
+
+            # Score it
+            score_result = self.score(generated)
+            coherence = score_result.get('coherence', 0.0)
+
+            # Dopamine signal: was this better or worse than expected?
+            state_key = f"practice:{word}"
+            signal = self.signal.observe(state_key, coherence)
+            surprise = signal['error']
+
+            # Reinforce or punish based on coherence
+            gen_layer = self.cortex.get_layer('_general')
+            if gen_layer and len(generated) >= 2:
+                for j in range(len(generated) - 1):
+                    a, b = generated[j], generated[j + 1]
+                    if coherence > 0.4:
+                        # Good sentence — reinforce connections
+                        gen_layer.connect(a, b, coherence * 0.5, self.cortex._epoch)
+                        improved += 1
+                    elif coherence < 0.2:
+                        # Bad sentence — weaken connections
+                        syn = gen_layer.get_synapse(a, b)
+                        if syn:
+                            syn.weight *= 0.8
+                        degraded += 1
+
+            # Feed the sentence back if it was good (self-teaching)
+            if coherence > 0.3:
+                self.cortex.feed(generated, layer='_general')
+
+            after_conf = self.cortex.confidence(word)['score']
+            results.append({
+                'word': word,
+                'sentence': sentence,
+                'coherence': round(coherence, 3),
+                'surprise': round(surprise, 3),
+                'before': before_conf,
+                'after': after_conf['score'] if isinstance(after_conf, dict) else after_conf,
+            })
+
+        self.cortex._invalidate_cache()
+        self.field.invalidate_cache()
+
+        return {
+            'rounds': len(results),
+            'improved': improved,
+            'degraded': degraded,
+            'practice': results,
+        }
 
     def save(self, path: str) -> None:
         """Save full state to JSON file."""

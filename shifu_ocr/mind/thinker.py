@@ -296,9 +296,10 @@ class Thinker:
         co_graph: Optional[Dict[str, Dict[str, float]]] = None,
         episodic_context: Optional[dict] = None,
         memory_recall_fn=None,
+        attention_fn=None,
     ) -> dict:
         """
-        Full cognitive cycle with all 6 phases.
+        Full cognitive cycle with all 6 phases + attention gate.
         """
         wm = WorkingMemory()
         wm.focus = list(query_tokens)
@@ -370,6 +371,17 @@ class Thinker:
                     # All fields → full energy. One field → 30%.
                     coverage = count / n_fields
                     all_activated[w] = avg_e * (0.3 + 0.7 * coverage)
+
+            # ═══ PHASE 1a: ATTENTION GATE ═══
+            # Filter activations through salience + relevance gate.
+            # Surprising activations amplified. Expected dampened.
+            # Goal-relevant boosted. Recently-attended inhibited.
+            if attention_fn:
+                all_activated = attention_fn(
+                    all_activated,
+                    goal_words=wm.focus[:3],
+                    co_graph=_co,
+                )
 
             # ═══ PHASE 1b: CO-GRAPH BOOST — the real knowledge is here ═══
             # The co-graph has 500K+ entries, typed layers have <100.
