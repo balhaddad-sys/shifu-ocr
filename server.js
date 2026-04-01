@@ -479,12 +479,15 @@ const HTML = `<!DOCTYPE html>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0a0a0a;--surface:#111;--accent:#c8a97e;--accent2:#a08050;--green:#7c9885;--blue:#5b8fd4;--amber:#f59e0b;--red:#ef4444;--purple:#a78bfa;--text:#e8e8e8;--dim:#777;--faint:#444;--user-bg:#161626;--shifu-bg:#141e14;--border:#1e1e1e;--radius:16px}
+:root{--bg:#f8f9fa;--surface:#fff;--accent:#6366f1;--accent2:#4f46e5;--green:#16a34a;--blue:#2563eb;--amber:#d97706;--red:#dc2626;--purple:#7c3aed;--text:#1e293b;--dim:#64748b;--faint:#cbd5e1;--user-bg:#eef2ff;--shifu-bg:#f0fdf4;--border:#e2e8f0;--radius:16px}
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',system-ui,sans-serif}
 body{display:flex;flex-direction:column}
-.top{padding:12px 20px;display:flex;align-items:center;gap:16px;background:var(--bg);border-bottom:1px solid var(--border);flex:0 0 auto;z-index:10}
+.top{padding:12px 20px;display:flex;align-items:center;gap:16px;background:var(--surface);border-bottom:1px solid var(--border);flex:0 0 auto;z-index:10;box-shadow:0 1px 3px rgba(0,0,0,0.05)}
 .logo{font-size:20px;font-weight:700;color:var(--accent);letter-spacing:2px}
 .stats{font-size:11px;color:var(--dim);line-height:1.4}
+.learning-bar{flex:1;max-width:200px;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.learning-bar-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--green));border-radius:3px;transition:width 1s ease}
+.learning-label{font-size:10px;color:var(--dim);white-space:nowrap}
 .chat{flex:1 1 0;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px 20px 100px 20px;display:flex;flex-direction:column;gap:12px}
 .chat::-webkit-scrollbar{width:4px}
 .chat::-webkit-scrollbar-thumb{background:var(--faint);border-radius:2px}
@@ -492,33 +495,35 @@ body{display:flex;flex-direction:column}
 .msg.user{align-self:flex-end}
 .msg.shifu{align-self:flex-start}
 .bubble{padding:14px 18px;border-radius:var(--radius);font-size:14px;line-height:1.7;word-wrap:break-word}
-.msg.user .bubble{background:var(--user-bg);border-bottom-right-radius:4px;color:#b8c8e0}
-.msg.shifu .bubble{background:var(--shifu-bg);border-bottom-left-radius:4px}
-.trace{font-size:11px;color:var(--dim);margin-top:8px;padding:8px 12px;background:rgba(200,169,126,0.06);border-radius:8px;line-height:1.7}
+.msg.user .bubble{background:var(--user-bg);border-bottom-right-radius:4px;color:#3730a3}
+.msg.shifu .bubble{background:var(--shifu-bg);border-bottom-left-radius:4px;color:#14532d}
+.trace{font-size:11px;color:var(--dim);margin-top:8px;padding:8px 12px;background:rgba(99,102,241,0.05);border-radius:8px;line-height:1.7;border:1px solid rgba(99,102,241,0.1)}
 .trace .lbl{color:var(--accent);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
 .word{display:inline-block;padding:2px 6px;margin:1px;border-radius:4px;font-size:13px}
-.word.exact{background:#064e3b;color:#6ee7b7}
-.word.high_confidence,.word.mind_corrected{background:#164e63;color:#67e8f9}
-.word.corrected_verify{background:#713f12;color:#fde68a}
-.word.low_confidence,.word.unknown{background:#7f1d1d;color:#fca5a5}
-.word.number,.word.dosage,.word.punctuation,.word.passthrough,.word.room_code,.word.title,.word.short,.word.clean,.word.short_unknown{background:#1e293b;color:#94a3b8}
-.word.digraph_corrected{background:#312e81;color:#c4b5fd}
+.word.exact{background:#dcfce7;color:#166534}
+.word.high_confidence,.word.mind_corrected{background:#dbeafe;color:#1e40af}
+.word.corrected_verify{background:#fef3c7;color:#92400e}
+.word.low_confidence,.word.unknown{background:#fee2e2;color:#991b1b}
+.word.number,.word.dosage,.word.punctuation,.word.passthrough,.word.room_code,.word.title,.word.short,.word.clean,.word.short_unknown{background:#f1f5f9;color:#475569}
+.word.digraph_corrected{background:#ede9fe;color:#5b21b6}
 .word.DANGER_medication_ambiguity{background:#dc2626;color:white;font-weight:bold}
 .flag{display:inline-block;padding:3px 8px;margin:2px;border-radius:4px;font-size:11px;font-weight:600}
-.flag.danger{background:#dc2626;color:white}
-.flag.warning{background:#d97706;color:white}
+.flag.danger{background:#fecaca;color:#991b1b}
+.flag.warning{background:#fef3c7;color:#92400e}
 .decision{display:inline-block;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:700;margin-top:6px}
-.decision.accept{background:#064e3b;color:#6ee7b7}
-.decision.verify{background:#713f12;color:#fde68a}
-.decision.reject{background:#7f1d1d;color:#fca5a5}
-.bottom{position:fixed;bottom:0;left:0;right:0;z-index:20;padding:10px 16px;background:var(--bg);border-top:1px solid var(--border);display:flex;gap:10px;align-items:flex-end}
-.bottom textarea{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:24px;padding:12px 18px;color:var(--text);font-size:14px;resize:none;height:44px;max-height:120px;font-family:inherit;outline:none;transition:border-color .2s}
+.decision.accept{background:#dcfce7;color:#166534}
+.decision.verify{background:#fef3c7;color:#92400e}
+.decision.reject{background:#fee2e2;color:#991b1b}
+.bottom{position:fixed;bottom:0;left:0;right:0;z-index:20;padding:10px 16px;background:var(--surface);border-top:1px solid var(--border);display:flex;gap:10px;align-items:flex-end;box-shadow:0 -1px 3px rgba(0,0,0,0.05)}
+.bottom textarea{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:24px;padding:12px 18px;color:var(--text);font-size:14px;resize:none;height:44px;max-height:120px;font-family:inherit;outline:none;transition:border-color .2s}
 .bottom textarea:focus{border-color:var(--accent)}
 .bottom textarea::placeholder{color:var(--faint)}
 .btn{width:40px;height:40px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;transition:all .15s}
-.btn-send{background:var(--accent);color:#000;font-weight:700;font-size:18px}
+.btn-send{background:var(--accent);color:#fff;font-weight:700;font-size:18px}
 .btn-send:hover{background:var(--accent2)}
 @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+.practicing{animation:pulse 2s ease-in-out infinite;color:var(--green) !important}
 @media(max-width:600px){.chat{padding:10px 12px 100px 12px}.bubble{font-size:13px;padding:10px 14px}}
 </style>
 </head>
@@ -526,10 +531,12 @@ body{display:flex;flex-direction:column}
 <div class="top">
   <div class="logo">SHIFU</div>
   <div class="stats" id="topStats">booting...</div>
+  <div class="learning-bar"><div class="learning-bar-fill" id="learnBar" style="width:0%"></div></div>
+  <div class="learning-label" id="learnLabel">-</div>
 </div>
 <div class="chat" id="chat">
   <div class="msg shifu"><div class="bubble">
-    <div style="color:var(--accent);font-weight:500">Model the medium. Detect the perturbation. Let experience shape the landscape.</div>
+    <div style="color:var(--accent);font-weight:600">Model the medium. Detect the perturbation. Let experience shape the landscape.</div>
     <div style="font-size:12px;color:var(--dim);margin-top:8px">
       <b>Ask</b> anything &middot; <b>Paste OCR text</b> to correct &middot; <b>Feed</b> text to teach me<br>
       <span style="color:var(--faint)">/correct &middot; /describe &middot; /generate &middot; /connect &middot; /stats &middot; /feed &middot; /practice &middot; /study &middot; /assess &middot; /roots &middot; /meaning &middot; /synonyms</span>
@@ -537,7 +544,7 @@ body{display:flex;flex-direction:column}
   </div></div>
 </div>
 <div class="bottom">
-  <button class="btn" style="background:transparent;border:1px solid var(--border);color:var(--dim);font-size:15px" onclick="document.getElementById('fileInput').click()" title="Upload PDFs / text files">+</button>
+  <button class="btn" style="background:var(--bg);border:1px solid var(--border);color:var(--accent);font-size:18px;font-weight:700" onclick="document.getElementById('fileInput').click()" title="Upload PDFs / text files">+</button>
   <input type="file" id="fileInput" accept=".pdf,.txt,.csv,.tsv,.md,.html,.json,text/*,application/pdf" multiple onchange="handleFiles(event)" style="display:none">
   <textarea id="input" placeholder="Ask Shifu anything..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'"></textarea>
   <button class="btn btn-send" onclick="send()">&rarr;</button>
@@ -754,14 +761,26 @@ async function handleFiles(event) {
 
 let _statsTimer=null;
 function updateStats(){
-  // Debounce: only fire once per 2 seconds no matter how many messages
   if(_statsTimer)return;
   _statsTimer=setTimeout(async()=>{
     _statsTimer=null;
-    try{const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);
-    document.getElementById('topStats').innerHTML=(js.core?.vocabulary||0)+'w &middot; '+(js.core?.resonancePairs||0)+' res &middot; '+(m.vocabulary||0)+' mind &middot; '+(m.domains||0)+' dom &middot; '+(m.myelinated||0)+' myel'}catch{}
-  },2000);
+    try{
+      const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);
+      const vocab=m.vocabulary||0;
+      const myel=m.myelinated||0;
+      const feeds=m.feed_count||0;
+      document.getElementById('topStats').innerHTML=vocab+'w &middot; '+myel+' myel &middot; '+(m.domains||0)+' dom';
+      // Learning progress bar: myelinated / vocabulary ratio
+      const progress=vocab>0?Math.min(myel/Math.max(vocab*0.3,1)*100,100):0;
+      document.getElementById('learnBar').style.width=progress.toFixed(0)+'%';
+      const pLabel=document.getElementById('learnLabel');
+      if(feeds>10){pLabel.textContent='Learning';pLabel.className='learning-label practicing';}
+      else{pLabel.textContent=progress.toFixed(0)+'%';pLabel.className='learning-label';}
+    }catch{}
+  },3000);
 }
+// Poll learning progress every 5 seconds
+setInterval(updateStats,5000);
 updateStats();
 </script>
 </body>
