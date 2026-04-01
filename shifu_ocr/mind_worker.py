@@ -207,44 +207,52 @@ if __name__ == '__main__':
     sys.stdout.write(json.dumps({'ok': True, 'status': 'ready', 'vocabulary': mind.stats()['vocabulary']}) + '\n')
     sys.stdout.flush()
 
-    # ═══ BACKGROUND PRACTICE — the baby never stops learning ═══
-    # Between requests, practice. Like dreaming: consolidate + rehearse.
+    # ═══ BACKGROUND PRACTICE — via threading with a lock ═══
+    # The lock prevents practice from running while a request is being handled.
+    # This avoids the deadlock: practice yields the GIL to let stdin read.
     import threading, time as _time
 
+    _busy = threading.Lock()
+    _state = [0]  # [practice_count] — mutable container, no nonlocal needed
+
     def _background_practice():
-        """Runs continuously in a background thread. Practices when idle."""
-        practice_count = 0
         while True:
             _time.sleep(30)
-            vocab_size = len(mind.cortex.word_freq)
-            if vocab_size < 20:
+            if len(mind.cortex.word_freq) < 20:
+                continue
+            # Only practice if not handling a request
+            if _busy.locked():
+                continue
+            acquired = _busy.acquire(timeout=0.1)
+            if not acquired:
                 continue
             try:
-                r = mind.practice(rounds=3)
-                practice_count += 1
-                # Every 5th cycle, also do curriculum study
-                if practice_count % 5 == 0:
-                    mind.study(rounds=2)
-                # Every 10th cycle, consolidate
-                if practice_count % 10 == 0:
+                mind.practice(rounds=2)
+                _state[0] += 1
+                if _state[0] % 5 == 0:
+                    mind.study(rounds=1)
+                if _state[0] % 10 == 0:
                     mind.consolidate()
             except Exception:
                 pass
+            finally:
+                _busy.release()
 
-    practice_thread = threading.Thread(target=_background_practice, daemon=True)
-    practice_thread.start()
+    t = threading.Thread(target=_background_practice, daemon=True)
+    t.start()
 
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
-        try:
-            cmd = json.loads(line)
-            req_id = cmd.pop('_id', None)
-            result = handle(cmd)
-        except Exception as e:
-            req_id = None
-            result = {'ok': False, 'error': str(e)}
+        with _busy:
+            try:
+                cmd = json.loads(line)
+                req_id = cmd.pop('_id', None)
+                result = handle(cmd)
+            except Exception as e:
+                req_id = None
+                result = {'ok': False, 'error': str(e)}
         if req_id is not None:
             result['_id'] = req_id
         sys.stdout.write(json.dumps(result, ensure_ascii=False) + '\n')
