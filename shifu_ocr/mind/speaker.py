@@ -28,7 +28,6 @@ class Speaker:
         self._frames: Dict[str, int] = {}  # frame pattern -> frequency
         self._bigrams: Dict[str, Dict[str, float]] = {}  # word -> {next: count}
         self._starters: Dict[str, int] = {}  # first-word patterns
-        self._glue: Dict[str, Dict[str, Dict[str, float]]] = {}  # w1 -> w2 -> {connector: count}
         self._max_rep_window = max_repetition_window
 
     # ═══ LEARNING ═══
@@ -36,8 +35,7 @@ class Speaker:
     def learn_frame(self, tokens: List[str]) -> None:
         """
         Learn sentence structure from a token sequence.
-        Records bigram transitions, starter patterns, and grammar glue
-        (the function words that connect content words).
+        Records bigram transitions and starter patterns.
         """
         if len(tokens) < 2:
             return
@@ -53,38 +51,7 @@ class Speaker:
                 self._bigrams[src] = {}
             self._bigrams[src][tgt] = self._bigrams[src].get(tgt, 0) + 1
 
-        # Learn glue: function words between content words
-        # "stroke IS CAUSED BY occlusion" → glue(stroke, occlusion) = "is caused by"
-        content_positions = []
-        for i, t in enumerate(tokens):
-            if len(t) > 3:  # rough content word heuristic
-                content_positions.append(i)
-        for idx in range(len(content_positions) - 1):
-            ci = content_positions[idx]
-            cj = content_positions[idx + 1]
-            w1 = tokens[ci]
-            w2 = tokens[cj]
-            # Extract function words between them
-            glue_words = tokens[ci + 1:cj]
-            if glue_words:
-                glue_str = ' '.join(glue_words)
-                if w1 not in self._glue:
-                    self._glue[w1] = {}
-                if w2 not in self._glue[w1]:
-                    self._glue[w1][w2] = {}
-                self._glue[w1][w2][glue_str] = self._glue[w1][w2].get(glue_str, 0) + 1
-
     # ═══ GENERATION ═══
-
-    def _get_glue(self, w1: str, w2: str) -> str:
-        """Get the most common function words connecting w1 to w2."""
-        glue_map = self._glue.get(w1, {}).get(w2, {})
-        if not glue_map:
-            # Try reverse
-            glue_map = self._glue.get(w2, {}).get(w1, {})
-        if not glue_map:
-            return ''
-        return max(glue_map, key=glue_map.get)
 
     def generate(
         self,
@@ -94,60 +61,49 @@ class Speaker:
         max_length: int = 20,
     ) -> List[str]:
         """
-        Generate a token sequence from seed words.
-        Uses learned glue to insert function words between content words,
-        producing real prose rather than word chains.
+        Generate a token sequence starting from seed words.
+        Follows graph connections with bigram transition probabilities.
         """
         if not seed_words:
             return []
 
         result = list(seed_words)
-        used_content = set(seed_words)
+        used = set(seed_words)
         current = seed_words[-1]
 
-        content_count = len(seed_words)
-        for _ in range(max_length * 2):  # extra iterations since glue adds words
-            if len(result) >= max_length:
-                break
-
+        for _ in range(max_length - len(seed_words)):
             candidates: Dict[str, float] = {}
 
-            # Source 1: co-occurrence graph (strongest signal for content)
-            co = co_graph.get(current, {})
-            for w, weight in sorted(co.items(), key=lambda x: -x[1])[:15]:
-                if w not in used_content and len(w) > 2:
-                    candidates[w] = candidates.get(w, 0) + weight
+            # Source 1: learned bigram transitions
+            bg = self._bigrams.get(current, {})
+            for w, count in bg.items():
+                if w not in used:
+                    candidates[w] = candidates.get(w, 0) + count
 
             # Source 2: next-word graph
             if nx_graph:
                 nx = nx_graph.get(current, {})
                 for w, weight in nx.items():
-                    if w not in used_content and len(w) > 2:
+                    if w not in used:
                         candidates[w] = candidates.get(w, 0) + weight * 0.5
+
+            # Source 3: co-occurrence graph (weaker signal)
+            co = co_graph.get(current, {})
+            for w, weight in sorted(co.items(), key=lambda x: -x[1])[:10]:
+                if w not in used:
+                    candidates[w] = candidates.get(w, 0) + weight * 0.3
 
             if not candidates:
                 break
 
-            # Pick best content word
+            # Pick highest-scored candidate
             best = max(candidates, key=candidates.get)
-
-            # Insert glue between current and best
-            glue = self._get_glue(current, best)
-            if glue:
-                for gw in glue.split():
-                    result.append(gw)
-                    if len(result) >= max_length:
-                        break
-
-            if len(result) >= max_length:
-                break
-
             result.append(best)
-            used_content.add(best)
+            used.add(best)
             current = best
-            content_count += 1
 
-            if content_count > self._max_rep_window:
+            # Prevent infinite loops
+            if len(used) > self._max_rep_window * 2:
                 break
 
         return result
@@ -232,7 +188,6 @@ class Speaker:
             'frames': self._frames,
             'bigrams': self._bigrams,
             'starters': self._starters,
-            'glue': self._glue,
         }
 
     @classmethod
@@ -241,5 +196,4 @@ class Speaker:
         s._frames = d.get('frames', {})
         s._bigrams = d.get('bigrams', {})
         s._starters = d.get('starters', {})
-        s._glue = d.get('glue', {})
         return s
