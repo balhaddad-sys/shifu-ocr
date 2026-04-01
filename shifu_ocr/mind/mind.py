@@ -584,12 +584,12 @@ class ShifuMind:
         don't drown out actual content words like "stroke", "dopamine".
         """
         tokens = _tokenize(query)
-        # Filter through emergent stop words — same gate the feed uses
-        stops = self.gate.stop_words(self.cortex.word_freq)
-        content = [t for t in tokens if t not in stops and len(t) > 2]
-        if not content:
-            # Fallback: keep longest words from original
-            content = sorted([t for t in tokens if len(t) > 3], key=lambda w: -len(w))[:5]
+        # NO FILTERING. No heuristics. No stop word lists.
+        # Pass ALL words to the thinker. The FIELD decides what matters.
+        # Strong, specific connections (stroke→brain) amplify.
+        # Weak, diffuse connections (the→everything) get inhibited.
+        # The landscape IS the filter.
+        content = [t for t in tokens if len(t) > 1]
         if not content:
             return {'focus': [], 'retrieved': [], 'coherence': 0.0,
                     'steps': 0, 'converged': False, 'trace': [],

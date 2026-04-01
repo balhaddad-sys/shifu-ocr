@@ -329,29 +329,45 @@ class Thinker:
             steps += 1
             changed = False
 
-            # ═══ PHASE 1: IDENTITY — build spoke star ═══
-            # Weight each focus word by confidence: the mind focuses on what it KNOWS
-            all_activated: Dict[str, float] = {}
-            if cross_layer_fn:
-                biases = self._compute_biases(wm.focus, cross_layer_fn)
-                for word in wm.focus[:5]:
-                    # Confidence weighting: known words get amplified, unknown dampened
-                    conf_weight = 1.0
-                    if confidence_fn:
-                        conf = confidence_fn(word)
-                        conf_weight = max(0.1, conf.get('score', 0) / 50.0)  # 50% → 1.0, 100% → 2.0, 0% → 0.1
-                    biased = self._biased_activate(word, wm.goal, cross_layer_fn, activate_fn, biases)
-                    for w, e in biased.items():
-                        all_activated[w] = all_activated.get(w, 0) + e * conf_weight
-            else:
-                for word in wm.focus:
-                    conf_weight = 1.0
-                    if confidence_fn:
-                        conf = confidence_fn(word)
-                        conf_weight = max(0.1, conf.get('score', 0) / 50.0)
+            # ═══ PHASE 1: IDENTITY — multiplicative intersection ═══
+            # Like the JS Cortex.ask(): activate each focus word separately,
+            # then MULTIPLY fields together. Words that appear in multiple
+            # activations get amplified. Words appearing in only one get killed.
+            # "stroke" activates {brain, artery}. "treatment" activates {therapy, brain}.
+            # Intersection amplifies "brain". Union noise dies.
+            # This is how the LANDSCAPE filters — not heuristics.
+            per_word_fields: List[Dict[str, float]] = []
+            for word in wm.focus[:5]:
+                if cross_layer_fn:
+                    if not hasattr(self, '_last_biases') or step == 0:
+                        self._last_biases = self._compute_biases(wm.focus, cross_layer_fn)
+                    field = self._biased_activate(word, wm.goal, cross_layer_fn, activate_fn, self._last_biases)
+                else:
                     field = activate_fn(word)
-                    for w, e in field.items():
-                        all_activated[w] = all_activated.get(w, 0) + e * conf_weight
+                if field:
+                    per_word_fields.append(field)
+
+            # Multiplicative intersection: start with first field,
+            # multiply by subsequent fields. Only shared words survive.
+            all_activated: Dict[str, float] = {}
+            if len(per_word_fields) == 1:
+                all_activated = dict(per_word_fields[0])
+            elif len(per_word_fields) >= 2:
+                # Start with the field that has fewest entries (most specific)
+                per_word_fields.sort(key=lambda f: len(f))
+                base = dict(per_word_fields[0])
+                for other_field in per_word_fields[1:]:
+                    merged: Dict[str, float] = {}
+                    for w, e in base.items():
+                        other_e = other_field.get(w, 0)
+                        if other_e > 0:
+                            merged[w] = e * other_e  # Multiplicative
+                    # Also add words from other with weak additive (allow some new discovery)
+                    for w, e in other_field.items():
+                        if w not in merged:
+                            merged[w] = e * 0.1  # Weak additive for discovery
+                    base = merged
+                all_activated = base
 
             # ═══ PHASE 2: MEMORY — goal-directed retrieval ═══
             # Retrieve from episodic memory if available
