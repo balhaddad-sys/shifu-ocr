@@ -26,6 +26,7 @@ from .speaker import Speaker
 from .thinker import Thinker
 from .imagination import Imagination
 from .attention import Attention
+from .conviction import Conviction
 from .language import Morphology, Syntax, Semantics, Curriculum
 
 
@@ -66,6 +67,7 @@ class ShifuMind:
         self.thinker = Thinker(max_steps=thinker_max_steps)
         self.imagination = Imagination()
         self.attention = Attention()
+        self.conviction = Conviction()
 
         # Language acquisition modules
         self.language = type('Language', (), {
@@ -938,6 +940,7 @@ class ShifuMind:
             'thinker': self.thinker.to_dict(),
             'imagination': self.imagination.to_dict(),
             'attention': self.attention.to_dict(),
+            'conviction': self.conviction.to_dict(),
             'co_graph': self._co_graph,
             'nx_graph': self._nx_graph,
             'px_graph': self._px_graph,
@@ -960,6 +963,7 @@ class ShifuMind:
         mind.thinker = Thinker.from_dict(d.get('thinker', {}))
         mind.imagination = Imagination.from_dict(d.get('imagination', {}))
         mind.attention = Attention.from_dict(d.get('attention', {}))
+        mind.conviction = Conviction.from_dict(d.get('conviction', {}))
         mind._co_graph = d.get('co_graph', {})
         mind._nx_graph = d.get('nx_graph', {})
         mind._px_graph = d.get('px_graph', {})
@@ -1069,15 +1073,33 @@ class ShifuMind:
                 'after': after_conf['score'] if isinstance(after_conf, dict) else after_conf,
             })
 
+        # ═══ CONVICTION — when dopamine says stop, conviction pushes through ═══
+        trend = self.signal.recent_trend(5)
+        conviction_result = None
+        # Conviction fires when the mind is COMFORTABLE — not just when failing.
+        # Comfort (stable high trend) means the mind stopped growing.
+        # A mind that always gets 0.7 has plateaued. Conviction breaks the plateau.
+        stable = abs(trend - self.signal.recent_trend(10)) < 0.05  # Flat line
+        if stable and len(self.cortex.word_freq) > 20:
+            # Dopamine is flat. Normal mind would rest.
+            # But conviction discovers purpose and pushes through.
+            purpose = self.conviction.discover_purpose(self)
+            if purpose:
+                conviction_result = self.conviction.push_through(purpose, trend, self)
+
         self.cortex._invalidate_cache()
         self.field.invalidate_cache()
 
-        return {
+        result = {
             'rounds': len(results),
             'improved': improved,
             'degraded': degraded,
             'practice': results,
         }
+        if conviction_result:
+            result['conviction'] = conviction_result
+            result['voice'] = self.conviction._voice[-1] if self.conviction._voice else None
+        return result
 
     def save(self, path: str) -> None:
         """Save full state to JSON file."""
