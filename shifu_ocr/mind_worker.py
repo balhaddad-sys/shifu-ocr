@@ -100,11 +100,9 @@ def handle(cmd):
         texts = cmd.get('texts', [])
         cycles = cmd.get('cycles', 1)
         r = mind.feed_batch(texts, cycles=cycles)
-        # Save in background — don't block the response
-        try:
-            save()
-        except Exception:
-            pass  # Don't fail the response if save fails
+        # Do NOT save after batch — let the user call /api/mind/save explicitly.
+        # Saving 129K sentences of state mid-request blocks the response
+        # and can OOM the process during JSON serialization.
         return {'ok': True, **r}
 
     elif op == 'score':

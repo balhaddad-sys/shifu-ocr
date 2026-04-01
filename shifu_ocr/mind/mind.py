@@ -232,8 +232,28 @@ class ShifuMind:
                 is_dup = content_key in seen_content
                 seen_content.add(content_key)
 
-                # Feed cortex (always — weights accumulate)
-                connections = self.cortex.feed(content, layer=layer, classifier=cls)
+                # Direct word frequency update — bypass cortex.feed() overhead.
+                # cortex.feed() does: epoch++, cache invalidation, assembly formation,
+                # prune check, layer routing — all O(n²) per sentence.
+                # For batch: just count words and build the _general layer directly.
+                connections = 0
+                gen_layer = self.cortex.ensure_layer('_general')
+                for w in content:
+                    self.cortex.word_freq[w] = self.cortex.word_freq.get(w, 0) + 1
+                    self.cortex.total_words += 1
+                    if w not in self.cortex._connection_birth:
+                        self.cortex._connection_birth[w] = self.cortex._epoch
+                    if w not in self.cortex.breadth:
+                        self.cortex.breadth[w] = set()
+                fc = content[:12]  # Cap like cortex.feed does
+                for i in range(len(fc)):
+                    for j in range(max(0, i-4), min(len(fc), i+5)):
+                        if i != j:
+                            gen_layer.connect(fc[i], fc[j], 1.0 / abs(i-j), self.cortex._epoch)
+                            self.cortex.breadth[fc[i]].add(fc[j])
+                            connections += 1
+                self.cortex._feed_count += 1
+                self.cortex._epoch += 1
 
                 # Identity extraction (cheap)
                 self._extract_identity(text, content)
