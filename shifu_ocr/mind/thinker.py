@@ -330,19 +330,28 @@ class Thinker:
             changed = False
 
             # ═══ PHASE 1: IDENTITY — build spoke star ═══
+            # Weight each focus word by confidence: the mind focuses on what it KNOWS
             all_activated: Dict[str, float] = {}
             if cross_layer_fn:
-                # Compute biases from the landscape (no hardcoded table)
                 biases = self._compute_biases(wm.focus, cross_layer_fn)
-                for word in wm.focus[:3]:
+                for word in wm.focus[:5]:
+                    # Confidence weighting: known words get amplified, unknown dampened
+                    conf_weight = 1.0
+                    if confidence_fn:
+                        conf = confidence_fn(word)
+                        conf_weight = max(0.1, conf.get('score', 0) / 50.0)  # 50% → 1.0, 100% → 2.0, 0% → 0.1
                     biased = self._biased_activate(word, wm.goal, cross_layer_fn, activate_fn, biases)
                     for w, e in biased.items():
-                        all_activated[w] = all_activated.get(w, 0) + e
+                        all_activated[w] = all_activated.get(w, 0) + e * conf_weight
             else:
                 for word in wm.focus:
+                    conf_weight = 1.0
+                    if confidence_fn:
+                        conf = confidence_fn(word)
+                        conf_weight = max(0.1, conf.get('score', 0) / 50.0)
                     field = activate_fn(word)
                     for w, e in field.items():
-                        all_activated[w] = all_activated.get(w, 0) + e
+                        all_activated[w] = all_activated.get(w, 0) + e * conf_weight
 
             # ═══ PHASE 2: MEMORY — goal-directed retrieval ═══
             # Retrieve from episodic memory if available

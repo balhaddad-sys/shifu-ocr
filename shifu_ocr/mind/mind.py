@@ -251,15 +251,28 @@ class ShifuMind:
                     continue
 
                 # ═══ ASTROCYTE: measure novelty ═══
+                # Not just "have I seen this word?" but "do I UNDERSTAND it?"
+                # A word with freq=100 but 0 connections is still novel.
+                # Novelty = new words + poorly-connected words + new combinations.
                 new_words = 0
-                rare_words = 0
+                thin_words = 0
+                new_pairs = 0
                 for w in content:
                     freq = self.cortex.word_freq.get(w, 0)
                     if freq == 0:
                         new_words += 1
-                    elif freq < 3:
-                        rare_words += 1
-                novelty = (new_words + rare_words * 0.5) / max(len(content), 1)
+                    else:
+                        # Thin: seen but poorly connected (< 5 co-graph neighbors)
+                        co_count = len(self._co_graph.get(w, {}))
+                        if co_count < 5:
+                            thin_words += 1
+                # New combinations: pairs of content words not yet in co-graph
+                if len(content) >= 2:
+                    for i in range(min(len(content) - 1, 5)):
+                        a, b = content[i], content[i + 1]
+                        if a not in self._co_graph or b not in self._co_graph.get(a, {}):
+                            new_pairs += 1
+                novelty = (new_words + thin_words * 0.3 + new_pairs * 0.2) / max(len(content), 1)
 
                 # ═══ ALL LEVELS: word frequency (always) ═══
                 for w in content:
@@ -567,11 +580,16 @@ class ShifuMind:
     def deliberate(self, query: str) -> dict:
         """
         Multi-step reasoning with full 6-phase cognitive cycle.
-        Passes imagination, cross-layer activation, confidence,
-        memory recall, and co-occurrence graph to the thinker.
+        Filters query through emergent stop words so "what", "the", "is"
+        don't drown out actual content words like "stroke", "dopamine".
         """
         tokens = _tokenize(query)
-        content = [t for t in tokens if len(t) > 2]
+        # Filter through emergent stop words — same gate the feed uses
+        stops = self.gate.stop_words(self.cortex.word_freq)
+        content = [t for t in tokens if t not in stops and len(t) > 2]
+        if not content:
+            # Fallback: keep longest words from original
+            content = sorted([t for t in tokens if len(t) > 3], key=lambda w: -len(w))[:5]
         if not content:
             return {'focus': [], 'retrieved': [], 'coherence': 0.0,
                     'steps': 0, 'converged': False, 'trace': [],

@@ -554,8 +554,13 @@ async function send(){
         h='<div style="margin-bottom:4px"><b>Focus:</b> '+(r.focus||[]).join(', ')+'</div>';
         h+='<div><b>Retrieved:</b> '+(r.retrieved||[]).map(x=>x.word).join(', ')+'</div>';
         h+='<div class="trace"><span class="lbl">coherence</span> '+(r.coherence||0).toFixed(3)+' &middot; <span class="lbl">steps</span> '+(r.steps||0)+' &middot; <span class="lbl">converged</span> '+(r.converged?'yes':'no')+'</div>';
-        const fw=(r.focus||[]).find(w=>w.length>3);
-        if(fw){try{const ds=await api('/api/mind/describe/'+fw);if(ds.ok)h+='<div style="margin-top:8px">'+ds.description+'</div>'}catch{}}
+        // Pick focus word with highest confidence (the one the mind KNOWS best)
+        let fw=null,fwScore=-1;
+        for(const w of (r.focus||[]).slice(0,6)){
+          if(w.length<4)continue;
+          try{const c=await api('/api/mind/confidence/'+w);if(c.score>fwScore){fwScore=c.score;fw=w;}}catch{}
+        }
+        if(fw&&fwScore>5){try{const ds=await api('/api/mind/describe/'+fw);if(ds.ok)h+='<div style="margin-top:8px">'+ds.description+'</div>'}catch{}}
       }else{const r2=await api('/api/score',{text:d.p});h='<div class="trace"><span class="lbl">coherence</span> '+(r2.coherence||0).toFixed(3)+'</div>'}
     }
     else if(d.i==='feed'){
