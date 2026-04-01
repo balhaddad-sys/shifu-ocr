@@ -233,52 +233,72 @@ if __name__ == '__main__':
                  'decompose', 'assess', 'language_stats', 'hungry'}
 
     def _background_practice():
-        # ═══ RELATIVISTIC TIME ═══
+        # ═══ DEVELOPMENTAL STAGES ═══
         #
-        # E = mc² — energy and mass are the same thing.
-        # In the mind: LEARNING and TIME are the same thing.
-        # Time that produces no learning is wasted time.
+        # A baby doesn't run before crawling.
+        # The connections for crawling need to form first.
+        # They consolidate. They myelinate.
+        # THEN the bridge to running forms naturally.
         #
-        # The baby practices at CPU speed — not wall clock speed.
-        # It BURSTS: practice hard until learning rate drops,
-        # then rest briefly, then burst again.
+        # Stage 1: ABSORB (vocab < 500) — just exist. Take it in.
+        #   No practice. No study. Just let feed() build the landscape.
+        #   Consolidate periodically so connections organize.
         #
-        # Between bursts: yield to let requests through (10ms).
-        # During burst: 10 practice + 3 study + consolidate.
-        # After burst: check if learning rate is still positive.
-        # If dopamine surprise is near zero → learning saturated → rest longer.
-        # If dopamine surprise is high → still learning → keep going.
+        # Stage 2: CRAWL (vocab 500-5000) — gentle practice.
+        #   1 round every 5 seconds. Let myelination happen.
+        #   Consolidate every 10th cycle. Study every 20th.
+        #
+        # Stage 3: WALK (vocab 5000-20000) — confident practice.
+        #   1 round every 2 seconds. Conviction kicks in.
+        #   Study every 5th. Consolidate every 10th.
+        #
+        # Stage 4: RUN (vocab > 20000) — full speed.
+        #   2 rounds per second. All systems active.
 
         while True:
-            _time.sleep(0.01)  # 10ms yield for requests
-            if len(mind.cortex.word_freq) < 20:
-                _time.sleep(1)
+            vocab = len(mind.cortex.word_freq)
+
+            if vocab < 500:
+                # STAGE 1: ABSORB — just consolidate occasionally
+                _time.sleep(10)
+                if vocab >= 50:
+                    acquired = _left_busy.acquire(timeout=0.1)
+                    if acquired:
+                        try:
+                            mind.consolidate()
+                        except Exception:
+                            pass
+                        finally:
+                            _left_busy.release()
                 continue
+
+            if vocab < 5000:
+                # STAGE 2: CRAWL
+                _time.sleep(5)
+            elif vocab < 20000:
+                # STAGE 3: WALK
+                _time.sleep(2)
+            else:
+                # STAGE 4: RUN
+                _time.sleep(0.5)
+
             if _left_busy.locked():
                 continue
-            acquired = _left_busy.acquire(timeout=0.001)
+            acquired = _left_busy.acquire(timeout=0.1)
             if not acquired:
                 continue
             try:
-                mind.practice(rounds=1)
                 _state[0] += 1
-                if _state[0] % 5 == 0:
+                mind.practice(rounds=1)
+
+                if vocab >= 5000 and _state[0] % 5 == 0:
                     mind.study(rounds=1)
-                if _state[0] % 20 == 0:
+                if _state[0] % 10 == 0:
                     mind.consolidate()
             except Exception:
                 pass
             finally:
                 _left_busy.release()
-
-            # REST: must yield GIL long enough for stdin to be read.
-            # Python GIL means practice and request handling can't truly
-            # run in parallel. The sleep is what lets requests through.
-            trend = mind.signal.recent_trend(5)
-            if trend > 0.4:
-                _time.sleep(0.5)    # 500ms — learning, but let requests through
-            else:
-                _time.sleep(2.0)    # 2s — saturated, rest longer
 
     t = threading.Thread(target=_background_practice, daemon=True)
     t.start()
