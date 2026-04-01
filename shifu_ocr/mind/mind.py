@@ -11,11 +11,11 @@ Everything injectable. No hardcoded knowledge.
 """
 
 from __future__ import annotations
+import re
 import time
 from typing import Dict, List, Set, Optional, Tuple, Any
 
-from ._types import tokenize as _tokenize
-from .cortex import Cortex
+from .cortex import Cortex, _tokenize
 from .field import Field
 from .gate import Gate
 from .signal import Signal
@@ -35,9 +35,6 @@ class ShifuMind:
     Deliberate → multi-step reasoning
 
     All subsystems communicate through shared graph state.
-
-    Note: Not thread-safe. Use external synchronization if accessing
-    from multiple threads.
     """
 
     def __init__(
@@ -69,14 +66,13 @@ class ShifuMind:
         # Built incrementally by feed().
         self._co_graph: Dict[str, Dict[str, float]] = {}   # co-occurrence
         self._nx_graph: Dict[str, Dict[str, float]] = {}   # next-word
+        self._px_graph: Dict[str, Dict[str, float]] = {}   # prev-word
         self._res_graph: Dict[str, Dict[str, float]] = {}  # resonance
         self._snx_graph: Dict[str, Dict[str, float]] = {}  # skip-gram
 
         # ═══ TRACKING ═══
         self._feed_count = 0
         self._epoch = 0
-        self._graph_prune_interval = 500
-        self._graph_max_neighbors = 200
 
     # ═══════════════════════════════════════════════════════════
     #  FEEDING — absorb information
@@ -90,7 +86,7 @@ class ShifuMind:
         Sequence:
         1. Gate filters input
         2. Cortex absorbs connections
-        3. Shared graphs update (co, nx, res, snx)
+        3. Shared graphs update (co, nx, px, res, snx)
         4. Speaker learns bigram frames
         5. Trunk observes for domain emergence
         6. Memory records if topic shifted
@@ -120,15 +116,24 @@ class ShifuMind:
         tokens = filtered['tokens']
         content = filtered['content_tokens']
 
-        # 2. Cortex
+        # 2. Cortex — feed CONTENT words with identity-as-bridge routing
+        #    Identity is NEVER the destination for property connections.
+        #    Identity only holds "is a" declarations.
+        #    All other connections route to appearance/function/mechanism/relation.
         connections = self.cortex.feed(
-            tokens, layer=layer, classifier=classifier,
+            content, layer=layer,
+            classifier=classifier or self._classify_word_bridge,
         )
 
-        # 3. Shared graphs
-        self._update_shared_graphs(tokens)
+        # 2b. Extract identity declarations from the FULL sentence
+        #     "Stroke is a disease" → identity(stroke, disease)
+        self._extract_identity(text, content)
 
-        # 4. Speaker
+        # 3. Shared graphs — content words for co/snx/res, ALL tokens for nx/px
+        #    (bigram transitions need function words for grammar)
+        self._update_shared_graphs(content, tokens)
+
+        # 4. Speaker — learns from ALL tokens (needs grammar structure)
         self.speaker.learn_frame(tokens)
 
         # 5. Trunk
@@ -179,181 +184,184 @@ class ShifuMind:
             'tokens_absorbed': total_tokens,
         }
 
-    def feed_document(self, full_text: str, layer: str = '_general',
-                      classifier=None) -> dict:
+    # ═══ IDENTITY IS THE BRIDGE ═══
+    #
+    # Identity is NEVER a destination for property connections.
+    # Identity only holds "X is a Y" declarations — the name tag.
+    #
+    # When routing connections to layers:
+    # 1. Check if nearby words signal a specific layer
+    # 2. If the signal is "identity" — DON'T USE IT, keep searching
+    # 3. Only the _extract_identity method writes to the identity layer
+    #
+    # This makes identity the HUB through which all spokes connect.
+    # "Stroke" has an identity ("is a disease").
+    # Its properties (appearance, function, mechanism, relation)
+    # radiate FROM that identity. Without the bridge,
+    # properties float disconnected.
+
+    # Layer signal words — words that indicate which spoke is active.
+    # These are NOT the content words. They are the GLUE that tells
+    # the classifier where to route.
+    _SPOKE_SIGNALS = {
+        'appearance': {
+            'appears', 'shows', 'presents', 'displays', 'reveals',
+            'bright', 'dark', 'large', 'small', 'visible', 'seen',
+            'acute', 'chronic', 'progressive', 'sudden', 'bilateral',
+        },
+        'function': {
+            'used', 'treats', 'manages', 'prevents', 'reduces',
+            'treatment', 'therapy', 'management', 'intervention',
+            'for', 'purpose', 'restores', 'dissolves', 'inhibits',
+        },
+        'mechanism': {
+            'causes', 'produces', 'leads', 'results', 'through',
+            'mechanism', 'pathway', 'process', 'involves',
+            'by', 'via', 'because', 'due', 'from', 'affects',
+        },
+        'relation': {
+            'associated', 'related', 'linked', 'connected',
+            'compared', 'versus', 'with', 'combined', 'risk',
+            'factor', 'increases', 'decreases',
+        },
+    }
+
+    # Identity signals — ONLY used by _extract_identity, not by the classifier
+    _IDENTITY_PATTERNS = [
+        r'(?:is a|is an|is the|are|defined as|refers to|known as)\s+(\w{3,})',
+        r'\b(\w{3,})\s+(?:\w+\s+)?is\s+(\w{4,})',
+    ]
+
+    def _classify_word_bridge(self, word: str) -> Optional[str]:
         """
-        Optimized bulk feed for large documents (e.g. PDFs).
-
-        Instead of calling feed() per sentence (which runs gate, graph
-        updates, resonance, medians per call), this method:
-        1. Splits into paragraphs
-        2. Batches graph updates (co/nx/snx built once on all tokens)
-        3. Defers resonance + medians to end
-        4. Returns aggregate stats
-
-        ~5-10x faster than feed() per sentence on large documents.
+        Route a word to a semantic spoke — but NEVER to identity.
+        Identity is the bridge, not a destination.
         """
-        import re
-        # Split into paragraphs (double newline or long gaps)
-        paragraphs = re.split(r'\n\s*\n|\n{2,}', full_text)
-        # Fallback: if only one big block, split on sentence boundaries
-        if len(paragraphs) <= 1:
-            paragraphs = re.split(r'(?<=[.!?])\s+', full_text)
+        # Signal words themselves go to _general
+        for signals in self._SPOKE_SIGNALS.values():
+            if word in signals:
+                return None
 
-        all_tokens: List[str] = []
-        accepted = 0
-        total_connections = 0
-        domains: List[str] = []
+        # Check co-occurrence: which spoke signals does this word appear near?
+        co_neighbors = self._co_graph.get(word, {})
+        if not co_neighbors:
+            return None
 
-        # Save original feed count to suppress per-feed expensive ops
-        saved_feed_count = self._feed_count
-        # Force feed_count to never hit resonance/median triggers during bulk
-        self._feed_count = 1  # not 0, not multiple of 20 or 50
+        spoke_scores: Dict[str, float] = {}
+        for spoke, signals in self._SPOKE_SIGNALS.items():
+            score = sum(co_neighbors.get(s, 0) for s in signals)
+            if score > 0:
+                spoke_scores[spoke] = score
 
-        for para in paragraphs:
-            para = para.strip()
-            if len(para) < 15:
-                continue
+        if not spoke_scores:
+            return None
 
-            self._epoch += 1
+        best = max(spoke_scores, key=spoke_scores.get)
+        if spoke_scores[best] >= 1.0:
+            return best
+        return None
 
-            # Gate filter
-            filtered = self.gate.filter(
-                para,
-                word_freqs=self.cortex.word_freq,
-                known_vocab=set(self.cortex.word_freq.keys()) if self.cortex.word_freq else None,
-            )
-            if not filtered['accepted']:
-                continue
-
-            tokens = filtered['tokens']
-            content = filtered['content_tokens']
-
-            # Cortex absorb
-            connections = self.cortex.feed(
-                tokens, layer=layer, classifier=classifier,
-            )
-            total_connections += connections
-            accepted += 1
-
-            # Collect tokens for batched graph build
-            all_tokens.extend(tokens)
-
-            # Speaker learn
-            self.speaker.learn_frame(tokens)
-
-            # Trunk observe (cheap)
-            domain = self.trunk.observe(content, self._co_graph)
-            domains.append(domain)
-
-            # Memory (skip topic shift detection during bulk -- expensive)
-            self.memory.record(
-                epoch=self._epoch, tokens=content,
-                significance=filtered['quality'] * 0.5,
-                context={'domain': domain, 'quality': filtered['quality']},
-                timestamp=time.time(),
-            )
-
-        # Restore and advance feed count
-        self._feed_count = saved_feed_count + accepted
-
-        # ── Batched graph build on ALL collected tokens ──
-        if len(all_tokens) >= 2:
-            self._update_shared_graphs(all_tokens)
-
-        # ── One-shot resonance + medians at end ──
-        if accepted > 0:
-            self._update_resonance(all_tokens)
-            self.field.update_medians(self.cortex.word_freq, self._co_graph)
-            self.gate.adapt_thresholds()
-
-        # Finalize trunk domains
-        if accepted > 5:
-            self.trunk.finalize()
-
-        # Prune if graphs grew large
-        if self._feed_count > self._graph_prune_interval:
-            self._prune_shared_graphs()
-
-        top_domain = max(set(domains), key=domains.count) if domains else None
-
-        return {
-            'accepted': accepted,
-            'total_paragraphs': len(paragraphs),
-            'tokens_absorbed': total_connections,
-            'domain': top_domain,
-        }
-
-    def _update_shared_graphs(self, tokens: List[str]) -> None:
-        """Update co-occurrence, next-word, skip-gram, resonance."""
-        n = len(tokens)
-        if n < 2:
+    def _extract_identity(self, raw_text: str, content: List[str]) -> None:
+        """
+        Extract "X is a Y" patterns and write ONLY those to the identity layer.
+        This is the ONLY way identity connections form.
+        """
+        if not content:
             return
+        text_lower = raw_text.lower()
+        identity_layer = self.cortex.ensure_layer('identity')
+        subject = content[0]
 
-        for i in range(n):
-            w = tokens[i]
+        # Pattern 1: "X is a Y", "X are Y", "X defined as Y"
+        import re
+        match = re.search(
+            r'(?:is a|is an|is the|are|defined as|refers to|known as)\s+(\w{3,})',
+            text_lower,
+        )
+        if not match:
+            # Pattern 2: "X ... is Y" (bare copula)
+            match2 = re.search(r'\b(\w{3,})\s+(?:\w+\s+)?is\s+(\w{4,})', text_lower)
+            if match2:
+                a = match2.group(1)
+                b = match2.group(2)
+                if a == subject and b != subject and len(b) > 2:
+                    identity_layer.connect(a, b, 2.0, self.cortex._epoch)
+                    identity_layer.connect(b, a, 1.0, self.cortex._epoch)
+                    return
 
-            # Co-occurrence (window=5)
-            for j in range(max(0, i - 5), min(n, i + 6)):
-                if i == j:
-                    continue
-                nb = tokens[j]
-                if w not in self._co_graph:
-                    self._co_graph[w] = {}
-                self._co_graph[w][nb] = self._co_graph[w].get(nb, 0) + 1
+        if match:
+            b = match.group(1)
+            if b != subject and len(b) > 2:
+                # Subject IS b (strong: weight 2)
+                identity_layer.connect(subject, b, 2.0, self.cortex._epoch)
+                # b IS-INSTANCE subject (weaker: weight 1)
+                identity_layer.connect(b, subject, 1.0, self.cortex._epoch)
+                # Second content word also gets identity link
+                if len(content) > 1 and content[1] != subject and content[1] != b:
+                    identity_layer.connect(content[1], b, 1.0, self.cortex._epoch)
 
-            # Next-word
-            if i < n - 1:
-                nxt = tokens[i + 1]
+    def _update_shared_graphs(self, content: List[str],
+                              all_tokens: Optional[List[str]] = None) -> None:
+        """
+        Update shared graphs.
+        content: filtered content words → co-occurrence, skip-gram, resonance
+        all_tokens: full token list → next-word, prev-word (needs grammar)
+        """
+        # Co-occurrence, skip-gram from CONTENT words only
+        n = len(content)
+        if n >= 2:
+            for i in range(n):
+                w = content[i]
+                # Co-occurrence (window=5)
+                for j in range(max(0, i - 5), min(n, i + 6)):
+                    if i == j:
+                        continue
+                    nb = content[j]
+                    if w not in self._co_graph:
+                        self._co_graph[w] = {}
+                    self._co_graph[w][nb] = self._co_graph[w].get(nb, 0) + 1
+                # Skip-gram (window=7, min_dist=2)
+                for j in range(max(0, i - 7), min(n, i + 8)):
+                    dist = abs(i - j)
+                    if dist < 2:
+                        continue
+                    skip = content[j]
+                    if w not in self._snx_graph:
+                        self._snx_graph[w] = {}
+                    self._snx_graph[w][skip] = self._snx_graph[w].get(skip, 0) + 1
+
+        # Next-word and prev-word from ALL tokens (grammar needs function words)
+        seq = all_tokens if all_tokens is not None else content
+        for i in range(len(seq)):
+            w = seq[i]
+            if i < len(seq) - 1:
+                nxt = seq[i + 1]
                 if w not in self._nx_graph:
                     self._nx_graph[w] = {}
                 self._nx_graph[w][nxt] = self._nx_graph[w].get(nxt, 0) + 1
+            if i > 0:
+                prv = seq[i - 1]
+                if w not in self._px_graph:
+                    self._px_graph[w] = {}
+                self._px_graph[w][prv] = self._px_graph[w].get(prv, 0) + 1
 
-            # Skip-gram (window=7, min_dist=2)
-            for j in range(max(0, i - 7), min(n, i + 8)):
-                dist = abs(i - j)
-                if dist < 2:
-                    continue
-                skip = tokens[j]
-                if w not in self._snx_graph:
-                    self._snx_graph[w] = {}
-                self._snx_graph[w][skip] = self._snx_graph[w].get(skip, 0) + 1
-
-        # Resonance: words that share many co-occurrence neighbors
-        # Only update periodically (expensive)
-        if self._feed_count % 20 == 0:
-            self._update_resonance(tokens)
-
-        # Periodic graph pruning to prevent unbounded growth
-        if self._feed_count > 0 and self._feed_count % self._graph_prune_interval == 0:
-            self._prune_shared_graphs()
-
-    def _prune_shared_graphs(self) -> None:
-        """Prune shared graphs: keep only top-N neighbors per node by weight."""
-        limit = self._graph_max_neighbors
-        for graph in (self._co_graph, self._nx_graph, self._res_graph, self._snx_graph):
-            for node in list(graph.keys()):
-                neighbors = graph[node]
-                if len(neighbors) > limit:
-                    top = sorted(neighbors.items(), key=lambda x: -x[1])[:limit]
-                    graph[node] = dict(top)
+        # Resonance from content words (periodic)
+        if self._feed_count % 20 == 0 and n >= 2:
+            self._update_resonance(content)
 
     def _update_resonance(self, tokens: List[str]) -> None:
         """Build resonance links between words sharing neighbors."""
         unique = list(set(tokens))
-        # Pre-compute neighbor sets to avoid repeated set() calls
-        neighbor_sets: Dict[str, set] = {}
-        for w in unique:
-            co = self._co_graph.get(w, {})
-            if len(co) >= 3:
-                neighbor_sets[w] = set(co.keys())
-        words = list(neighbor_sets.keys())
-        for i in range(len(words)):
-            a = words[i]
-            a_neighbors = neighbor_sets[a]
-            for j in range(i + 1, len(words)):
-                b = words[j]
-                b_neighbors = neighbor_sets[b]
+        for i in range(len(unique)):
+            a = unique[i]
+            a_neighbors = set(self._co_graph.get(a, {}).keys())
+            if len(a_neighbors) < 3:
+                continue
+            for j in range(i + 1, len(unique)):
+                b = unique[j]
+                b_neighbors = set(self._co_graph.get(b, {}).keys())
+                if len(b_neighbors) < 3:
+                    continue
                 shared = len(a_neighbors & b_neighbors)
                 if shared >= 2:
                     amount = shared * 0.1
@@ -457,12 +465,63 @@ class ShifuMind:
     # ═══════════════════════════════════════════════════════════
 
     def describe(self, word: str) -> str:
-        """Generate a description of a word from its connections."""
-        layer_conns = self.cortex.cross_layer_activation(word.lower())
-        return self.speaker.describe(
-            word.lower(), self._co_graph,
-            self._nx_graph, layer_conns or None,
-        )
+        """
+        Generate a rich 5-spoke description from connections.
+        Each semantic layer contributes its perspective.
+        """
+        w = word.lower()
+        layer_conns = self.cortex.cross_layer_activation(w)
+        conf = self.cortex.confidence(w)
+
+        if conf['state'] == 'unknown':
+            return f"I don't have experience with {word} yet."
+
+        labels = {
+            'identity': 'is',
+            'appearance': 'appears',
+            'function': 'used for',
+            'mechanism': 'works through',
+            'relation': 'related to',
+        }
+
+        parts = []
+        for layer_name, verb in labels.items():
+            conns = layer_conns.get(layer_name, {})
+            if not conns:
+                continue
+            # Filter and sort
+            items = sorted(conns.items(), key=lambda x: -x[1])
+            words = [k for k, v in items if k != w and len(k) > 2][:3]
+            if words:
+                parts.append(f"{verb} {', '.join(words)}")
+
+        # Fall back to _general if typed layers are empty
+        if not parts:
+            gen = layer_conns.get('_general', {})
+            if gen:
+                items = sorted(gen.items(), key=lambda x: -x[1])
+                words = [k for k, v in items if k != w and len(k) > 2][:5]
+                if words:
+                    parts.append(f"connects to {', '.join(words)}")
+
+        # Also add co-occurrence neighbors not already mentioned
+        mentioned = set()
+        for p in parts:
+            mentioned.update(p.split())
+        co_neighbors = self._co_graph.get(w, {})
+        co_top = [k for k, v in sorted(co_neighbors.items(), key=lambda x: -x[1])
+                  if k != w and k not in mentioned and len(k) > 2][:3]
+        if co_top:
+            parts.append(f"associated with {', '.join(co_top)}")
+
+        if not parts:
+            return f"I know {word} but can't describe it well yet."
+
+        state = conf['state']
+        score = conf['score']
+        result = f"{word} {'. '.join(parts)}."
+        result = result[0].upper() + result[1:]
+        return f"{result} [{score}% {state}]"
 
     def generate(self, seed_words: List[str], max_length: int = 20) -> List[str]:
         """Generate a token sequence from seeds."""
@@ -559,6 +618,7 @@ class ShifuMind:
             'thinker': self.thinker.to_dict(),
             'co_graph': self._co_graph,
             'nx_graph': self._nx_graph,
+            'px_graph': self._px_graph,
             'res_graph': self._res_graph,
             'snx_graph': self._snx_graph,
             'feed_count': self._feed_count,
@@ -567,7 +627,7 @@ class ShifuMind:
 
     @classmethod
     def from_dict(cls, d: dict) -> ShifuMind:
-        mind = cls()
+        mind = cls.__new__(cls)
         mind.cortex = Cortex.from_dict(d.get('cortex', {}))
         mind.field = Field.from_dict(d.get('field', {}))
         mind.gate = Gate.from_dict(d.get('gate', {}))
@@ -578,6 +638,7 @@ class ShifuMind:
         mind.thinker = Thinker.from_dict(d.get('thinker', {}))
         mind._co_graph = d.get('co_graph', {})
         mind._nx_graph = d.get('nx_graph', {})
+        mind._px_graph = d.get('px_graph', {})
         mind._res_graph = d.get('res_graph', {})
         mind._snx_graph = d.get('snx_graph', {})
         mind._feed_count = d.get('feed_count', 0)

@@ -22,6 +22,55 @@ const pipeline = shifu.createPipeline();
 const feedback = new FeedbackLoop(shifu, { stateDir: '.state' });
 const metrics = new MetricsTracker({ stateDir: '.state' });
 const ingestor = new DocumentIngestor(pipeline, { outputDir: '.ingested' });
+
+// ── Boot Python Mind subprocess ─────────────────────────────
+const { spawn } = require('child_process');
+const path = require('path');
+const readline = require('readline');
+let mindProcess = null;
+let mindReady = false;
+let mindQueue = [];
+
+function bootMind() {
+  const script = path.join(__dirname, 'shifu_ocr', 'mind_worker.py');
+  mindProcess = spawn('python', [script], { cwd: __dirname, stdio: ['pipe', 'pipe', 'pipe'] });
+  const rl = readline.createInterface({ input: mindProcess.stdout });
+  rl.on('line', (line) => {
+    try {
+      const data = JSON.parse(line);
+      if (data.status === 'ready') {
+        mindReady = true;
+        console.log('  Mind ready: ' + (data.vocabulary || 0) + ' words');
+        return;
+      }
+      if (mindQueue.length > 0) {
+        const { resolve } = mindQueue.shift();
+        resolve(data);
+      }
+    } catch (e) {}
+  });
+  mindProcess.stderr.on('data', (d) => { /* suppress */ });
+  mindProcess.on('exit', (code) => {
+    console.warn('Mind process exited:', code);
+    mindReady = false;
+    mindProcess = null;
+  });
+}
+
+function mindCommand(cmd) {
+  return new Promise((resolve, reject) => {
+    if (!mindProcess || !mindReady) return resolve({ ok: false, error: 'mind not ready' });
+    const timeout = setTimeout(() => {
+      const idx = mindQueue.findIndex(q => q.resolve === resolve);
+      if (idx >= 0) mindQueue.splice(idx, 1);
+      resolve({ ok: false, error: 'timeout' });
+    }, 10000);
+    mindQueue.push({ resolve: (data) => { clearTimeout(timeout); resolve(data); } });
+    mindProcess.stdin.write(JSON.stringify(cmd) + '\n');
+  });
+}
+
+bootMind();
 console.log('Shifu OCR ready.');
 
 function jsonResponse(res, data, status = 200) {
@@ -298,6 +347,55 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // ── Mind API routes ────────────────────────────────────────
+  if (path === '/api/mind/stats') return jsonResponse(res, await mindCommand({ cmd: 'stats' }));
+  if (path === '/api/mind/hungry') return jsonResponse(res, await mindCommand({ cmd: 'hungry' }));
+
+  if (path.startsWith('/api/mind/describe/')) {
+    const word = decodeURIComponent(path.split('/').pop());
+    return jsonResponse(res, await mindCommand({ cmd: 'describe', word }));
+  }
+  if (path.startsWith('/api/mind/generate/')) {
+    const word = decodeURIComponent(path.split('/').pop());
+    return jsonResponse(res, await mindCommand({ cmd: 'generate', word }));
+  }
+  if (path.startsWith('/api/mind/activate/')) {
+    const word = decodeURIComponent(path.split('/').pop());
+    return jsonResponse(res, await mindCommand({ cmd: 'activate', word }));
+  }
+  if (path.startsWith('/api/mind/confidence/')) {
+    const word = decodeURIComponent(path.split('/').pop());
+    return jsonResponse(res, await mindCommand({ cmd: 'confidence', word }));
+  }
+
+  if (path === '/api/mind/feed' && req.method === 'POST') {
+    const { text } = await parseBody(req);
+    return jsonResponse(res, await mindCommand({ cmd: 'feed', text }));
+  }
+  if (path === '/api/mind/feed-batch' && req.method === 'POST') {
+    const { texts } = await parseBody(req);
+    return jsonResponse(res, await mindCommand({ cmd: 'feed_batch', texts }));
+  }
+  if (path === '/api/mind/score' && req.method === 'POST') {
+    const { text } = await parseBody(req);
+    return jsonResponse(res, await mindCommand({ cmd: 'score', text }));
+  }
+  if (path === '/api/mind/candidates' && req.method === 'POST') {
+    const { candidates, context } = await parseBody(req);
+    return jsonResponse(res, await mindCommand({ cmd: 'candidates', candidates, context }));
+  }
+  if (path === '/api/mind/deliberate' && req.method === 'POST') {
+    const { query } = await parseBody(req);
+    return jsonResponse(res, await mindCommand({ cmd: 'deliberate', query }));
+  }
+  if (path === '/api/mind/connect' && req.method === 'POST') {
+    const body = await parseBody(req);
+    return jsonResponse(res, await mindCommand({ cmd: 'connect', from: body.from, to: body.to }));
+  }
+  if (path === '/api/mind/save' && req.method === 'POST') {
+    return jsonResponse(res, await mindCommand({ cmd: 'save' }));
+  }
+
   jsonResponse(res, { error: 'not found' }, 404);
   } catch (err) {
     console.warn('Request error:', err.message);
@@ -309,409 +407,142 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// ── HTML UI ───────────────────────────────────────────────────────
+// ── Unified Chat UI ──────────────────────────────────────────────
+
+// ── Unified Chat UI ──────────────────────────────────────────────
 const HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Shifu OCR v2.0.0</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Shifu</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0e17; color: #e0e6f0; min-height: 100vh; }
-  .header { background: linear-gradient(135deg, #1a1f35, #0d1220); padding: 20px 30px; border-bottom: 1px solid #2a3050; }
-  .header h1 { font-size: 1.5rem; color: #7eb8ff; }
-  .header p { font-size: 0.85rem; color: #667; margin-top: 4px; }
-  .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
-  .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
-  .tab { padding: 10px 20px; background: #151a2e; border: 1px solid #2a3050; border-radius: 8px 8px 0 0; cursor: pointer; color: #889; font-size: 0.9rem; }
-  .tab.active { background: #1e2540; color: #7eb8ff; border-bottom-color: #1e2540; }
-  .panel { display: none; background: #1e2540; border: 1px solid #2a3050; border-radius: 0 8px 8px 8px; padding: 24px; }
-  .panel.active { display: block; }
-  label { display: block; font-size: 0.8rem; color: #778; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
-  input, textarea { width: 100%; padding: 10px 14px; background: #0d1220; border: 1px solid #2a3050; border-radius: 6px; color: #e0e6f0; font-size: 0.95rem; font-family: 'Consolas', monospace; margin-bottom: 12px; }
-  textarea { min-height: 80px; resize: vertical; }
-  button { padding: 10px 24px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 600; }
-  button:hover { background: #1d4ed8; }
-  button.secondary { background: #374151; }
-  button.secondary:hover { background: #4b5563; }
-  button.danger { background: #dc2626; }
-  .result { background: #0d1220; border: 1px solid #2a3050; border-radius: 8px; padding: 16px; margin-top: 16px; font-family: 'Consolas', monospace; font-size: 0.85rem; white-space: pre-wrap; max-height: 500px; overflow-y: auto; }
-  .word { display: inline-block; padding: 2px 6px; margin: 2px; border-radius: 4px; }
-  .word.exact { background: #064e3b; color: #6ee7b7; }
-  .word.high_confidence { background: #164e63; color: #67e8f9; }
-  .word.corrected_verify, .word.verify { background: #713f12; color: #fde68a; }
-  .word.low_confidence, .word.unknown { background: #7f1d1d; color: #fca5a5; }
-  .word.number, .word.title, .word.dosage, .word.room_code, .word.short, .word.punctuation, .word.passthrough { background: #1e293b; color: #94a3b8; }
-  .word.digraph_corrected { background: #312e81; color: #c4b5fd; }
-  .word.DANGER_medication_ambiguity { background: #dc2626; color: white; font-weight: bold; }
-  .flag { display: inline-block; padding: 3px 8px; margin: 2px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
-  .flag.danger { background: #dc2626; color: white; }
-  .flag.warning { background: #d97706; color: white; }
-  .flag.error { background: #ea580c; color: white; }
-  .decision { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 0.85rem; font-weight: 700; margin-top: 8px; }
-  .decision.accept { background: #064e3b; color: #6ee7b7; }
-  .decision.verify { background: #713f12; color: #fde68a; }
-  .decision.reject { background: #7f1d1d; color: #fca5a5; }
-  .row-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .stat { display: inline-block; background: #0d1220; padding: 8px 16px; border-radius: 6px; margin: 4px; }
-  .stat .val { font-size: 1.3rem; font-weight: 700; color: #7eb8ff; }
-  .stat .lbl { font-size: 0.7rem; color: #667; text-transform: uppercase; }
-  .actions { display: flex; gap: 8px; margin-top: 12px; }
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0a0a;--surface:#111;--accent:#c8a97e;--accent2:#a08050;--green:#7c9885;--blue:#5b8fd4;--amber:#f59e0b;--red:#ef4444;--purple:#a78bfa;--text:#e8e8e8;--dim:#777;--faint:#444;--user-bg:#161626;--shifu-bg:#141e14;--border:#1e1e1e;--radius:16px}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',system-ui,sans-serif}
+body{display:flex;flex-direction:column}
+.top{padding:12px 20px;display:flex;align-items:center;gap:16px;background:var(--bg);border-bottom:1px solid var(--border);flex:0 0 auto;z-index:10}
+.logo{font-size:20px;font-weight:700;color:var(--accent);letter-spacing:2px}
+.stats{font-size:11px;color:var(--dim);line-height:1.4}
+.chat{flex:1 1 0;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px 20px 100px 20px;display:flex;flex-direction:column;gap:12px}
+.chat::-webkit-scrollbar{width:4px}
+.chat::-webkit-scrollbar-thumb{background:var(--faint);border-radius:2px}
+.msg{max-width:85%;animation:fadeIn .25s ease}
+.msg.user{align-self:flex-end}
+.msg.shifu{align-self:flex-start}
+.bubble{padding:14px 18px;border-radius:var(--radius);font-size:14px;line-height:1.7;word-wrap:break-word}
+.msg.user .bubble{background:var(--user-bg);border-bottom-right-radius:4px;color:#b8c8e0}
+.msg.shifu .bubble{background:var(--shifu-bg);border-bottom-left-radius:4px}
+.trace{font-size:11px;color:var(--dim);margin-top:8px;padding:8px 12px;background:rgba(200,169,126,0.06);border-radius:8px;line-height:1.7}
+.trace .lbl{color:var(--accent);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.word{display:inline-block;padding:2px 6px;margin:1px;border-radius:4px;font-size:13px}
+.word.exact{background:#064e3b;color:#6ee7b7}
+.word.high_confidence,.word.mind_corrected{background:#164e63;color:#67e8f9}
+.word.corrected_verify{background:#713f12;color:#fde68a}
+.word.low_confidence,.word.unknown{background:#7f1d1d;color:#fca5a5}
+.word.number,.word.dosage,.word.punctuation,.word.passthrough,.word.room_code,.word.title,.word.short,.word.clean,.word.short_unknown{background:#1e293b;color:#94a3b8}
+.word.digraph_corrected{background:#312e81;color:#c4b5fd}
+.word.DANGER_medication_ambiguity{background:#dc2626;color:white;font-weight:bold}
+.flag{display:inline-block;padding:3px 8px;margin:2px;border-radius:4px;font-size:11px;font-weight:600}
+.flag.danger{background:#dc2626;color:white}
+.flag.warning{background:#d97706;color:white}
+.decision{display:inline-block;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:700;margin-top:6px}
+.decision.accept{background:#064e3b;color:#6ee7b7}
+.decision.verify{background:#713f12;color:#fde68a}
+.decision.reject{background:#7f1d1d;color:#fca5a5}
+.bottom{position:fixed;bottom:0;left:0;right:0;z-index:20;padding:10px 16px;background:var(--bg);border-top:1px solid var(--border);display:flex;gap:10px;align-items:flex-end}
+.bottom textarea{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:24px;padding:12px 18px;color:var(--text);font-size:14px;resize:none;height:44px;max-height:120px;font-family:inherit;outline:none;transition:border-color .2s}
+.bottom textarea:focus{border-color:var(--accent)}
+.bottom textarea::placeholder{color:var(--faint)}
+.btn{width:40px;height:40px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;transition:all .15s}
+.btn-send{background:var(--accent);color:#000;font-weight:700;font-size:18px}
+.btn-send:hover{background:var(--accent2)}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media(max-width:600px){.chat{padding:10px 12px 100px 12px}.bubble{font-size:13px;padding:10px 14px}}
 </style>
 </head>
 <body>
-<div class="header">
-  <h1>Shifu OCR v2.0.0</h1>
-  <p>Medical OCR post-processing with adaptive learning, safety flags, and structural invariance</p>
+<div class="top">
+  <div class="logo">SHIFU</div>
+  <div class="stats" id="topStats">booting...</div>
 </div>
-<div class="container">
-  <div class="tabs">
-    <div class="tab active" onclick="switchTab('correct')">Correct Text</div>
-    <div class="tab" onclick="switchTab('ward')">Ward Census</div>
-    <div class="tab" onclick="switchTab('learn')">Learn</div>
-    <div class="tab" onclick="switchTab('upload')">Upload File</div>
-    <div class="tab" onclick="switchTab('structure')">Structure</div>
-    <div class="tab" onclick="switchTab('stats')">Stats</div>
-  </div>
-
-  <!-- Tab 1: Correct Text -->
-  <div id="correct" class="panel active">
-    <label>OCR Text (paste raw OCR output)</label>
-    <textarea id="ocrInput" placeholder="e.g. Levetiracetarn 5OOmg for seizure prophylaxis">Levetiracetarn 5OOmg for seizure prophylaxis</textarea>
-    <button onclick="correctText()">Correct</button>
-    <div id="correctResult" class="result" style="display:none"></div>
-  </div>
-
-  <!-- Tab 2: Ward Census Row -->
-  <div id="ward" class="panel">
-    <label>Ward Census Row (fill in columns)</label>
-    <div class="row-inputs">
-      <div><label>Patient</label><input id="wPatient" placeholder="e.g. Bader A1athoub"></div>
-      <div><label>Diagnosis</label><input id="wDiagnosis" placeholder="e.g. lschemic str0ke"></div>
-      <div><label>Doctor</label><input id="wDoctor" placeholder="e.g. Dr. Hisharn"></div>
-      <div><label>Medication</label><input id="wMedication" placeholder="e.g. Levetiracetarn"></div>
-      <div><label>Room</label><input id="wRoom" placeholder="e.g. 3O2A"></div>
-      <div><label>Status</label><input id="wStatus" placeholder="e.g. Red"></div>
+<div class="chat" id="chat">
+  <div class="msg shifu"><div class="bubble">
+    <div style="color:var(--accent);font-weight:500">Model the medium. Detect the perturbation. Let experience shape the landscape.</div>
+    <div style="font-size:12px;color:var(--dim);margin-top:8px">
+      <b>Ask</b> anything &middot; <b>Paste OCR text</b> to correct &middot; <b>Feed</b> text to teach me<br>
+      <span style="color:var(--faint)">Commands: /correct &middot; /describe &middot; /generate &middot; /connect &middot; /stats &middot; /feed</span>
     </div>
-    <div class="actions">
-      <button onclick="correctRow()">Correct Row</button>
-    </div>
-    <div id="wardResult" class="result" style="display:none"></div>
-  </div>
-
-  <!-- Tab 3: Learn -->
-  <div id="learn" class="panel">
-    <label>Teach the system (OCR vs Confirmed)</label>
-    <div class="row-inputs">
-      <div>
-        <label>OCR Column</label><input id="learnCol" value="Diagnosis">
-        <label>OCR Text</label><input id="learnOcr" placeholder="e.g. str0ke">
-      </div>
-      <div>
-        <label>&nbsp;</label><input disabled style="visibility:hidden">
-        <label>Confirmed Text</label><input id="learnConfirmed" placeholder="e.g. stroke">
-      </div>
-    </div>
-    <div class="actions">
-      <button onclick="learnCorrection()">Learn</button>
-      <button class="danger" onclick="undoLearn()">Undo Last</button>
-    </div>
-    <div id="learnResult" class="result" style="display:none"></div>
-    <div style="margin-top:16px"><label>Correction History</label></div>
-    <div id="historyResult" class="result" style="display:none"></div>
-  </div>
-
-  <!-- Tab: Upload File -->
-  <div id="upload" class="panel">
-    <label>Upload a document (PDF, CSV, TSV, TXT, or image)</label>
-    <div style="border: 2px dashed #2a3050; border-radius: 8px; padding: 40px; text-align: center; margin-bottom: 16px; cursor: pointer" id="dropZone" onclick="document.getElementById('fileInput').click()" ondrop="handleDrop(event)" ondragover="event.preventDefault(); this.style.borderColor='#7eb8ff'" ondragleave="this.style.borderColor='#2a3050'">
-      <p style="color: #667; font-size: 1rem;">Drop a file here or click to browse</p>
-      <p style="color: #445; font-size: 0.8rem; margin-top: 8px;">Supports: PDF, CSV, TSV, TXT, PNG, JPG, TIFF, BMP</p>
-      <input type="file" id="fileInput" style="display:none" accept=".pdf,.csv,.tsv,.txt,.png,.jpg,.jpeg,.tiff,.tif,.bmp" onchange="uploadFile(this.files[0])">
-    </div>
-    <div id="uploadStatus" style="display:none; color: #7eb8ff; margin-bottom: 12px;"></div>
-    <div id="uploadResult" class="result" style="display:none"></div>
-  </div>
-
-  <!-- Tab 4: Structure -->
-  <div id="structure" class="panel">
-    <label>Compare Structural Invariance</label>
-    <input id="structA" placeholder="e.g. doctor treats patient with medication">
-    <input id="structB" placeholder="e.g. patient was treated by the doctor with medication">
-    <div class="actions">
-      <button onclick="compareStructure()">Compare</button>
-      <button class="secondary" onclick="extractRoles()">Extract Roles (sentence A)</button>
-    </div>
-    <div id="structResult" class="result" style="display:none"></div>
-  </div>
-
-  <!-- Tab 5: Stats -->
-  <div id="stats" class="panel">
-    <button onclick="loadStats()">Refresh Stats</button>
-    <div id="statsResult" class="result" style="display:none"></div>
-  </div>
+  </div></div>
 </div>
-
+<div class="bottom">
+  <textarea id="input" placeholder="Ask Shifu anything..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'"></textarea>
+  <button class="btn btn-send" onclick="send()">&rarr;</button>
+</div>
 <script>
-const API = '';
+const chat=document.getElementById('chat'),inp=document.getElementById('input');
+function addMsg(h,w){const d=document.createElement('div');d.className='msg '+w;d.innerHTML='<div class="bubble">'+h+'</div>';chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
+async function api(p,b){const o=b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{};return(await fetch(p,o)).json()}
+function rw(ws){return(ws||[]).map(w=>{const c=w.flag||'unknown',t=w.original!==w.corrected?w.original+' \\u2192 '+w.corrected:w.corrected;return'<span class="word '+c+'" title="'+t+' ('+c+')">'+w.corrected+'</span>'}).join(' ')}
+function rf(fs){if(!fs||!fs.length)return'';return'<div style="margin-top:6px">'+fs.map(f=>'<span class="flag '+(f.severity||'warning')+'">'+f.message+'</span>').join(' ')+'</div>'}
 
-function switchTab(name) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.getElementById(name).classList.add('active');
-  event.target.classList.add('active');
+function detect(t){
+  t=t.trim();
+  if(t.startsWith('/correct '))return{i:'correct',p:t.slice(9)};
+  if(t.startsWith('/feed '))return{i:'feed',p:t.slice(6)};
+  if(t.startsWith('/describe '))return{i:'describe',p:t.slice(10).trim().split(/\\s+/)[0]};
+  if(t.startsWith('/generate '))return{i:'generate',p:t.slice(10).trim().split(/\\s+/)[0]};
+  if(t.startsWith('/connect ')){const p=t.slice(9).trim().split(/\\s+/);return{i:'connect',f:p[0],t:p[1]||p[0]}}
+  if(t==='/stats'||t.startsWith('/stats'))return{i:'stats'};
+  if(t.startsWith('/score '))return{i:'score',p:t.slice(7)};
+  if(/^(what|how|why|describe|explain|define|tell|discuss)\\b/i.test(t))return{i:'deliberate',p:t};
+  if(t.endsWith('?')||/^(is|are|does|can|should|when|which)\\b/i.test(t))return{i:'deliberate',p:t};
+  return{i:'correct',p:t};
 }
 
-async function api(path, body) {
-  const res = await fetch(API + path, {
-    method: body ? 'POST' : 'GET',
-    headers: body ? { 'Content-Type': 'application/json' } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  return res.json();
-}
-
-function esc(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
-
-function renderWords(words) {
-  if (!words || !words.length) return '';
-  return words.map(w => {
-    const cls = esc(w.flag || 'unknown');
-    const orig = esc(w.original);
-    const corr = esc(w.corrected || w.original);
-    const tip = w.original !== w.corrected ? orig + ' -> ' + corr : orig;
-    return '<span class="word ' + cls + '" title="' + tip + ' [' + cls + '] conf:' + (w.confidence||0).toFixed(2) + '">' + corr + '</span>';
-  }).join(' ');
-}
-
-function renderFlags(flags) {
-  if (!flags || !flags.length) return '';
-  return flags.map(f => '<span class="flag ' + esc(f.severity||'warning') + '">' + esc(f.message||f.status) + '</span>').join(' ');
-}
-
-function show(id, html) {
-  const el = document.getElementById(id);
-  el.style.display = 'block';
-  el.innerHTML = html;
-}
-
-async function correctText() {
-  const text = document.getElementById('ocrInput').value;
-  if (!text) return;
-  const r = await api('/api/correct', { text });
-  let html = '<b>Output:</b> ' + renderWords(r.words) + '\\n\\n';
-  html += '<b>Text:</b> ' + esc(r.output||'') + '\\n';
-  html += '<b>Decision:</b> <span class="decision ' + (r.decision||'verify') + '">' + (r.decision||'?') + '</span>\\n';
-  html += '<b>Coherence:</b> ' + (r.coherence||0).toFixed(4) + '\\n';
-  html += '<b>Avg Confidence:</b> ' + (r.avgConfidence||0) + '\\n';
-  if (r.safetyFlags && r.safetyFlags.length) html += '\\n<b>Safety Flags:</b> ' + renderFlags(r.safetyFlags);
-  show('correctResult', html);
-}
-
-async function correctRow() {
-  const row = {};
-  for (const col of ['Patient','Diagnosis','Doctor','Medication','Room','Status']) {
-    const v = document.getElementById('w' + col).value;
-    if (v) row[col] = v;
-  }
-  if (!Object.keys(row).length) return;
-  const r = await api('/api/correct-row', { row });
-  let html = '<b>Decision:</b> <span class="decision ' + (r.decision||'verify') + '">' + (r.decision||'?') + '</span>\\n\\n';
-  for (const [col, data] of Object.entries(r.corrected || {})) {
-    html += '<b>' + esc(col) + ':</b> ' + esc(data.input||'') + ' -> ' + renderWords(data.words) + '\\n';
-  }
-  if (r.safetyFlags && r.safetyFlags.length) html += '\\n<b>Safety Flags:</b>\\n' + renderFlags(r.safetyFlags);
-  show('wardResult', html);
-}
-
-async function learnCorrection() {
-  const col = document.getElementById('learnCol').value || 'Diagnosis';
-  const ocr = document.getElementById('learnOcr').value;
-  const confirmed = document.getElementById('learnConfirmed').value;
-  if (!ocr || !confirmed) return;
-  const ocrRow = {}; ocrRow[col] = ocr;
-  const confirmedRow = {}; confirmedRow[col] = confirmed;
-  const r = await api('/api/learn', { ocrRow, confirmedRow });
-  let html = '<b>Accepted:</b> ' + r.accepted + '\\n';
-  if (r.rejected && r.rejected.length) html += '<b>Rejected:</b> ' + esc(JSON.stringify(r.rejected)) + '\\n';
-  if (r.reason) html += '<b>Reason:</b> ' + esc(r.reason) + '\\n';
-  show('learnResult', html);
-  loadHistory();
-}
-
-async function undoLearn() {
-  const r = await api('/api/undo', {});
-  show('learnResult', '<b>Undo:</b> ' + esc(JSON.stringify(r, null, 2)));
-  loadHistory();
-}
-
-async function loadHistory() {
-  const r = await api('/api/history');
-  if (!r || !r.length) { show('historyResult', 'No corrections yet.'); return; }
-  let html = r.map((h,i) => '#' + esc(h.id) + ' [' + esc(h.timestamp) + '] columns: ' + esc((h.columns||[]).join(', '))).join('\\n');
-  show('historyResult', html);
-}
-
-async function compareStructure() {
-  const a = document.getElementById('structA').value;
-  const b = document.getElementById('structB').value;
-  if (!a || !b) return;
-  const r = await api('/api/compare-structure', { sentA: a, sentB: b });
-  let html = '<b>Invariance Score:</b> ' + (r.invariance||0).toFixed(4) + '\\n\\n';
-  html += '<b>Sentence A roles:</b>\\n';
-  html += '  Agent: ' + esc(r.rolesA?.agent||'-') + ', Action: ' + esc(r.rolesA?.action||'-') + ', Patient: ' + esc(r.rolesA?.patient||'-') + ' (passive: ' + (r.rolesA?.passive||false) + ')\\n';
-  html += '<b>Sentence B roles:</b>\\n';
-  html += '  Agent: ' + esc(r.rolesB?.agent||'-') + ', Action: ' + esc(r.rolesB?.action||'-') + ', Patient: ' + esc(r.rolesB?.patient||'-') + ' (passive: ' + (r.rolesB?.passive||false) + ')\\n\\n';
-  const c = r.comparison || {};
-  html += '<b>Agent similarity:</b> ' + (c.agentSim||0).toFixed(3) + '\\n';
-  html += '<b>Action similarity:</b> ' + (c.actionSim||0).toFixed(3) + '\\n';
-  html += '<b>Patient similarity:</b> ' + (c.patientSim||0).toFixed(3) + '\\n';
-  if (c.swapDetected) html += '\\n<span class="flag danger">ROLE SWAP DETECTED</span>';
-  show('structResult', html);
-}
-
-async function extractRoles() {
-  const a = document.getElementById('structA').value;
-  if (!a) return;
-  const r = await api('/api/roles', { text: a });
-  show('structResult', esc(JSON.stringify(r, null, 2)));
-}
-
-async function loadStats() {
-  const r = await api('/api/stats');
-  let html = '<b>Core Engine</b>\\n';
-  html += '  Vocabulary: ' + (r.core?.vocabulary||0) + ' words\\n';
-  html += '  Sentences fed: ' + (r.core?.sentences||0) + '\\n';
-  html += '  Resonance pairs: ' + (r.core?.resonancePairs||0) + '\\n\\n';
-  html += '<b>Learning Engine</b>\\n';
-  html += '  Total corrections: ' + (r.learning?.totalCorrections||0) + '\\n';
-  html += '  Confusion pairs: ' + (r.learning?.confusionPairs||0) + '\\n';
-  html += '  Vocabulary size: ' + (r.learning?.vocabularySize||0) + '\\n';
-  html += '  Learned words: ' + (r.learning?.learnedWords||0) + '\\n';
-  html += '  Context chains: ' + (r.learning?.contextChains||0) + '\\n\\n';
-  if (r.learning?.topConfusions?.length) {
-    html += '<b>Top Confusions:</b>\\n';
-    for (const c of r.learning.topConfusions) html += '  ' + c.pair + ' (' + c.count + 'x, cost: ' + c.cost.toFixed(3) + ')\\n';
-  }
-  show('statsResult', html);
-}
-
-function handleDrop(e) {
-  e.preventDefault();
-  e.currentTarget.style.borderColor = '#2a3050';
-  const file = e.dataTransfer.files[0];
-  if (file) uploadFile(file);
-}
-
-async function uploadFile(file) {
-  if (!file) return;
-  document.getElementById('uploadStatus').style.display = 'block';
-  const sizeMB = (file.size / 1024 / 1024).toFixed(1);
-  document.getElementById('uploadStatus').innerHTML = 'Processing <b>' + esc(file.name) + '</b> (' + sizeMB + ' MB)...<br><span style="color:#94a3b8;font-size:0.85rem">Large PDFs (1000+ pages) may take a few minutes for text extraction.</span>';
-
-  const formData = new FormData();
-  formData.append('file', file);
-
-  try {
-    const res = await fetch(API + '/api/upload?filename=' + encodeURIComponent(file.name), {
-      method: 'POST',
-      body: formData,
-    });
-    const r = await res.json();
-    document.getElementById('uploadStatus').textContent = 'Done: ' + file.name;
-
-    let html = '<b>Type:</b> ' + esc(r.type||'unknown') + '\\n';
-    if (r.extractionMethod) {
-      html += '<b>Extraction:</b> ' + esc(r.extractionMethod) + '\\n';
-      if (r.extractionDetail) html += '<span style="color:#94a3b8;font-size:0.85rem">' + esc(r.extractionDetail) + '</span>\\n';
-      if (r.pageCount) html += '<b>Pages:</b> ' + r.pageCount + '\\n';
-      if (r.charCount) html += '<b>Characters:</b> ' + r.charCount.toLocaleString() + '\\n';
+async function send(){
+  const text=inp.value.trim();if(!text)return;
+  inp.value='';inp.style.height='44px';
+  addMsg('<div style="white-space:pre-wrap">'+text.replace(/</g,'&lt;')+'</div>','user');
+  const d=detect(text),ld=addMsg('<div style="color:var(--dim);font-style:italic">Thinking...</div>','shifu');
+  let h='';
+  try{
+    if(d.i==='correct'){
+      const r=await api('/api/correct',{text:d.p});
+      h='<div style="margin-bottom:6px"><b>Corrected:</b></div><div>'+rw(r.words)+'</div>'+rf(r.safetyFlags);
+      if(r.decision)h+='<div><span class="decision '+r.decision+'">'+r.decision.toUpperCase()+'</span></div>';
+      try{const ms=await api('/api/mind/score',{text:r.output||d.p});if(ms.ok)h+='<div class="trace"><span class="lbl">mind coherence</span> '+(ms.coherence||0).toFixed(3)+'</div>'}catch{}
     }
-    if (r.sourceMode) html += '<b>Mode:</b> ' + esc(r.sourceMode) + '\\n';
-    if (r.error) html += '<b style="color:#fca5a5">Error:</b> ' + esc(r.error) + '\\n';
-    if (r.overallDecision) html += '<b>Decision:</b> <span class="decision ' + r.overallDecision + '">' + r.overallDecision + '</span>\\n';
-
-    // Raw extracted text (what the PDF/file reader saw)
-    if (r.rawText) {
-      html += '\\n<b style="color:#94a3b8">--- Raw Extracted Text ---</b>\\n';
-      html += '<span style="color:#667">' + r.rawText.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</span>\\n';
+    else if(d.i==='deliberate'){
+      const r=await api('/api/mind/deliberate',{query:d.p});
+      if(r.ok){
+        h='<div style="margin-bottom:4px"><b>Focus:</b> '+(r.focus||[]).join(', ')+'</div>';
+        h+='<div><b>Retrieved:</b> '+(r.retrieved||[]).map(x=>x.word).join(', ')+'</div>';
+        h+='<div class="trace"><span class="lbl">coherence</span> '+(r.coherence||0).toFixed(3)+' &middot; <span class="lbl">steps</span> '+(r.steps||0)+' &middot; <span class="lbl">converged</span> '+(r.converged?'yes':'no')+'</div>';
+        const fw=(r.focus||[]).find(w=>w.length>3);
+        if(fw){try{const ds=await api('/api/mind/describe/'+fw);if(ds.ok)h+='<div style="margin-top:8px">'+ds.description+'</div>'}catch{}}
+      }else{const r2=await api('/api/score',{text:d.p});h='<div class="trace"><span class="lbl">coherence</span> '+(r2.coherence||0).toFixed(3)+'</div>'}
     }
-    if (r.rawLines && r.rawLines.length && !r.rawText) {
-      html += '\\n<b style="color:#94a3b8">--- Raw Extracted Lines ---</b>\\n';
-      for (const rl of r.rawLines) {
-        html += '<span style="color:#667">' + rl.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</span>\\n';
-      }
+    else if(d.i==='feed'){
+      const[r1,r2]=await Promise.all([api('/api/mind/feed',{text:d.p}),api('/api/score',{text:d.p})]);
+      h='<div><b>Fed:</b> '+(r1.accepted?'accepted':'rejected')+'</div>';
+      if(r1.domain)h+='<div class="trace"><span class="lbl">domain</span> '+r1.domain+' &middot; <span class="lbl">quality</span> '+(r1.quality||0).toFixed(2)+'</div>';
     }
-
-    // Reconstructed table (from spatial coordinates)
-    if (r.table && r.table.rows && r.table.rows.length > 0) {
-      html += '\\n<b style="color:#7eb8ff">--- Reconstructed Table (' + r.table.columns + ' columns, ' + r.table.rows.length + ' rows) ---</b>\\n';
-      html += '<table style="border-collapse:collapse;width:100%;font-size:0.8rem;margin:8px 0">';
-      for (let ri = 0; ri < r.table.rows.length; ri++) {
-        const row = r.table.rows[ri];
-        const isHeader = ri <= 2 && row.some(c => /patient|name|diagnosis|doctor|status|room|ward/i.test(c));
-        html += '<tr>';
-        for (const cell of row) {
-          const tag = isHeader ? 'th' : 'td';
-          html += '<' + tag + ' style="border:1px solid #2a3050;padding:4px 8px;text-align:left;color:' + (isHeader ? '#7eb8ff' : '#ccc') + '">' + esc(cell || '') + '</' + tag + '>';
-        }
-        html += '</tr>';
-      }
-      html += '</table>\\n';
-    }
-
-    // Corrected lines (text/PDF)
-    if (r.lines && r.lines.length) {
-      html += '\\n<b style="color:#7eb8ff">--- Corrected Output ---</b>\\n';
-      for (let li = 0; li < r.lines.length; li++) {
-        const line = r.lines[li];
-        const rawLine = (r.rawLines && r.rawLines[li]) || '';
-        if (rawLine) html += '<span style="color:#445;font-size:0.75rem">RAW: ' + rawLine.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</span>\\n';
-        if (line && line.words) {
-          html += renderWords(line.words) + '\\n';
-          if (line.safetyFlags && line.safetyFlags.length) html += renderFlags(line.safetyFlags) + '\\n';
-        } else if (line && line.corrected) {
-          html += esc(line.corrected) + '\\n';
-        }
-        html += '\\n';
-      }
-    }
-
-    // Rows (CSV)
-    if (r.rows && r.rows.length) {
-      html += '\\n<b>Rows (' + r.rows.length + '):</b>\\n';
-      for (let i = 0; i < r.rows.length; i++) {
-        const row = r.rows[i];
-        html += '\\n<b>Row ' + (i+1) + '</b> <span class="decision ' + (row.decision||'verify') + '">' + (row.decision||'?') + '</span>\\n';
-        if (row.corrected) {
-          for (const [col, data] of Object.entries(row.corrected)) {
-            html += '  <b>' + esc(col) + ':</b> ' + esc(data.input||'') + ' -> ';
-            if (data.words) html += renderWords(data.words);
-            else html += esc(data.output||data);
-            html += '\\n';
-          }
-        }
-        if (row.safetyFlags && row.safetyFlags.length) {
-          html += '  ' + renderFlags(row.safetyFlags) + '\\n';
-        }
-      }
-    }
-
-    // Summary
-    if (r.summary) {
-      html += '\\n<b>Summary:</b> ' + r.summary.total + ' rows, ' + r.summary.accepted + ' accepted, ' + r.summary.needsVerification + ' verify, ' + r.summary.rejected + ' rejected';
-    }
-
-    show('uploadResult', html);
-  } catch (err) {
-    document.getElementById('uploadStatus').textContent = 'Error: ' + err.message;
-    show('uploadResult', '<b>Error:</b> ' + err.message);
-  }
+    else if(d.i==='describe'){const r=await api('/api/mind/describe/'+d.p);h='<div>'+(r.description||'Unknown.')+'</div>'}
+    else if(d.i==='generate'){const r=await api('/api/mind/generate/'+d.p);h='<div style="font-style:italic;color:var(--accent)">'+(r.text||'...')+'</div>'}
+    else if(d.i==='connect'){const r=await api('/api/mind/connect',{from:d.f,to:d.t});h=r.connected&&r.path?'<div>'+r.path.join(' \\u2192 ')+'</div>':'<div style="color:var(--dim)">No path found</div>'}
+    else if(d.i==='score'){const[js,m]=await Promise.all([api('/api/score',{text:d.p}),api('/api/mind/score',{text:d.p})]);h='<div class="trace"><span class="lbl">js</span> '+(js.coherence||0).toFixed(3)+' &middot; <span class="lbl">mind</span> '+(m.coherence||0).toFixed(3)+'</div>'}
+    else if(d.i==='stats'){const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);h='<div class="trace"><span class="lbl">JS Engine</span><br>Vocab: '+(js.core?.vocabulary||0)+' &middot; Resonance: '+(js.core?.resonancePairs||0)+'<br><br><span class="lbl">Python Mind</span><br>Vocab: '+(m.vocabulary||0)+' &middot; Domains: '+(m.domains||0)+' &middot; Assemblies: '+(m.assemblies||0)+' &middot; Myelinated: '+(m.myelinated||0)+'</div>'}
+    ld.querySelector('.bubble').innerHTML=h||'<div style="color:var(--dim)">No response.</div>';
+  }catch(e){ld.querySelector('.bubble').innerHTML='<div style="color:var(--red)">Error: '+e.message+'</div>'}
+  updateStats();
 }
+
+async function updateStats(){
+  try{const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);
+  document.getElementById('topStats').innerHTML=(js.core?.vocabulary||0)+'w &middot; '+(js.core?.resonancePairs||0)+' res &middot; '+(m.vocabulary||0)+' mind &middot; '+(m.domains||0)+' dom &middot; '+(m.myelinated||0)+' myel'}catch{}
+}
+updateStats();
 </script>
 </body>
 </html>`;
