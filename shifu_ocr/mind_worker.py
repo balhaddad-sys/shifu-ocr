@@ -172,8 +172,12 @@ if __name__ == '__main__':
             continue
         try:
             cmd = json.loads(line)
+            req_id = cmd.pop('_id', None)
             result = handle(cmd)
         except Exception as e:
+            req_id = None
             result = {'ok': False, 'error': str(e)}
+        if req_id is not None:
+            result['_id'] = req_id
         sys.stdout.write(json.dumps(result, ensure_ascii=False) + '\n')
         sys.stdout.flush()

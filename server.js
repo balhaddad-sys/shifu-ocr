@@ -29,7 +29,8 @@ const path = require('path');
 const readline = require('readline');
 let mindProcess = null;
 let mindReady = false;
-let mindQueue = [];
+let mindPending = {};  // id → {resolve, timer}
+let mindSeq = 0;
 
 function bootMind() {
   const script = path.join(__dirname, 'shifu_ocr', 'mind_worker.py');
@@ -43,29 +44,49 @@ function bootMind() {
         console.log('  Mind ready: ' + (data.vocabulary || 0) + ' words');
         return;
       }
-      if (mindQueue.length > 0) {
-        const { resolve } = mindQueue.shift();
+      // Match response to request by _id
+      const id = data._id;
+      if (id !== undefined && mindPending[id]) {
+        const { resolve, timer } = mindPending[id];
+        clearTimeout(timer);
+        delete mindPending[id];
+        delete data._id;
         resolve(data);
       }
     } catch (e) {}
   });
-  mindProcess.stderr.on('data', (d) => { /* suppress */ });
+  mindProcess.stderr.on('data', (d) => {
+    const msg = d.toString().trim();
+    if (msg) console.warn('  Mind stderr:', msg.slice(0, 200));
+  });
   mindProcess.on('exit', (code) => {
-    console.warn('Mind process exited:', code);
+    console.warn('Mind process exited:', code, '— restarting...');
     mindReady = false;
     mindProcess = null;
+    // Reject all pending
+    for (const id of Object.keys(mindPending)) {
+      const { resolve, timer } = mindPending[id];
+      clearTimeout(timer);
+      resolve({ ok: false, error: 'mind crashed' });
+    }
+    mindPending = {};
+    // Auto-restart after 1 second
+    setTimeout(bootMind, 1000);
   });
 }
 
 function mindCommand(cmd) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     if (!mindProcess || !mindReady) return resolve({ ok: false, error: 'mind not ready' });
-    const timeout = setTimeout(() => {
-      const idx = mindQueue.findIndex(q => q.resolve === resolve);
-      if (idx >= 0) mindQueue.splice(idx, 1);
-      resolve({ ok: false, error: 'timeout' });
-    }, 10000);
-    mindQueue.push({ resolve: (data) => { clearTimeout(timeout); resolve(data); } });
+    const id = ++mindSeq;
+    const timer = setTimeout(() => {
+      if (mindPending[id]) {
+        delete mindPending[id];
+        resolve({ ok: false, error: 'timeout' });
+      }
+    }, 15000);
+    mindPending[id] = { resolve, timer };
+    cmd._id = id;
     mindProcess.stdin.write(JSON.stringify(cmd) + '\n');
   });
 }
