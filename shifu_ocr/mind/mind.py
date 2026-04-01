@@ -196,7 +196,11 @@ class ShifuMind:
 
         # Pre-compute stop words ONCE
         stops = self.gate.stop_words(self.cortex.word_freq)
-        cls = classifier or self._classify_word_bridge
+        # SKIP classification during batch — put everything in _general.
+        # Classification scans all layers per word (O(layers × neighbors)).
+        # During bulk ingestion this is 82% of CPU time for zero benefit.
+        # The cortex will route connections properly on single feeds later.
+        cls = classifier or (lambda w: None)
 
         accepted = 0
         total_tokens = 0
