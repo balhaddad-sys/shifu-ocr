@@ -238,26 +238,32 @@ class ShifuMind:
                 # Identity extraction (cheap)
                 self._extract_identity(text, content)
 
-                # Graph updates (inline, no function call overhead)
+                # Graph updates — cap neighbors per word at 100 to prevent memory explosion
                 n = len(content)
                 for i in range(n):
                     w = content[i]
                     if w not in self._co_graph:
                         self._co_graph[w] = {}
+                    co_w = self._co_graph[w]
                     for j in range(max(0, i - 5), min(n, i + 6)):
                         if i != j:
-                            self._co_graph[w][content[j]] = (
-                                self._co_graph[w].get(content[j], 0) + 1
-                            )
+                            nb = content[j]
+                            if nb in co_w:
+                                co_w[nb] += 1
+                            elif len(co_w) < 100:
+                                co_w[nb] = 1
 
-                # Nx from full tokens (cheap)
+                # Nx from full tokens — cap at 50 next-words per word
                 for i in range(len(tokens) - 1):
                     w = tokens[i]
                     if w not in self._nx_graph:
                         self._nx_graph[w] = {}
-                    self._nx_graph[w][tokens[i + 1]] = (
-                        self._nx_graph[w].get(tokens[i + 1], 0) + 1
-                    )
+                    nx_w = self._nx_graph[w]
+                    nxt = tokens[i + 1]
+                    if nxt in nx_w:
+                        nx_w[nxt] += 1
+                    elif len(nx_w) < 50:
+                        nx_w[nxt] = 1
 
                 # Speaker (cheap)
                 if not is_dup:

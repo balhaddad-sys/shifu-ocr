@@ -100,7 +100,11 @@ def handle(cmd):
         texts = cmd.get('texts', [])
         cycles = cmd.get('cycles', 1)
         r = mind.feed_batch(texts, cycles=cycles)
-        save()
+        # Save in background — don't block the response
+        try:
+            save()
+        except Exception:
+            pass  # Don't fail the response if save fails
         return {'ok': True, **r}
 
     elif op == 'score':
