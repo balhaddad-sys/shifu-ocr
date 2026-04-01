@@ -349,47 +349,85 @@ class Cortex:
     # ═══ ASSEMBLIES ═══
 
     def _form_assembly(self, content: List[str]) -> Optional[str]:
-        """Form or reinforce an assembly from co-occurring words."""
-        content_set = set(content)
+        """
+        Form or reinforce an assembly from co-occurring words.
 
-        # Reinforce existing assemblies
+        CAPILLARY ARCHITECTURE:
+        - Only reinforce assemblies that overlap >50% with content (not all)
+        - Only create new assembly if no existing one matches >60%
+        - Cap total assemblies at 500 — prune weakest when exceeded
+        - Each word tracks at most 10 assembly memberships
+        """
+        content_set = set(content)
+        if len(content_set) < 2:
+            return None
+
+        # Reinforce MATCHING assemblies only (>50% overlap)
+        # Use first content word to find candidates — O(assemblies_per_word) not O(all_assemblies)
         reinforced = set()
-        for w in content:
-            ids = self._word_assemblies.get(w, [])
-            for aid in ids:
-                if aid in reinforced:
+        best_match_id = None
+        best_match_overlap = 0.0
+        checked = set()
+
+        for w in content[:5]:  # Check first 5 words max
+            for aid in self._word_assemblies.get(w, [])[:10]:  # Max 10 assemblies per word
+                if aid in checked:
                     continue
+                checked.add(aid)
                 asm = self._assemblies.get(aid)
                 if asm is None:
                     continue
-                asm.reinforce(self._epoch)
-                reinforced.add(aid)
-                # Grow assembly with new co-occurring words
-                if asm.words and len(asm.words) < self._max_assembly_size:
-                    for nw in content:
-                        if nw not in asm.words:
-                            asm.add(nw, self._epoch)
-                            if nw not in self._word_assemblies:
-                                self._word_assemblies[nw] = []
-                            if aid not in self._word_assemblies[nw]:
-                                self._word_assemblies[nw].append(aid)
+                overlap = asm.overlap_with_set(content_set)
+                if overlap > 0.5:
+                    asm.reinforce(self._epoch)
+                    reinforced.add(aid)
+                if overlap > best_match_overlap:
+                    best_match_overlap = overlap
+                    best_match_id = aid
 
-        # Create new assembly
-        if len(content_set) >= 2:
-            aid = f'a{self._assembly_seq}'
-            self._assembly_seq += 1
-            asm = Assembly(
-                id=aid, words=content_set, strength=1,
-                birth_epoch=self._epoch, last_active=self._epoch,
-                max_size=self._max_assembly_size,
+        # DON'T create new assembly if an existing one matches >60%
+        if best_match_overlap > 0.6 and best_match_id:
+            # Grow the best match instead
+            asm = self._assemblies[best_match_id]
+            if len(asm.words) < self._max_assembly_size:
+                for nw in content:
+                    if nw not in asm.words:
+                        asm.add(nw, self._epoch)
+                        if nw not in self._word_assemblies:
+                            self._word_assemblies[nw] = []
+                        if best_match_id not in self._word_assemblies[nw]:
+                            self._word_assemblies[nw].append(best_match_id)
+            return best_match_id
+
+        # Create new assembly only if truly novel
+        # Cap at 500 assemblies — prune weakest if exceeded
+        if len(self._assemblies) >= 500:
+            # Find weakest assembly (lowest strength × recency)
+            weakest_id = min(
+                self._assemblies,
+                key=lambda k: self._assemblies[k].strength / max(1, self._assemblies[k].dormancy(self._epoch) + 1),
             )
-            self._assemblies[aid] = asm
-            for w in content_set:
-                if w not in self._word_assemblies:
-                    self._word_assemblies[w] = []
+            weakest = self._assemblies.pop(weakest_id)
+            for w in weakest.words:
+                wl = self._word_assemblies.get(w, [])
+                if weakest_id in wl:
+                    wl.remove(weakest_id)
+
+        aid = f'a{self._assembly_seq}'
+        self._assembly_seq += 1
+        asm = Assembly(
+            id=aid, words=content_set, strength=1,
+            birth_epoch=self._epoch, last_active=self._epoch,
+            max_size=self._max_assembly_size,
+        )
+        self._assemblies[aid] = asm
+        for w in content_set:
+            if w not in self._word_assemblies:
+                self._word_assemblies[w] = []
+            # Cap memberships per word at 10
+            if len(self._word_assemblies[w]) < 10:
                 self._word_assemblies[w].append(aid)
-            return aid
-        return None
+        return aid
 
     def _invalidate_cache(self) -> None:
         """Clear activation/confidence caches after state change."""

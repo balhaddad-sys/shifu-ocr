@@ -13,6 +13,7 @@ Everything injectable. No hardcoded knowledge.
 from __future__ import annotations
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Set, Optional, Tuple, Any
 
 from .cortex import Cortex, _tokenize
@@ -181,37 +182,104 @@ class ShifuMind:
     def feed_batch(self, texts: List[str], layer: str = '_general',
                    classifier=None, cycles: int = 1) -> dict:
         """
-        Feed multiple texts with batch optimizations:
-        - Widens prune interval during batch (fewer prunes)
-        - Runs multiple cycles for deeper absorption
-        - Finalizes trunk after completion
+        CAPILLARY-STYLE batch feeding.
+
+        Like capillaries: many parallel small vessels reduce resistance.
+        - Suppress pruning during entire batch (one prune at end)
+        - Pre-compute stop words ONCE (not per sentence)
+        - Inline gate logic (avoid per-sentence function call overhead)
+        - Skip trunk/memory/resonance during batch (expensive, run once at end)
+        - Skip assembly formation for duplicate content
         """
         old_prune = self.cortex._prune_interval
-        self.cortex._prune_interval = max(old_prune, len(texts))
+        self.cortex._prune_interval = max(old_prune, len(texts) * cycles + 1)
+
+        # Pre-compute stop words ONCE
+        stops = self.gate.stop_words(self.cortex.word_freq)
+        cls = classifier or self._classify_word_bridge
 
         accepted = 0
         total_tokens = 0
         rejected = 0
+        seen_content = set()  # Deduplicate identical content
+
         for cycle in range(cycles):
             for text in texts:
-                result = self.feed(text, layer=layer, classifier=classifier)
-                if cycle == 0:  # Only count first cycle
-                    if result['accepted']:
-                        accepted += 1
-                        total_tokens += result['tokens_absorbed']
-                    else:
+                # Inline tokenize (skip gate overhead)
+                tokens = self.gate.tokenize(text)
+                if len(tokens) < 2:
+                    if cycle == 0:
                         rejected += 1
+                    continue
 
-        # Restore and prune
+                content = [t for t in tokens if t not in stops and len(t) > 2]
+                if len(content) < 2:
+                    if cycle == 0:
+                        rejected += 1
+                    continue
+
+                # Thymic selection
+                if self._feed_count > 200:
+                    known = sum(1 for w in content
+                                if w in self.cortex.word_freq
+                                and self.cortex.word_freq[w] > 1)
+                    if known == 0 and len(content) > 3:
+                        if cycle == 0:
+                            rejected += 1
+                        continue
+
+                # Deduplicate: skip if exact same content was just fed
+                content_key = tuple(sorted(content[:8]))
+                is_dup = content_key in seen_content
+                seen_content.add(content_key)
+
+                # Feed cortex (always — weights accumulate)
+                connections = self.cortex.feed(content, layer=layer, classifier=cls)
+
+                # Identity extraction (cheap)
+                self._extract_identity(text, content)
+
+                # Graph updates (inline, no function call overhead)
+                n = len(content)
+                for i in range(n):
+                    w = content[i]
+                    if w not in self._co_graph:
+                        self._co_graph[w] = {}
+                    for j in range(max(0, i - 5), min(n, i + 6)):
+                        if i != j:
+                            self._co_graph[w][content[j]] = (
+                                self._co_graph[w].get(content[j], 0) + 1
+                            )
+
+                # Nx from full tokens (cheap)
+                for i in range(len(tokens) - 1):
+                    w = tokens[i]
+                    if w not in self._nx_graph:
+                        self._nx_graph[w] = {}
+                    self._nx_graph[w][tokens[i + 1]] = (
+                        self._nx_graph[w].get(tokens[i + 1], 0) + 1
+                    )
+
+                # Speaker (cheap)
+                if not is_dup:
+                    self.speaker.learn_frame(tokens)
+
+                if cycle == 0:
+                    accepted += 1
+                    total_tokens += connections
+
+                self._feed_count += 1
+                self._epoch += 1
+
+        # Single prune at end
         self.cortex._prune_interval = old_prune
         self.cortex._prune()
 
-        # Finalize trunk after batch
+        # Post-batch finalization (all the expensive stuff, ONCE)
         if accepted > 5:
             self.trunk.finalize()
-
-        # Update field medians
         self.field.update_medians(self.cortex.word_freq, self._co_graph)
+        self.field.invalidate_cache()
         self.gate.adapt_thresholds()
 
         return {
