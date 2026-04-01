@@ -212,8 +212,25 @@ if __name__ == '__main__':
     # This avoids the deadlock: practice yields the GIL to let stdin read.
     import threading, time as _time
 
-    _busy = threading.Lock()
-    _state = [0]  # [practice_count] — mutable container, no nonlocal needed
+    # ═══ BILATERAL ARCHITECTURE — TWO HEMISPHERES ═══
+    #
+    # LEFT HEMISPHERE: logistics — practice, study, consolidate, feed
+    # RIGHT HEMISPHERE: conversation — deliberate, describe, activate, score
+    #
+    # Connected by CORPUS CALLOSUM: shared mind object.
+    # Each hemisphere has its own lock. They can run SIMULTANEOUSLY.
+    # Left practices while right answers questions.
+    # Cross-talk happens through the shared cortex/co-graph.
+
+    _left_busy = threading.Lock()   # LEFT: logistics (practice, feed, consolidate)
+    _right_busy = threading.Lock()  # RIGHT: conversation (deliberate, describe, score)
+    _state = [0]
+
+    # Route commands to hemispheres
+    LEFT_OPS = {'feed', 'feed_batch', 'consolidate', 'practice', 'study', 'save'}
+    RIGHT_OPS = {'deliberate', 'describe', 'generate', 'activate', 'score',
+                 'confidence', 'connect', 'explain_semantic', 'synonyms',
+                 'decompose', 'assess', 'language_stats', 'hungry'}
 
     def _background_practice():
         # ═══ RELATIVISTIC TIME ═══
@@ -237,13 +254,12 @@ if __name__ == '__main__':
             if len(mind.cortex.word_freq) < 20:
                 _time.sleep(1)
                 continue
-            if _busy.locked():
+            if _left_busy.locked():
                 continue
-            acquired = _busy.acquire(timeout=0.001)
+            acquired = _left_busy.acquire(timeout=0.001)
             if not acquired:
                 continue
             try:
-                # ONE round per lock acquisition — release fast for requests
                 mind.practice(rounds=1)
                 _state[0] += 1
                 if _state[0] % 5 == 0:
@@ -253,7 +269,7 @@ if __name__ == '__main__':
             except Exception:
                 pass
             finally:
-                _busy.release()
+                _left_busy.release()
 
             # RELATIVISTIC REST: outside the lock
             trend = mind.signal.recent_trend(5)
@@ -276,13 +292,43 @@ if __name__ == '__main__':
         line = line.strip()
         if not line:
             continue
-        with _busy:
+        # ═══ CORPUS CALLOSUM: route to correct hemisphere ═══
+        try:
+            cmd = json.loads(line)
+            req_id = cmd.pop('_id', None)
+            op = cmd.get('cmd', '')
+        except Exception as e:
+            req_id = None
+            result = {'ok': False, 'error': str(e)}
+            if req_id is not None:
+                result['_id'] = req_id
             try:
-                cmd = json.loads(line)
-                req_id = cmd.pop('_id', None)
+                sys.stdout.write(json.dumps(result) + '\n')
+                sys.stdout.flush()
+            except (BrokenPipeError, OSError):
+                break
+            continue
+
+        # Left hemisphere: logistics (feed, practice, consolidate)
+        # Right hemisphere: conversation (deliberate, describe, score)
+        # Stats/ping: no lock needed
+        if op in LEFT_OPS:
+            lock = _left_busy
+        elif op in RIGHT_OPS:
+            lock = _right_busy
+        else:
+            lock = None  # stats, ping — no lock
+
+        if lock:
+            with lock:
+                try:
+                    result = handle(cmd)
+                except Exception as e:
+                    result = {'ok': False, 'error': str(e)}
+        else:
+            try:
                 result = handle(cmd)
             except Exception as e:
-                req_id = None
                 result = {'ok': False, 'error': str(e)}
         if req_id is not None:
             result['_id'] = req_id
