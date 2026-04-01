@@ -600,46 +600,49 @@ async function handleFiles(event) {
   const loading = addMsg('<div id="feedProgress" style="color:var(--dim)">Starting...</div>', 'shifu');
   const prog = loading.querySelector('#feedProgress');
   let totalFed = 0, doneFiles = 0;
-  const CHUNK = 50;
 
   function showBar(pct, detail) {
     prog.innerHTML = '<div style="background:var(--border);border-radius:4px;height:6px;margin:8px 0;overflow:hidden"><div style="background:var(--accent);height:100%;width:'+pct+'%;transition:width 0.3s"></div></div><div style="font-size:12px;color:var(--dim)">'+detail+'</div>';
   }
 
+  // PHASE 1: Extract ALL text from ALL files (client-side, no server)
+  let allSentences = [];
   let results = '';
   for (let fi = 0; fi < files.length; fi++) {
     const file = files[fi];
     try {
       let sentences = [];
       if (file.name.endsWith('.pdf') || file.type === 'application/pdf') {
-        // Extract PDF client-side — no upload needed
-        showBar(fi/files.length*100, 'Extracting ' + file.name + '...');
+        showBar(fi/files.length*50, 'Extracting ' + file.name + '...');
         const pdf = await extractPdfText(file, (p, total) => {
-          showBar((fi + p/total) / files.length * 100, file.name + ': page ' + p + '/' + total);
+          showBar((fi + p/total) / files.length * 50, file.name + ': page ' + p + '/' + total);
         });
         sentences = pdf.lines.flatMap(l => l.split(/[.!?]+/).map(s=>s.trim()).filter(s=>s.length>15));
         results += '<div style="margin-bottom:6px"><b>' + file.name + '</b>: ' + pdf.pages + ' pages, ' + sentences.length + ' sentences</div>';
       } else {
-        showBar(fi/files.length*100, 'Reading ' + file.name + '...');
+        showBar(fi/files.length*50, 'Reading ' + file.name + '...');
         const text = await file.text();
         sentences = text.split(/[.!?\\n]+/).map(s=>s.trim()).filter(s=>s.length>15);
         results += '<div style="margin-bottom:6px"><b>' + file.name + '</b>: ' + sentences.length + ' sentences</div>';
       }
-      // Feed in chunks with progress
-      let accepted = 0;
-      for (let ci = 0; ci < sentences.length; ci += CHUNK) {
-        const chunk = sentences.slice(ci, ci + CHUNK);
-        showBar((fi + (ci+chunk.length)/sentences.length) / files.length * 100, file.name + ': feeding ' + (ci+chunk.length) + '/' + sentences.length);
-        const fr = await api('/api/mind/feed-batch', { texts: chunk });
-        accepted += fr.accepted || 0;
-        totalFed += fr.accepted || 0;
-      }
-      results += '<div class="trace"><span class="lbl">fed</span> ' + accepted + '/' + sentences.length + ' accepted</div>';
+      allSentences = allSentences.concat(sentences);
+      doneFiles++;
     } catch (e) {
       results += '<div style="color:var(--red)">' + file.name + ': ' + e.message + '</div>';
     }
-    doneFiles++;
   }
+
+  // PHASE 2: Stream EVERYTHING to mind in ONE request
+  if (allSentences.length > 0) {
+    showBar(55, 'Feeding ' + allSentences.length + ' sentences to mind...');
+    const t0 = Date.now();
+    const fr = await api('/api/mind/feed-batch', { texts: allSentences });
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    totalFed = fr.accepted || 0;
+    const rate = Math.round(allSentences.length / ((Date.now() - t0) / 1000));
+    results += '<div class="trace"><span class="lbl">fed</span> ' + totalFed + '/' + allSentences.length + ' accepted in ' + elapsed + 's (' + rate + ' sent/sec)</div>';
+  }
+
   showBar(100, 'Complete');
   results += '<div style="margin-top:8px;color:var(--green);font-weight:600">' + totalFed + ' passages fed from ' + doneFiles + ' file(s)</div>';
   prog.innerHTML = results;
