@@ -271,12 +271,14 @@ if __name__ == '__main__':
             finally:
                 _left_busy.release()
 
-            # RELATIVISTIC REST: outside the lock
+            # REST: must yield GIL long enough for stdin to be read.
+            # Python GIL means practice and request handling can't truly
+            # run in parallel. The sleep is what lets requests through.
             trend = mind.signal.recent_trend(5)
             if trend > 0.4:
-                _time.sleep(0.05)   # 50ms — still learning, think fast
+                _time.sleep(0.5)    # 500ms — learning, but let requests through
             else:
-                _time.sleep(1.0)    # 1s — bored, rest
+                _time.sleep(2.0)    # 2s — saturated, rest longer
 
     t = threading.Thread(target=_background_practice, daemon=True)
     t.start()
