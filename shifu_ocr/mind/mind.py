@@ -28,6 +28,7 @@ from .imagination import Imagination
 from .attention import Attention
 from .conviction import Conviction
 from .neuron import NeuralField
+from .golgi import Golgi
 from .language import Morphology, Syntax, Semantics, Curriculum
 
 
@@ -70,6 +71,7 @@ class ShifuMind:
         self.attention = Attention()
         self.conviction = Conviction()
         self.neural_field = NeuralField()
+        self.golgi = Golgi()
 
         # Language acquisition modules
         self.language = type('Language', (), {
@@ -305,52 +307,94 @@ class ShifuMind:
 
                 connections = 0
 
-                # ═══ BATCH FEED: only build PLAIN DICT graphs ═══
-                # NO Synapse objects. NO cortex.connect().
-                # Co-graph and nx-graph are plain {word: {word: count}} dicts.
-                # Cortex connections get built during CONSOLIDATION.
-                # This keeps memory at ~50MB instead of 500MB for 125K sentences.
+                # ═══ GOLGI APPARATUS: tag, route, process by pathway ═══
+                # Each word gets tagged with its pathway BEFORE processing.
+                # Short structural words → fast path (co-graph only).
+                # Long specialist words → deep path (identity + spokes).
+                # Like the Golgi tagging proteins for their destination.
 
-                if novelty >= 0.2:
-                    # Co-graph (capped at 100 neighbors)
-                    n = len(content)
-                    for i in range(n):
-                        w = content[i]
-                        if w not in self._co_graph:
-                            self._co_graph[w] = {}
-                        co_w = self._co_graph[w]
-                        for j in range(max(0, i - 5), min(n, i + 6)):
-                            if i != j:
-                                nb = content[j]
-                                if nb in co_w:
-                                    co_w[nb] += 1
-                                elif len(co_w) < 100:
-                                    co_w[nb] = 1
-                        connections += 1
+                tags = self.golgi.tag_sentence(content, self.cortex._epoch, self.cortex.word_freq)
+                routes = self.golgi.route(tags)
 
-                    # Nx-graph (capped at 50)
-                    for i in range(len(tokens) - 1):
-                        w = tokens[i]
-                        if w not in self._nx_graph:
-                            self._nx_graph[w] = {}
-                        nx_w = self._nx_graph[w]
-                        nxt = tokens[i + 1]
-                        if nxt in nx_w:
-                            nx_w[nxt] += 1
-                        elif len(nx_w) < 50:
-                            nx_w[nxt] = 1
+                # PATH 1: Structural (len 2-3) — co-graph count only
+                for t in routes.get(1, []):
+                    w = t.word
+                    if w not in self._co_graph:
+                        self._co_graph[w] = {}
+                    co_w = self._co_graph[w]
+                    for other in content:
+                        if other != w:
+                            if other in co_w:
+                                co_w[other] += 1
+                            elif len(co_w) < 50:
+                                co_w[other] = 1
 
-                    # Breadth (capped at 50)
-                    for i in range(min(n, 12)):
-                        w = content[i]
-                        b = self.cortex.breadth.get(w)
-                        if b is not None and len(b) < 50:
-                            for j in range(max(0, i - 4), min(n, i + 5)):
-                                if i != j:
-                                    b.add(content[j])
+                # PATH 2: Connector (len 4-5) — co-graph + nx
+                for t in routes.get(2, []):
+                    w = t.word
+                    if w not in self._co_graph:
+                        self._co_graph[w] = {}
+                    co_w = self._co_graph[w]
+                    for other in content:
+                        if other != w:
+                            if other in co_w:
+                                co_w[other] += 1
+                            elif len(co_w) < 80:
+                                co_w[other] = 1
 
-                if novelty > 0.5:
-                    # Deep: identity + speaker + syntax (no cortex.connect)
+                # PATH 3: Content (len 6-8) — co-graph + nx + breadth
+                for t in routes.get(3, []):
+                    w = t.word
+                    if w not in self._co_graph:
+                        self._co_graph[w] = {}
+                    co_w = self._co_graph[w]
+                    for other in content:
+                        if other != w:
+                            if other in co_w:
+                                co_w[other] += 1
+                            elif len(co_w) < 100:
+                                co_w[other] = 1
+                    # Breadth
+                    b = self.cortex.breadth.get(w)
+                    if b is not None and len(b) < 50:
+                        for other in content[:10]:
+                            if other != w:
+                                b.add(other)
+                    connections += 1
+
+                # PATH 4: Specialist (len 9+) — everything: co + nx + breadth + identity + syntax
+                for t in routes.get(4, []):
+                    w = t.word
+                    if w not in self._co_graph:
+                        self._co_graph[w] = {}
+                    co_w = self._co_graph[w]
+                    for other in content:
+                        if other != w:
+                            if other in co_w:
+                                co_w[other] += 1
+                            elif len(co_w) < 100:
+                                co_w[other] = 1
+                    b = self.cortex.breadth.get(w)
+                    if b is not None and len(b) < 50:
+                        for other in content[:10]:
+                            if other != w:
+                                b.add(other)
+                    connections += 1
+
+                # Nx-graph from ALL tokens (grammar needs structure words)
+                for i in range(len(tokens) - 1):
+                    w = tokens[i]
+                    if w not in self._nx_graph:
+                        self._nx_graph[w] = {}
+                    nx_w = self._nx_graph[w]
+                    nxt = tokens[i + 1]
+                    if nxt in nx_w:
+                        nx_w[nxt] += 1
+                    elif len(nx_w) < 50:
+                        nx_w[nxt] = 1
+
+                # Deep processing only for sentences with PATH 4 words
+                if routes.get(4):
                     self._extract_identity(text, content)
                     self.speaker.learn_frame(tokens)
                     self.language.syntax.feed(tokens)
@@ -913,7 +957,7 @@ class ShifuMind:
             for src, targets in gen._connections.items():
                 cortex_conns[src] = {t: s.weight for t, s in targets.items()}
         neural_built = self.neural_field.build_from_graphs(
-            self._co_graph, cortex_conns, myel_pairs,
+            self._co_graph, cortex_conns, myel_pairs, self.golgi,
         )
 
         # Phase 8: Language acquisition — analyze morphology, syntax, semantics

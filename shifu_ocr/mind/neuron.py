@@ -120,7 +120,8 @@ class NeuralField:
 
     def build_from_graphs(self, co_graph: Dict[str, Dict[str, float]],
                           cortex_connections: Optional[Dict[str, Dict[str, float]]] = None,
-                          myelinated_pairs: Optional[Set[tuple]] = None) -> int:
+                          myelinated_pairs: Optional[Set[tuple]] = None,
+                          golgi=None) -> int:
         """
         Build neurons from the co-graph and cortex.
         Each word becomes a neuron.
@@ -141,8 +142,11 @@ class NeuralField:
                 if len(target) <= 2:
                     continue
                 self.ensure_neuron(target)
-                # Normalize weight to 0-1 range
                 norm_w = weight / max(max_w, 1)
+                # STDP: boost connections between temporally-close words
+                if golgi:
+                    stdp = golgi.stdp_affinity(word, target)
+                    norm_w *= (0.5 + stdp * 0.5)  # STDP boosts up to 1.5×
                 is_myel = (word, target) in myel_set
                 neuron.add_connection(target, norm_w, is_myel)
                 built += 1
