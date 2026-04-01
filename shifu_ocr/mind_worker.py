@@ -243,30 +243,24 @@ if __name__ == '__main__':
             if not acquired:
                 continue
             try:
-                # BURST: practice until learning saturates
-                r = mind.practice(rounds=10)
+                # ONE round per lock acquisition — release fast for requests
+                mind.practice(rounds=1)
                 _state[0] += 1
-
-                if _state[0] % 3 == 0:
-                    mind.study(rounds=3)
-                if _state[0] % 10 == 0:
+                if _state[0] % 5 == 0:
+                    mind.study(rounds=1)
+                if _state[0] % 20 == 0:
                     mind.consolidate()
-
-                # RELATIVISTIC REST: check learning rate
-                # If recent dopamine surprises are near zero → saturated
-                trend = mind.signal.recent_trend(5)
-                if trend > 0.4:
-                    # Still learning — minimal rest
-                    pass  # Loop immediately (10ms yield)
-                else:
-                    # Learning saturated — rest proportional to saturation
-                    # Low trend → longer rest. The mind sleeps when bored.
-                    rest = max(0.1, (1.0 - trend) * 2.0)  # 0.1s to 2s
-                    _time.sleep(rest)
             except Exception:
-                _time.sleep(0.5)
+                pass
             finally:
                 _busy.release()
+
+            # RELATIVISTIC REST: outside the lock
+            trend = mind.signal.recent_trend(5)
+            if trend > 0.4:
+                _time.sleep(0.05)   # 50ms — still learning, think fast
+            else:
+                _time.sleep(1.0)    # 1s — bored, rest
 
     t = threading.Thread(target=_background_practice, daemon=True)
     t.start()
