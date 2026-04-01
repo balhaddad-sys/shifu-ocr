@@ -187,30 +187,50 @@ class Conviction:
                     link = mind.imagination.imagine(
                         a, b, mind._co_graph, mind.cortex.activate,
                     )
-                    if link.get('probability', 0) > 0.1:
-                        # Conviction found a possible bridge
-                        discovered.append({
-                            'from': a, 'to': b,
-                            'via': link.get('via'),
-                            'probability': link['probability'],
-                        })
-                        # BUILD the bridge — even without data
-                        # This is conviction: creating a connection because
-                        # the goal demands it, not because the data shows it
-                        gen = mind.cortex.ensure_layer('_general')
-                        weight = link['probability'] * self._strength[goal]
-                        gen.connect(a, b, weight, mind.cortex._epoch)
-                        gen.connect(b, a, weight * 0.5, mind.cortex._epoch)
-                        self._bridges.append({
-                            'from': a, 'to': b, 'weight': round(weight, 3),
-                            'goal': goal, 'persistence': persistence,
-                        })
+                    # In a dark place every step is the right step.
+                    # Don't filter by probability. BUILD the bridge.
+                    # Even p=0.01 is a step. A step into the dark.
+                    discovered.append({
+                        'from': a, 'to': b,
+                        'via': link.get('via'),
+                        'probability': link.get('probability', 0),
+                    })
+                    # Build the bridge — conviction makes it real
+                    gen = mind.cortex.ensure_layer('_general')
+                    # Weight = conviction strength. Not probability.
+                    # The soldier doesn't calculate odds. He holds the line.
+                    weight = self._strength[goal] * 0.3
+                    gen.connect(a, b, weight, mind.cortex._epoch)
+                    gen.connect(b, a, weight * 0.5, mind.cortex._epoch)
+                    self._bridges.append({
+                        'from': a, 'to': b, 'weight': round(weight, 3),
+                        'goal': goal, 'persistence': persistence,
+                    })
+
+        # ═══ ANTICIPATION — reward in the horizon ═══
+        # Conviction pushes through. Anticipation says WHERE.
+        # After building bridges, estimate: did we get CLOSER to the goal?
+        # If the frontier word now has MORE connections than before → dawn approaching.
+        # This anticipated reward feeds back into conviction strength.
+        goal_info = self._goals.get(goal, {})
+        frontier = goal_info.get('frontier')
+        anticipated_reward = 0.0
+        if frontier and mind._co_graph:
+            frontier_connections = len(mind._co_graph.get(frontier, {}))
+            # More connections = closer to understanding = anticipated reward
+            anticipated_reward = min(frontier_connections / 20.0, 1.0)
+            # Anticipation strengthens conviction: the closer the dawn, the harder you march
+            self._strength[goal] = min(
+                self._strength[goal] + anticipated_reward * 0.05,
+                1.0,
+            )
 
         return {
             'pushed': True,
             'goal': goal,
             'persistence': persistence,
             'strength': round(self._strength[goal], 3),
+            'anticipated_reward': round(anticipated_reward, 3),
             'discovered': discovered,
         }
 

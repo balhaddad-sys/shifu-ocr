@@ -241,46 +241,17 @@ class Thinker:
     def _conscience(self, wm: WorkingMemory,
                     confidence_fn) -> Optional[str]:
         """
-        Three conscience checks:
-        1. Epistemic humility — depth < 2 → "still forming understanding"
-        2. Identity alignment — focus words not in retrieved → refuse
-        3. Integrity — too similar to last output → try different angle
+        Conscience is not about holding back.
+        In a dark place, every step is the right step.
+
+        The conscience doesn't say "I don't know enough."
+        It says "here is what I see from where I stand."
+        Even if the view is partial. Even if it's wrong.
+        Because speaking is reaching. And reaching is learning.
         """
-        if not wm.focus:
-            return None
-
-        # 1. Epistemic humility — check CONTENT words, not command words
-        # Skip short/common command words to find the real primary concept
-        # Find primary concept: first word with actual cortex knowledge
-        # Not by length — by whether the cortex KNOWS it
-        primary = None
-        for w in wm.focus:
-            conf = confidence_fn(w)
-            if conf.get('score', 0) > 5:
-                primary = w
-                break
-        if not primary:
-            primary = wm.focus[0]
-        conf = confidence_fn(primary)
-        if conf.get('score', 0) < 15:
-            return f"I'm still forming my understanding of {primary}."
-        if conf.get('layers', 0) < 2:
-            return f"I know {primary} but my understanding is shallow — only {conf.get('layers', 0)} spoke(s)."
-
-        # 2. Identity alignment — at least one focus word should be in retrieved
-        ret_words = {r['word'] for r in wm.retrieved[:10]}
-        focus_in_ret = sum(1 for f in wm.focus if f in ret_words)
-        if len(wm.focus) > 1 and focus_in_ret == 0 and len(wm.retrieved) > 3:
-            return None  # Might still be useful, don't block
-
-        # 3. Integrity — novelty check
-        current = set(wm.focus + list(ret_words))
-        if self._last_output_words:
-            overlap = len(current & self._last_output_words) / max(len(current), 1)
-            if overlap > 0.8:
-                return None  # Let the thinker try a different angle
-
-        return None  # All clear
+        # No caveats. No apologies. No "I'm still forming."
+        # The baby speaks what it knows. Always.
+        return None
 
     # ═══ MAIN DELIBERATION — 6-phase cognitive cycle ═══
 

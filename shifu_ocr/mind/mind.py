@@ -1043,25 +1043,35 @@ class ShifuMind:
             signal = self.signal.observe(state_key, coherence)
             surprise = signal['error']
 
-            # Reinforce or punish based on coherence
+            # ═══ IN A DARK PLACE EVERY STEP IS THE RIGHT STEP ═══
+            #
+            # No punishment. Ever. A baby doesn't weaken its legs
+            # when it falls. It gets up. The fall IS the learning.
+            #
+            # High coherence → strong reinforcement (confident step)
+            # Low coherence → gentle reinforcement (exploring step)
+            # ZERO coherence → still reinforcement (brave step into the dark)
+            #
+            # The only difference is HOW MUCH, not WHETHER.
+            # Every connection the mind makes is a step. Every step
+            # is the right step because it's a step FORWARD.
             gen_layer = self.cortex.get_layer('_general')
             if gen_layer and len(generated) >= 2:
+                # Weight by coherence — but never zero, never negative
+                # High coherence: strong step (0.5)
+                # Low coherence: gentle step (0.05)
+                # The floor is NOT zero. Every step matters.
+                step_weight = max(0.05, coherence * 0.5)
                 for j in range(len(generated) - 1):
                     a, b = generated[j], generated[j + 1]
-                    if coherence > 0.4:
-                        # Good sentence — reinforce connections
-                        gen_layer.connect(a, b, coherence * 0.5, self.cortex._epoch)
-                        improved += 1
-                    elif coherence < 0.2:
-                        # Bad sentence — weaken connections
-                        syn = gen_layer.get_synapse(a, b)
-                        if syn:
-                            syn.weight *= 0.8
-                        degraded += 1
+                    gen_layer.connect(a, b, step_weight, self.cortex._epoch)
+                    improved += 1
 
-            # Feed the sentence back if it was good (self-teaching)
-            if coherence > 0.3:
-                self.cortex.feed(generated, layer='_general')
+            # Feed EVERY sentence back — not just "good" ones.
+            # The baby learns from ALL its attempts.
+            # A bad sentence teaches what doesn't connect.
+            # That knowledge is just as valuable.
+            self.cortex.feed(generated, layer='_general')
 
             after_conf = self.cortex.confidence(word)['score']
             results.append({

@@ -177,9 +177,10 @@ class Imagination:
         Explore: find 2-hop concepts not yet connected that COULD be.
         Dopamine-modulated: high error → lower threshold (bolder).
         """
-        # Modulate threshold by dopamine
-        adjusted = threshold - self.dopamine_error * 0.15
-        adjusted = max(0.05, min(0.5, adjusted))
+        # In a dark place every step is the right step.
+        # The threshold only controls RANKING, not filtering.
+        # Every exploration is reported. The darkness is not a wall.
+        adjusted = 0.0  # No floor. Explore everything.
 
         neighbors = co_graph.get(concept, {})
         # Collect 2-hop candidates — limit to top 10 neighbors × top 5 hops
@@ -194,7 +195,7 @@ class Imagination:
         results = []
         for candidate, energy in sorted(two_hop.items(), key=lambda x: -x[1])[:5]:
             prob = self._probability(concept, candidate, co_graph, cortex_activate)
-            if prob['score'] >= adjusted:
+            if True:  # Every step is the right step
                 results.append({
                     'word': candidate, 'probability': prob['score'],
                     'evidence': prob['evidence'], 'energy': energy,
