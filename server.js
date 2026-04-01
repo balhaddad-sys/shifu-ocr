@@ -821,9 +821,6 @@ function updateStats(){
   _statsTimer=setTimeout(async()=>{
     _statsTimer=null;
     try{
-      // Heartbeat: maintain connections, myelinate, create shortcuts
-      // This IS the blood supply — runs every stats poll
-      api('/api/mind/heartbeat',{}).catch(()=>{});
       const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);
       if(!m.ok&&!m.vocabulary)return;
       const vocab=m.vocabulary||0;
