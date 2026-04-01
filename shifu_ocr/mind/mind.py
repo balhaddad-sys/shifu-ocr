@@ -205,11 +205,30 @@ class ShifuMind:
         accepted = 0
         total_tokens = 0
         rejected = 0
-        seen_content = set()  # Deduplicate identical content
+        seen_content = set()
+
+        # ═══ NEUROGLIA ARCHITECTURE ═══
+        #
+        # Astrocytes detect which neurons fire hardest and dilate
+        # blood vessels feeding THOSE neurons. We do the same:
+        #
+        # PHASE 1: Triage — classify every sentence by novelty.
+        #   - How many words are NEW (never seen)?
+        #   - How many words are RARE (seen < 3 times)?
+        #   - novelty = (new + rare) / total
+        #
+        # PHASE 2: Route by load.
+        #   - novelty > 0.5 → DEEP feed (full cortex connections + identity + speaker)
+        #   - novelty 0.2-0.5 → MEDIUM feed (co-graph + nx only)
+        #   - novelty < 0.2 → LIGHT feed (word freq increment only, skip graphs)
+        #
+        # This is NOT skipping. Every sentence is processed.
+        # But resources flow to where the LEARNING is.
+
+        gen_layer = self.cortex.ensure_layer('_general')
 
         for cycle in range(cycles):
             for text in texts:
-                # Inline tokenize (skip gate overhead)
                 tokens = self.gate.tokenize(text)
                 if len(tokens) < 2:
                     if cycle == 0:
@@ -222,22 +241,27 @@ class ShifuMind:
                         rejected += 1
                     continue
 
-                # NO thymic selection during batch feed.
-                # Batch = intentional bulk ingestion (textbooks, PDFs).
-                # The user chose to feed this. Accept everything.
-                # Thymic selection only applies to single feed() calls.
-
-                # Deduplicate: skip if exact same content was just fed
+                # Deduplicate
                 content_key = tuple(sorted(content[:8]))
                 is_dup = content_key in seen_content
                 seen_content.add(content_key)
+                if is_dup:
+                    if cycle == 0:
+                        accepted += 1
+                    continue
 
-                # Direct word frequency update — bypass cortex.feed() overhead.
-                # cortex.feed() does: epoch++, cache invalidation, assembly formation,
-                # prune check, layer routing — all O(n²) per sentence.
-                # For batch: just count words and build the _general layer directly.
-                connections = 0
-                gen_layer = self.cortex.ensure_layer('_general')
+                # ═══ ASTROCYTE: measure novelty ═══
+                new_words = 0
+                rare_words = 0
+                for w in content:
+                    freq = self.cortex.word_freq.get(w, 0)
+                    if freq == 0:
+                        new_words += 1
+                    elif freq < 3:
+                        rare_words += 1
+                novelty = (new_words + rare_words * 0.5) / max(len(content), 1)
+
+                # ═══ ALL LEVELS: word frequency (always) ═══
                 for w in content:
                     self.cortex.word_freq[w] = self.cortex.word_freq.get(w, 0) + 1
                     self.cortex.total_words += 1
@@ -245,48 +269,52 @@ class ShifuMind:
                         self.cortex._connection_birth[w] = self.cortex._epoch
                     if w not in self.cortex.breadth:
                         self.cortex.breadth[w] = set()
-                fc = content[:12]  # Cap like cortex.feed does
-                for i in range(len(fc)):
-                    for j in range(max(0, i-4), min(len(fc), i+5)):
-                        if i != j:
-                            gen_layer.connect(fc[i], fc[j], 1.0 / abs(i-j), self.cortex._epoch)
-                            self.cortex.breadth[fc[i]].add(fc[j])
-                            connections += 1
                 self.cortex._feed_count += 1
                 self.cortex._epoch += 1
 
-                # Identity extraction (cheap)
-                self._extract_identity(text, content)
+                connections = 0
 
-                # Graph updates — cap neighbors per word at 100 to prevent memory explosion
-                n = len(content)
-                for i in range(n):
-                    w = content[i]
-                    if w not in self._co_graph:
-                        self._co_graph[w] = {}
-                    co_w = self._co_graph[w]
-                    for j in range(max(0, i - 5), min(n, i + 6)):
-                        if i != j:
-                            nb = content[j]
-                            if nb in co_w:
-                                co_w[nb] += 1
-                            elif len(co_w) < 100:
-                                co_w[nb] = 1
+                if novelty >= 0.2:
+                    # ═══ MEDIUM + DEEP: build connections ═══
+                    fc = content[:12]
+                    weight_mult = 2.0 if novelty > 0.5 else 1.0  # Deep gets 2× weight
+                    for i in range(len(fc)):
+                        for j in range(max(0, i - 4), min(len(fc), i + 5)):
+                            if i != j:
+                                gen_layer.connect(fc[i], fc[j], weight_mult / abs(i - j), self.cortex._epoch)
+                                self.cortex.breadth[fc[i]].add(fc[j])
+                                connections += 1
 
-                # Nx from full tokens — cap at 50 next-words per word
-                for i in range(len(tokens) - 1):
-                    w = tokens[i]
-                    if w not in self._nx_graph:
-                        self._nx_graph[w] = {}
-                    nx_w = self._nx_graph[w]
-                    nxt = tokens[i + 1]
-                    if nxt in nx_w:
-                        nx_w[nxt] += 1
-                    elif len(nx_w) < 50:
-                        nx_w[nxt] = 1
+                    # Co-graph (capped at 100 neighbors)
+                    n = len(content)
+                    for i in range(n):
+                        w = content[i]
+                        if w not in self._co_graph:
+                            self._co_graph[w] = {}
+                        co_w = self._co_graph[w]
+                        for j in range(max(0, i - 5), min(n, i + 6)):
+                            if i != j:
+                                nb = content[j]
+                                if nb in co_w:
+                                    co_w[nb] += 1
+                                elif len(co_w) < 100:
+                                    co_w[nb] = 1
 
-                # Speaker (cheap)
-                if not is_dup:
+                    # Nx-graph (capped at 50)
+                    for i in range(len(tokens) - 1):
+                        w = tokens[i]
+                        if w not in self._nx_graph:
+                            self._nx_graph[w] = {}
+                        nx_w = self._nx_graph[w]
+                        nxt = tokens[i + 1]
+                        if nxt in nx_w:
+                            nx_w[nxt] += 1
+                        elif len(nx_w) < 50:
+                            nx_w[nxt] = 1
+
+                if novelty > 0.5:
+                    # ═══ DEEP ONLY: identity + speaker (expensive) ═══
+                    self._extract_identity(text, content)
                     self.speaker.learn_frame(tokens)
 
                 if cycle == 0:
