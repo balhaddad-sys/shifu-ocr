@@ -531,10 +531,11 @@ async function send(){
   let h='';
   try{
     if(d.i==='correct'){
-      const r=await api('/api/correct',{text:d.p});
+      // Fire correction + mind score in PARALLEL — don't wait sequentially
+      const [r,ms]=await Promise.all([api('/api/correct',{text:d.p}),api('/api/mind/score',{text:d.p}).catch(()=>({ok:false}))]);
       h='<div style="margin-bottom:6px"><b>Corrected:</b></div><div>'+rw(r.words)+'</div>'+rf(r.safetyFlags);
       if(r.decision)h+='<div><span class="decision '+r.decision+'">'+r.decision.toUpperCase()+'</span></div>';
-      try{const ms=await api('/api/mind/score',{text:r.output||d.p});if(ms.ok)h+='<div class="trace"><span class="lbl">mind coherence</span> '+(ms.coherence||0).toFixed(3)+'</div>'}catch{}
+      if(ms.ok)h+='<div class="trace"><span class="lbl">mind coherence</span> '+(ms.coherence||0).toFixed(3)+'</div>';
     }
     else if(d.i==='deliberate'){
       const r=await api('/api/mind/deliberate',{query:d.p});
@@ -591,10 +592,17 @@ async function handleFiles(event) {
         const lines = (data.lines || []).map(l => l.corrected || l.output || l.input || '').filter(l => l.length > 10);
         resultsHtml += '<div style="margin-bottom:8px"><b>' + file.name + '</b>: ' + (data.pageCount || '?') + ' pages, ' + lines.length + ' lines</div>';
         if (lines.length > 0) {
-          updateProgress(fi, file.name, 'Feeding', lines.length + ' lines to mind');
-          const feedResult = await api('/api/mind/feed-batch', { texts: lines });
-          resultsHtml += '<div class="trace"><span class="lbl">fed</span> ' + (feedResult.accepted || 0) + '/' + (feedResult.total || 0) + ' accepted</div>';
-          totalFed += feedResult.accepted || 0;
+          // Feed in chunks of 50 so progress bar updates between chunks
+          let fileAccepted = 0;
+          const CHUNK = 50;
+          for (let ci = 0; ci < lines.length; ci += CHUNK) {
+            const chunk = lines.slice(ci, ci + CHUNK);
+            updateProgress(fi + ci/lines.length, file.name, 'Feeding', (ci+chunk.length) + '/' + lines.length + ' lines');
+            const fr = await api('/api/mind/feed-batch', { texts: chunk });
+            fileAccepted += fr.accepted || 0;
+            totalFed += fr.accepted || 0;
+          }
+          resultsHtml += '<div class="trace"><span class="lbl">fed</span> ' + fileAccepted + '/' + lines.length + ' accepted</div>';
         }
       } else {
         updateProgress(fi, file.name, 'Reading', '');
@@ -602,10 +610,16 @@ async function handleFiles(event) {
         const sentences = text.split(/[.!?\\n]+/).map(s => s.trim()).filter(s => s.length > 10);
         resultsHtml += '<div style="margin-bottom:8px"><b>' + file.name + '</b>: ' + sentences.length + ' sentences</div>';
         if (sentences.length > 0) {
-          updateProgress(fi, file.name, 'Feeding', sentences.length + ' sentences to mind');
-          const feedResult = await api('/api/mind/feed-batch', { texts: sentences });
-          resultsHtml += '<div class="trace"><span class="lbl">fed</span> ' + (feedResult.accepted || 0) + '/' + (feedResult.total || 0) + ' accepted</div>';
-          totalFed += feedResult.accepted || 0;
+          let fileAccepted = 0;
+          const CHUNK = 50;
+          for (let ci = 0; ci < sentences.length; ci += CHUNK) {
+            const chunk = sentences.slice(ci, ci + CHUNK);
+            updateProgress(fi + ci/sentences.length, file.name, 'Feeding', (ci+chunk.length) + '/' + sentences.length + ' sentences');
+            const fr = await api('/api/mind/feed-batch', { texts: chunk });
+            fileAccepted += fr.accepted || 0;
+            totalFed += fr.accepted || 0;
+          }
+          resultsHtml += '<div class="trace"><span class="lbl">fed</span> ' + fileAccepted + '/' + sentences.length + ' accepted</div>';
         }
       }
     } catch (e) { resultsHtml += '<div style="color:var(--red)">' + file.name + ': ' + e.message + '</div>'; }
@@ -618,9 +632,15 @@ async function handleFiles(event) {
   updateStats();
 }
 
-async function updateStats(){
-  try{const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);
-  document.getElementById('topStats').innerHTML=(js.core?.vocabulary||0)+'w &middot; '+(js.core?.resonancePairs||0)+' res &middot; '+(m.vocabulary||0)+' mind &middot; '+(m.domains||0)+' dom &middot; '+(m.myelinated||0)+' myel'}catch{}
+let _statsTimer=null;
+function updateStats(){
+  // Debounce: only fire once per 2 seconds no matter how many messages
+  if(_statsTimer)return;
+  _statsTimer=setTimeout(async()=>{
+    _statsTimer=null;
+    try{const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);
+    document.getElementById('topStats').innerHTML=(js.core?.vocabulary||0)+'w &middot; '+(js.core?.resonancePairs||0)+' res &middot; '+(m.vocabulary||0)+' mind &middot; '+(m.domains||0)+' dom &middot; '+(m.myelinated||0)+' myel'}catch{}
+  },2000);
 }
 updateStats();
 </script>
