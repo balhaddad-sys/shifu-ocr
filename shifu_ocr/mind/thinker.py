@@ -419,7 +419,7 @@ class Thinker:
                         threshold=0.2,
                     )
                     for item in explored[:2]:
-                        if item['word'] not in focus_set and item['word'] not in {r['word'] for r in wm.retrieved}:
+                        if item['word'] not in original_query and item['word'] not in {r['word'] for r in wm.retrieved}:
                             wm.imagined.append(item)
                             wm.retrieved.append({
                                 'word': item['word'],

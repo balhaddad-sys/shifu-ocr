@@ -204,17 +204,21 @@ def thalamus_route(cmd):
     First: reload shared state from disk (what feed/maintenance wrote).
     Then: route to cortical areas.
     """
-    reload_shared_state()
+    try:
+        reload_shared_state()
+    except Exception as e:
+        pass  # Don't fail the request if reload fails
+
+    errors = []
     for area in AREAS:
         try:
             result = area(cmd)
             if result is not None:
                 return result
         except Exception as e:
-            # This cortical area failed — try the next one
-            # Like a stroke: damage to one area doesn't kill the brain
+            errors.append(f'{area.__name__}: {e}')
             continue
-    return {'ok': False, 'error': f'no cortical area handles: {cmd.get("cmd", "?")}'}
+    return {'ok': False, 'error': f'no area handles {cmd.get("cmd","?")}: {"; ".join(errors)}'}
 
 
 # ═══ MAIN LOOP ═══
