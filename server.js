@@ -94,12 +94,20 @@ function mindCommand(cmd) {
 bootMind();
 console.log('Shifu OCR ready.');
 
+// Prevent crashes from killing the server
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception (server survived):', err.message);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled rejection (server survived):', err?.message || err);
+});
+
 function jsonResponse(res, data, status = 200) {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:3737' });
   res.end(JSON.stringify(data, null, 2));
 }
 
-const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_BODY_SIZE = 100 * 1024 * 1024; // 100 MB — large medical PDFs
 const MAX_TEXT_LENGTH = 100000; // 100k chars for text inputs
 
 function parseBody(req) {
