@@ -88,25 +88,31 @@ function createWorker(name, script, timeout) {
   return w;
 }
 
-// Three nervous systems — each a separate OS process
+// ONE NERVOUS SYSTEM — the thalamus routes everything internally.
+// But THREE PROCESSES for isolation: if feed bloats, queries survive.
+//
+// Primary: THALAMUS — handles queries, introspection, language
+// Heavy: FEED — handles feed_batch (can bloat, isolated from queries)
+// Autonomic: MAINTENANCE — handles consolidate, practice (can be slow)
+
+const thalamus = createWorker('Thalamus', 'thalamus.py', 30000);       // 30s for most ops
 const feedWorker = createWorker('Feed', 'feed_worker.py', 180000);      // 3 min for large batches
-const queryWorker = createWorker('Query', 'query_worker.py', 15000);    // 15s — must be fast
 const maintWorker = createWorker('Maintenance', 'maintenance_worker.py', 60000); // 1 min
 
+thalamus.boot();
 feedWorker.boot();
-queryWorker.boot();
 maintWorker.boot();
 
-// Route commands to the right worker
-const FEED_OPS = new Set(['feed', 'feed_batch']);
+// Route: heavy ops to isolated workers, everything else to thalamus
+const FEED_OPS = new Set(['feed_batch']);  // Only batch feed is heavy
 const MAINT_OPS = new Set(['consolidate', 'practice', 'study', 'heartbeat', 'assess', 'save']);
 
 function mindCommand(cmd) {
   const op = cmd.cmd || '';
   if (FEED_OPS.has(op)) return feedWorker.command(cmd);
   if (MAINT_OPS.has(op)) return maintWorker.command(cmd);
-  // Everything else → query worker (fast path)
-  return queryWorker.command(cmd);
+  // Everything else → thalamus (the central brain)
+  return thalamus.command(cmd);
 }
 console.log('Shifu OCR ready.');
 
