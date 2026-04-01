@@ -24,6 +24,7 @@ from .speaker import Speaker
 from .thinker import Thinker, WorkingMemory
 from .imagination import Imagination
 from .attention import Attention
+from .neuron import Neuron, NeuralField
 from .landscape import Landscape
 from ._types import Synapse, Assembly, Domain
 from ._protocols import Feedable, Queryable, Temporal, Serializable

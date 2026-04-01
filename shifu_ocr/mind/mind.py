@@ -27,6 +27,7 @@ from .thinker import Thinker
 from .imagination import Imagination
 from .attention import Attention
 from .conviction import Conviction
+from .neuron import NeuralField
 from .language import Morphology, Syntax, Semantics, Curriculum
 
 
@@ -68,6 +69,7 @@ class ShifuMind:
         self.imagination = Imagination()
         self.attention = Attention()
         self.conviction = Conviction()
+        self.neural_field = NeuralField()
 
         # Language acquisition modules
         self.language = type('Language', (), {
@@ -544,7 +546,14 @@ class ShifuMind:
     # ═══════════════════════════════════════════════════════════
 
     def activate(self, word: str) -> Dict[str, float]:
-        """Activate a word through the unified field."""
+        """
+        Activate a word. Each neuron fires independently.
+        The wave propagates through axon connections.
+        No central controller — just neurons talking to neurons.
+        """
+        # Use neural field if it has neurons, fall back to old field
+        if self.neural_field.neurons:
+            return self.neural_field.activate(word)
         return self.field.activate(
             word, self._co_graph, self._nx_graph,
             self._res_graph, self._snx_graph,
@@ -552,7 +561,9 @@ class ShifuMind:
         )
 
     def score(self, tokens: List[str]) -> dict:
-        """Score a token sequence for coherence."""
+        """Score coherence through neural propagation."""
+        if self.neural_field.neurons:
+            return self.neural_field.score_sequence(tokens)
         return self.field.score_sequence(
             tokens, self._co_graph, self._nx_graph,
             self._res_graph, self._snx_graph,
@@ -560,7 +571,6 @@ class ShifuMind:
         )
 
     def score_text(self, text: str) -> dict:
-        """Score a text string for coherence."""
         tokens = _tokenize(text)
         return self.score(tokens)
 
@@ -873,7 +883,25 @@ class ShifuMind:
         self.field.update_medians(self.cortex.word_freq, self._co_graph)
         self.trunk.finalize()
 
-        # Phase 7: Language acquisition — analyze morphology, syntax, semantics
+        # Phase 7: BUILD NEURAL FIELD — each word becomes a neuron
+        # Connections from co-graph become axons.
+        # Myelinated cortex synapses become myelinated axons.
+        myel_pairs = set()
+        for ly in self.cortex._layers.values():
+            for src, targets in ly._connections.items():
+                for tgt, syn in targets.items():
+                    if syn.myelinated:
+                        myel_pairs.add((src, tgt))
+        cortex_conns = {}
+        gen = self.cortex.get_layer('_general')
+        if gen:
+            for src, targets in gen._connections.items():
+                cortex_conns[src] = {t: s.weight for t, s in targets.items()}
+        neural_built = self.neural_field.build_from_graphs(
+            self._co_graph, cortex_conns, myel_pairs,
+        )
+
+        # Phase 8: Language acquisition — analyze morphology, syntax, semantics
         morph = self.language.morphology.feed_vocabulary(self.cortex.word_freq)
         self.language.morphology.feed_bigrams(self._nx_graph)
         syn = 0
@@ -886,6 +914,7 @@ class ShifuMind:
         return {
             'routed': routed, 'identities': identities, 'pruned': pruned,
             'morphology': morph, 'semantics': syn,
+            'neural_field': neural_built,
         }
 
     def counterfactual(self, text: str, position: int,
