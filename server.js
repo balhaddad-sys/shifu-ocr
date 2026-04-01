@@ -97,7 +97,7 @@ function createWorker(name, script, timeout) {
 
 const thalamus = createWorker('Thalamus', 'thalamus.py', 30000);       // 30s for most ops
 const feedWorker = createWorker('Feed', 'feed_worker.py', 180000);      // 3 min for large batches
-const maintWorker = createWorker('Maintenance', 'maintenance_worker.py', 60000); // 1 min
+const maintWorker = createWorker('Maintenance', 'maintenance_worker.py', 600000); // 10 min — first consolidation of large corpora needs time
 
 thalamus.boot();
 feedWorker.boot();

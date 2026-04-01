@@ -38,22 +38,9 @@ def reload_shared_state():
     epoch = read_epoch()
     if epoch > _last_epoch:
         import_graphs(mind)
-        import_cortex(mind)
+        import_cortex(mind)  # This also imports neural field from disk if available
         mind.cortex._invalidate_cache()
         mind.field.invalidate_cache()
-        mind.field.update_medians(mind.cortex.word_freq, mind._co_graph)
-        # Rebuild neural field from updated graphs
-        if mind._co_graph:
-            myel_pairs = set()
-            gen = mind.cortex.get_layer('_general')
-            cortex_conns = {}
-            if gen:
-                for src, targets in gen._connections.items():
-                    cortex_conns[src] = {t: s.weight for t, s in targets.items()}
-                    for tgt, syn in targets.items():
-                        if syn.myelinated:
-                            myel_pairs.add((src, tgt))
-            mind.neural_field.build_from_graphs(mind._co_graph, cortex_conns, myel_pairs)
         _last_epoch = epoch
 
 # Seed only if no shared state exists
