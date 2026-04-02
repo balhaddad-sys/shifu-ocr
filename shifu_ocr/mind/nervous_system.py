@@ -50,13 +50,24 @@ def ensure_dir():
 
 
 def write_json(key: str, data: Any) -> None:
-    """Write state atomically — write to temp then rename."""
+    """Write state to file. Direct write — Windows can't do atomic rename
+    when other processes have the file open."""
     ensure_dir()
     path = PATHS[key]
+    # Try atomic first, fall back to direct write
     tmp = path + '.tmp'
-    with open(tmp, 'w') as f:
-        json.dump(data, f)
-    os.replace(tmp, path)  # Atomic on most OS
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+    except OSError:
+        # Windows file lock — write directly
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        with open(path, 'w') as f:
+            json.dump(data, f)
 
 
 def read_json(key: str) -> Optional[Any]:

@@ -48,7 +48,10 @@ for line in sys.stdin:
             result = {'ok': True, **r}
         elif op == 'feed_batch':
             r = mind.feed_batch(cmd.get('texts', []), cycles=cmd.get('cycles', 1))
-            exported = export_graphs(mind)
+            try:
+                exported = export_graphs(mind)
+            except Exception:
+                exported = {'error': 'export failed, will retry'}
             result = {'ok': True, **r, 'exported': exported}
         elif op == 'stats':
             result = {'ok': True, **mind.stats()}
