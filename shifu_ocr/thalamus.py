@@ -115,6 +115,10 @@ def area_introspect(cmd):
         return {'ok': True, **mind.compass()}
     elif op == 'introspect':
         return {'ok': True, 'voice': mind.introspect()}
+    elif op == 'cry':
+        return {'ok': True, 'cry': mind.cry()}
+    elif op == 'hunger':
+        return {'ok': True, **mind.hunger_receptors()}
     elif op == 'confidence':
         return {'ok': True, **mind.confidence(cmd.get('word', ''))}
     elif op == 'hungry':

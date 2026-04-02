@@ -445,6 +445,12 @@ const server = http.createServer(async (req, res) => {
     const body = await parseBody(req);
     return jsonResponse(res, await mindCommand({ cmd: 'connect', from: body.from, to: body.to }));
   }
+  if (path === '/api/mind/cry') {
+    return jsonResponse(res, await mindCommand({ cmd: 'cry' }));
+  }
+  if (path === '/api/mind/hunger') {
+    return jsonResponse(res, await mindCommand({ cmd: 'hunger' }));
+  }
   if (path === '/api/mind/autonomous_step' && req.method === 'POST') {
     return jsonResponse(res, await mindCommand({ cmd: 'autonomous_step' }));
   }
@@ -857,19 +863,34 @@ function updateStats(){
       document.getElementById('topStats').innerHTML=vocab+'w &middot; '+myel+' myel &middot; '+(m.domains||0)+' dom';
       const progress=vocab>0?Math.min(myel/Math.max(vocab*0.3,1)*100,100):0;
       document.getElementById('learnBar').style.width=progress.toFixed(0)+'%';
-      // The baby acts on its own and tells you what it did
+      // The baby acts on its own and cries for what it needs
       try{
-        const a=await api('/api/mind/autonomous_step',{});
+        const[a,c]=await Promise.all([
+          api('/api/mind/autonomous_step',{}),
+          api('/api/mind/cry'),
+        ]);
+        const pLabel=document.getElementById('learnLabel');
         if(a.ok){
-          const pLabel=document.getElementById('learnLabel');
           const stateColors={newborn:'#7c3aed',absorbing:'#d97706',curious:'#16a34a',determined:'#6366f1',ready:'#2563eb',resting:'#64748b'};
           pLabel.style.color=stateColors[a.state]||'#64748b';
-          if(a.did==='rest'){
-            pLabel.textContent=a.state;
-          }else{
-            pLabel.textContent=a.did+': '+a.result;
-            pLabel.className='learning-label practicing';
-          }
+          pLabel.textContent=a.did==='rest'?(c.ok&&c.cry?c.cry.slice(0,50):'resting'):(a.did+': '+a.result);
+          if(a.did!=='rest')pLabel.className='learning-label practicing';
+        }
+        // BABBLE: the baby talks in chat about what it's doing
+        if(a.ok&&a.did!=='rest'){
+          const babble=document.createElement('div');
+          babble.className='msg shifu';
+          babble.innerHTML='<div class="bubble" style="font-size:11px;color:var(--dim);padding:8px 12px;background:rgba(99,102,241,0.03)"><span style="color:var(--accent);font-weight:600;font-size:9px;text-transform:uppercase;letter-spacing:1px">'+a.state+'</span> '+a.did+': '+(a.result||'')+(a.voice?' <span style="font-style:italic">&quot;'+a.voice.slice(0,80)+'&quot;</span>':'')+'</div>';
+          chat.appendChild(babble);
+          chat.scrollTop=chat.scrollHeight;
+        }
+        // CRY: if hungry, babble the need
+        if(c.ok&&c.cry&&!c.cry.includes('content')&&!c.cry.includes('empty')){
+          const cryEl=document.createElement('div');
+          cryEl.className='msg shifu';
+          cryEl.innerHTML='<div class="bubble" style="font-size:11px;color:var(--amber);padding:8px 12px;background:rgba(217,119,6,0.03)"><span style="font-weight:600">NEED:</span> '+c.cry.slice(0,120)+'</div>';
+          chat.appendChild(cryEl);
+          chat.scrollTop=chat.scrollHeight;
         }
       }catch{}
     }catch{}

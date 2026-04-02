@@ -710,13 +710,104 @@ class ShifuMind:
             'action': None,
         }
 
+    # ═══ GHRELIN — hunger receptors for specific knowledge ═══
+
+    def hunger_receptors(self) -> dict:
+        """
+        Like mechanoreceptors in the stomach detecting which nutrients are low.
+        Scans every known concept for THIN SPOKES.
+
+        Returns: {
+            'cries': [{'word': concept, 'missing': [spokes], 'need': description}],
+            'satiated': [words with full spokes],
+            'hungriest': the most urgent need,
+        }
+        """
+        all_layers = [n for n in self.cortex.layer_names if n != '_general']
+        if not all_layers:
+            return {'cries': [], 'satiated': [], 'hungriest': None}
+
+        cries = []
+        satiated = []
+
+        # Scan top words by frequency — the ones the baby uses most
+        top_words = sorted(
+            [(w, f) for w, f in self.cortex.word_freq.items() if len(w) > 4 and f > 2],
+            key=lambda x: -x[1],
+        )[:100]
+
+        for word, freq in top_words:
+            layers = self.cortex.cross_layer_activation(word)
+            present = [n for n, conns in layers.items() if conns and n != '_general']
+            missing = [n for n in all_layers if n not in present]
+
+            if not missing:
+                satiated.append(word)
+            elif present:  # Has SOME spokes but not all — this is a real gap
+                # What specifically does it need?
+                need_descriptions = {
+                    'identity': f'what {word} IS (definition)',
+                    'appearance': f'how {word} PRESENTS (symptoms/signs)',
+                    'function': f'what {word} is USED FOR (treatment/purpose)',
+                    'mechanism': f'HOW {word} WORKS (pathway/cause)',
+                    'relation': f'what {word} RELATES TO (associations/risk)',
+                }
+                needs = [need_descriptions.get(m, m) for m in missing]
+                cries.append({
+                    'word': word,
+                    'have': present,
+                    'missing': missing,
+                    'need': needs[0] if needs else 'more information',
+                    'urgency': len(missing) / max(len(all_layers), 1),
+                })
+
+        cries.sort(key=lambda x: -x['urgency'])
+        hungriest = cries[0] if cries else None
+
+        return {
+            'cries': cries[:10],
+            'satiated': satiated[:10],
+            'hungriest': hungriest,
+        }
+
+    def cry(self) -> str:
+        """
+        The baby cries for what it needs.
+        Not a generic "I'm hungry." A specific cry for specific food.
+        Like ghrelin targeting specific nutrient deficiencies.
+        """
+        receptors = self.hunger_receptors()
+        hungriest = receptors.get('hungriest')
+
+        if not hungriest:
+            if not self.cortex.word_freq:
+                return "I am empty. Feed me anything. I need to see the world."
+            return "I am content. My spokes are balanced."
+
+        word = hungriest['word']
+        need = hungriest['need']
+        have = ', '.join(hungriest['have'])
+        missing = ', '.join(hungriest['missing'])
+        urgency = hungriest['urgency']
+
+        if urgency > 0.6:
+            # Desperate cry
+            return f"I NEED to know {need}. I know {word} through {have} but {missing} is completely dark. Please feed me text about this."
+        elif urgency > 0.3:
+            # Moderate hunger
+            return f"I want to know {need}. My understanding of {word} is missing {missing}."
+        else:
+            # Mild curiosity
+            return f"I'm curious about {need}. {word} is mostly understood but {missing} would complete it."
+
     def introspect(self) -> str:
-        """The baby speaks about itself — from its own compass."""
+        """The baby speaks about itself — what it's doing and what it needs."""
         c = self.compass()
+        cry_text = self.cry()
         voice = self.conviction._voice[-1] if self.conviction._voice else None
         parts = [c['desire']]
-        if c['reason']:
-            parts.append(c['reason'])
+        if cry_text and 'content' not in cry_text:
+            parts.append(cry_text)
         if voice:
             parts.append(voice)
         return ' '.join(parts)
