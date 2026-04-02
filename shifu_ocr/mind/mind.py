@@ -322,8 +322,14 @@ class ShifuMind:
                     golgi=self.golgi, word_freqs=self.cortex.word_freq,
                 )
 
-                # RELAY through co-graph — each pathway gets its own cap
-                caps = {1: 50, 2: 80, 3: 100, 4: 100}
+                # RELAY through co-graph — PATHWAY ISOLATION
+                # PATH 1 (structural) connects to PATH 1-2 only
+                # PATH 2 (connector) connects to PATH 2-3
+                # PATH 3 (content) connects to PATH 3-4 only
+                # PATH 4 (specialist) connects to PATH 3-4 only
+                # This prevents "stroke → the" pollution.
+                # Content words only see other content words.
+                caps = {1: 30, 2: 50, 3: 100, 4: 100}
                 for p in stream.packets:
                     w = p.word
                     cap = caps.get(p.origin, 100)
@@ -331,21 +337,30 @@ class ShifuMind:
                         self._co_graph[w] = {}
                     co_w = self._co_graph[w]
                     for other_p in stream.packets:
-                        if other_p.word != w:
-                            ob = other_p.word
-                            if ob in co_w:
-                                co_w[ob] += 1
-                            elif len(co_w) < cap:
-                                co_w[ob] = 1
+                        if other_p.word == w:
+                            continue
+                        # PATHWAY ISOLATION: only connect to compatible pathways
+                        # Content (3-4) ↔ Content (3-4)
+                        # Structural (1-2) ↔ Structural (1-2)
+                        # No cross-contamination
+                        if p.origin >= 3 and other_p.origin < 3:
+                            continue  # Content word ignores structural
+                        if p.origin <= 2 and other_p.origin > 2:
+                            continue  # Structural word ignores content
+                        ob = other_p.word
+                        if ob in co_w:
+                            co_w[ob] += 1
+                        elif len(co_w) < cap:
+                            co_w[ob] = 1
                     p.relay('co_graph')
 
-                # RELAY: content + specialist get breadth
+                # RELAY: content + specialist get breadth (only from other content)
                 for p in stream.packets:
                     if p.origin >= 3:
                         b = self.cortex.breadth.get(p.word)
                         if b is not None and len(b) < 50:
                             for other_p in stream.packets[:10]:
-                                if other_p.word != p.word:
+                                if other_p.word != p.word and other_p.origin >= 3:
                                     b.add(other_p.word)
                         p.relay('breadth')
                         connections += 1
@@ -1526,10 +1541,14 @@ class ShifuMind:
                 for target, syn in targets.items():
                     if syn.myelinated:
                         continue
-                    # Check co-graph: how often do these words actually co-occur?
+                    # Only myelinate CONTENT↔CONTENT connections
+                    # The Golgi tag tells us the pathway. No tag = check length.
+                    src_path = self.golgi.get_pathway(source) if hasattr(self, 'golgi') else (3 if len(source) > 5 else 1)
+                    tgt_path = self.golgi.get_pathway(target) if hasattr(self, 'golgi') else (3 if len(target) > 5 else 1)
+                    if src_path < 3 or tgt_path < 3:
+                        continue  # Don't myelinate structural connections
                     co_weight = self._co_graph.get(source, {}).get(target, 0)
                     if co_weight >= 3:
-                        # Co-occurring 3+ times = reliable connection. Myelinate.
                         syn.myelinate()
                         myelinated_new += 1
                         self.cortex._myel_count += 1
@@ -1545,7 +1564,7 @@ class ShifuMind:
                     # This connection is myelinated. Look for myelinated extensions.
                     ext_targets = gen._connections.get(target, {})
                     for ext_target, ext_syn in ext_targets.items():
-                        if not ext_syn.myelinated or ext_target == source:
+                        if not ext_syn.myelinated or ext_target == source or len(ext_target) <= 4:
                             continue
                         # A→B→C both myelinated. Create A→→C shortcut.
                         existing = gen.get_synapse(source, ext_target)
