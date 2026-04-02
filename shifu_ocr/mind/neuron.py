@@ -104,8 +104,24 @@ class Neuron:
                 self.myelinated_targets.add(i)
 
     def reset_refractory(self):
-        """End refractory period. Neuron can fire again."""
+        """
+        End absolute refractory. Enter relative refractory.
+        Threshold temporarily raised — harder to fire again immediately.
+        Like the sodium channel recovery in real neurons.
+        """
         self.refractory = False
+        # Relative refractory: threshold raised after firing
+        self.threshold = min(self.threshold + 0.1, 0.8)
+
+    def recover(self):
+        """
+        Gradual recovery toward resting threshold.
+        Called during diastolic flow. The neuron slowly becomes
+        as excitable as before.
+        """
+        if self.threshold > 0.3:
+            self.threshold -= 0.02
+            self.threshold = max(self.threshold, 0.3)
 
     def add_connection(self, target: str, weight: float, myelinated: bool = False):
         """Grow an axon terminal to another neuron."""

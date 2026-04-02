@@ -382,11 +382,64 @@ if __name__ == '__main__':
             except (BrokenPipeError, OSError):
                 break
         else:
-            # DIASTOLE: no request — the web vibrates on its own.
-            # Cerebral autoregulation: constant perfusion between beats.
-            # One gentle vibration per diastolic cycle.
+            # ═══ DIASTOLIC FLOW — the web vibrates on its own ═══
+            #
+            # Not random vibration. GOAL-DIRECTED.
+            # PFC (conviction) decides WHAT to seed.
+            # Thalamus (brain_state) decides HOW STRONG.
+            #
+            # DELTA: replay recent episodes — strengthen memory
+            # THETA: seed conviction target — reach toward goals
+            # ALPHA: seed most-fired neuron — maintain resting tone
+            # BETA: no diastolic flow — active processing only
+
             detect_brain_state()
-            if mind.neural_field.neurons and brain_state != 'beta':
-                mind.neural_field.heartbeat()  # Diastolic flow
-                heartbeat_count += 1
-            time.sleep(0.1)  # 100ms diastolic cycle — 10 vibrations per second
+            nf = mind.neural_field
+
+            if nf.neurons and brain_state != 'beta':
+                # PFC: what to seed?
+                seed = None
+                energy = 0.3  # Default gentle pulse
+
+                if brain_state == 'delta':
+                    # REPLAY: seed from recent episodes (memory consolidation)
+                    episodes = mind.memory.episodes[-5:]
+                    if episodes:
+                        import random
+                        ep = random.choice(episodes)
+                        replay_words = [t for t in ep.tokens if t in nf.neurons]
+                        if replay_words:
+                            seed = random.choice(replay_words)
+                            energy = 0.5  # Medium — replay is important
+
+                elif brain_state == 'theta':
+                    # GOAL-DIRECTED: seed the conviction frontier
+                    purpose = mind.conviction.discover_purpose(mind)
+                    if purpose:
+                        info = mind.conviction._goals.get(purpose, {})
+                        frontier = info.get('frontier') or info.get('core')
+                        if frontier and frontier in nf.neurons:
+                            seed = frontier
+                            energy = 1.0  # Strong — reaching toward the goal
+
+                elif brain_state == 'alpha':
+                    # RESTING TONE: seed the most-fired neuron (maintain highways)
+                    best = max(nf.neurons.values(), key=lambda n: n.fire_count, default=None)
+                    if best:
+                        seed = best.word
+                        energy = 0.2  # Gentle — just maintenance
+
+                # THALAMIC GATE: execute the vibration
+                if seed and seed in nf.neurons:
+                    nf.activate(seed, energy=energy)
+                    heartbeat_count += 1
+                else:
+                    # No specific seed — random maintenance pulse
+                    nf.heartbeat()
+                    heartbeat_count += 1
+
+            # Recovery: all neurons gradually return to resting threshold
+            for n in nf.neurons.values():
+                n.recover()
+
+            time.sleep(0.1)  # 100ms diastolic cycle
