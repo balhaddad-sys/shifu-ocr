@@ -88,31 +88,14 @@ function createWorker(name, script, timeout) {
   return w;
 }
 
-// ONE NERVOUS SYSTEM — the thalamus routes everything internally.
-// But THREE PROCESSES for isolation: if feed bloats, queries survive.
-//
-// Primary: THALAMUS — handles queries, introspection, language
-// Heavy: FEED — handles feed_batch (can bloat, isolated from queries)
-// Autonomic: MAINTENANCE — handles consolidate, practice (can be slow)
-
-const thalamus = createWorker('Thalamus', 'thalamus.py', 30000);       // 30s for most ops
-const feedWorker = createWorker('Feed', 'feed_worker.py', 180000);      // 3 min for large batches
-const maintWorker = createWorker('Maintenance', 'maintenance_worker.py', 600000); // 10 min — first consolidation of large corpora needs time
-
-thalamus.boot();
-feedWorker.boot();
-maintWorker.boot();
-
-// Route: heavy ops to isolated workers, everything else to thalamus
-const FEED_OPS = new Set(['feed_batch']);
-const MAINT_OPS = new Set(['consolidate', 'practice', 'study', 'heartbeat', 'assess', 'save', 'autonomous_step']);
+// ONE BRAIN — one process, one mind, one heartbeat.
+// Heart beats always. Brain states: delta/theta/alpha/beta.
+// Feedback loops intact. No broken disk sharing.
+const brain = createWorker('Brain', 'shifu_brain.py', 180000);
+brain.boot();
 
 function mindCommand(cmd) {
-  const op = cmd.cmd || '';
-  if (FEED_OPS.has(op)) return feedWorker.command(cmd);
-  if (MAINT_OPS.has(op)) return maintWorker.command(cmd);
-  // Everything else → thalamus (the central brain)
-  return thalamus.command(cmd);
+  return brain.command(cmd);
 }
 console.log('Shifu OCR ready.');
 
@@ -464,7 +447,8 @@ const server = http.createServer(async (req, res) => {
     return jsonResponse(res, await mindCommand({ cmd: 'introspect' }));
   }
   if (path === '/api/mind/consolidate' && req.method === 'POST') {
-    return jsonResponse(res, await mindCommand({ cmd: 'consolidate' }));
+    const { focus_size } = await parseBody(req);
+    return jsonResponse(res, await mindCommand({ cmd: 'consolidate', focus_size }));
   }
   if (path === '/api/mind/practice' && req.method === 'POST') {
     const { rounds } = await parseBody(req);
@@ -866,7 +850,7 @@ function updateStats(){
       // The baby acts on its own and cries for what it needs
       try{
         const[a,c]=await Promise.all([
-          api('/api/mind/autonomous_step',{}),
+          api('/api/mind/idle',{}),
           api('/api/mind/cry'),
         ]);
         const pLabel=document.getElementById('learnLabel');
