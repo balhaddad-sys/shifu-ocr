@@ -26,9 +26,14 @@ from shifu_ocr.mind import ShifuMind
 
 SAVE_PATH = os.path.join('.state', 'shifu_brain.json')
 mind = None
-brain_state = 'alpha'  # Current brain wave state
-last_request = 0       # When was the last request?
+brain_state = 'alpha'
+last_request = 0
 heartbeat_count = 0
+
+# ═══ BARORECEPTOR — senses learning velocity, not absolute level ═══
+_myel_history = []       # Last N myelination counts (for slope detection)
+_learning_velocity = 0.0  # Slope of myelination over time
+_baroreceptor_response = 'normal'  # normal, compensate, urgent
 
 
 def boot():
@@ -60,59 +65,140 @@ def save():
         pass
 
 
+def baroreceptor():
+    """
+    Senses LEARNING VELOCITY, not absolute level.
+    Like arterial baroreceptors sensing pressure CHANGE.
+
+    Measures: myelination slope over last N heartbeats.
+    If slope flattening → compensate (raise practice intensity).
+    If slope zero for too long → urgent (force consolidation + replay).
+    """
+    global _learning_velocity, _baroreceptor_response
+
+    current_myel = mind.cortex._myel_count
+    _myel_history.append(current_myel)
+    if len(_myel_history) > 20:
+        _myel_history.pop(0)
+
+    # Compute slope: how fast is myelination growing?
+    if len(_myel_history) >= 3:
+        recent = _myel_history[-3:]
+        slope = (recent[-1] - recent[0]) / max(len(recent) - 1, 1)
+        _learning_velocity = slope
+
+        if slope > 1:
+            _baroreceptor_response = 'normal'    # Growing — all good
+        elif slope > 0:
+            _baroreceptor_response = 'compensate' # Slowing — increase drive
+        else:
+            _baroreceptor_response = 'urgent'     # Stalled — force action
+    else:
+        _baroreceptor_response = 'normal'
+
+
 def detect_brain_state():
     """
-    Baroreceptor: detect what state the brain should be in.
-    Like the cardiovascular system adjusting to demand.
+    Brain state from elapsed time + baroreceptor feedback.
+    Baroreceptor can OVERRIDE the time-based state:
+    if learning stalled (urgent), force theta even if recently active.
     """
     global brain_state
     elapsed = time.time() - last_request
+    baroreceptor()
 
+    # Time-based baseline
     if elapsed < 2:
-        brain_state = 'beta'   # Just got a request — full engagement
+        brain_state = 'beta'
     elif elapsed < 10:
-        brain_state = 'alpha'  # Recent activity — calm but aware
+        brain_state = 'alpha'
     elif elapsed < 30:
-        brain_state = 'theta'  # Idle — light practice
+        brain_state = 'theta'
     else:
-        brain_state = 'delta'  # Deep idle — heavy maintenance
+        brain_state = 'delta'
+
+    # Baroreceptor override: stalled learning → force deeper state
+    if _baroreceptor_response == 'urgent' and brain_state in ('alpha', 'beta'):
+        brain_state = 'theta'  # Force practice even during "active" time
+    elif _baroreceptor_response == 'compensate' and brain_state == 'alpha':
+        brain_state = 'theta'  # Nudge from idle to practice
 
 
 def heartbeat():
-    """The heart beats in ALL states. Always."""
+    """
+    The heart is the RHYTHM SOURCE. Not the learner.
+    Each tick schedules different work based on brain state.
+
+    BETA:  freeze topology. Only traverse. Heartbeat = just count.
+    ALPHA: light hygiene. AUC accumulate gently.
+    THETA: practice reinforcement enters AUC. Promote candidates.
+    DELTA: full maintenance. Myelinate. Prune weak. Compress.
+    """
     global heartbeat_count
     heartbeat_count += 1
-    return mind.heartbeat()
+
+    hb = {'myelinated_new': 0, 'shortcuts': 0}
+
+    if brain_state == 'beta':
+        # Freeze topology. Just count the beat.
+        pass
+
+    elif brain_state == 'alpha':
+        # Light AUC accumulation — gentle myelination
+        hb = mind.heartbeat()
+
+    elif brain_state == 'theta':
+        # Active myelination + AUC from practice
+        hb = mind.heartbeat()
+
+    elif brain_state == 'delta':
+        # FULL maintenance: myelinate + prune + consolidate
+        hb = mind.heartbeat()
+        # Prune weak connections (downselection, not just reinforcement)
+        gen = mind.cortex.get_layer('_general')
+        pruned = 0
+        if gen:
+            pruned = gen.prune(
+                mind.cortex._epoch, 0.95, 0.999, 0.1
+            )
+        hb['pruned'] = pruned
+
+    return hb
 
 
 def idle_cycle():
     """
     What the brain does between requests.
-    Depends on brain wave state.
+    Heart beats. Then state-specific processing.
+    Baroreceptor feedback adjusts behavior.
     """
     detect_brain_state()
+    hb = heartbeat()
+
+    result = {
+        'state': brain_state,
+        'baroreceptor': _baroreceptor_response,
+        'velocity': round(_learning_velocity, 2),
+    }
 
     if brain_state == 'delta':
-        # Deep maintenance: consolidate + myelinate
-        mind.consolidate(focus_size=100)
-        heartbeat()
-        return {'state': 'delta', 'did': 'consolidate+heartbeat'}
+        r = mind.consolidate(focus_size=100)
+        result['did'] = f'delta: consolidate({r.get("routed",0)}r) + prune({hb.get("pruned",0)}) + myel({hb.get("myelinated_new",0)})'
 
     elif brain_state == 'theta':
-        # Light practice: generate, score, reinforce
-        r = mind.practice(rounds=3)
-        heartbeat()
-        return {'state': 'theta', 'did': f'practice {r.get("improved",0)} reinforced'}
+        r = mind.practice(rounds=5)
+        hb2 = mind.heartbeat()  # Second heartbeat after practice to myelinate new connections
+        result['did'] = f'theta: practice({r.get("improved",0)}r) + myel({hb.get("myelinated_new",0)+hb2.get("myelinated_new",0)})'
+        if r.get('voice'):
+            result['voice'] = r['voice']
 
     elif brain_state == 'alpha':
-        # Just heartbeat — stay ready
-        hb = heartbeat()
-        return {'state': 'alpha', 'did': f'heartbeat {hb.get("myelinated_new",0)} myel'}
+        result['did'] = f'alpha: heartbeat({hb.get("myelinated_new",0)} myel)'
 
     else:
-        # Beta — shouldn't idle during beta, but heartbeat anyway
-        heartbeat()
-        return {'state': 'beta', 'did': 'heartbeat'}
+        result['did'] = f'beta: heartbeat'
+
+    return result
 
 
 def handle(cmd):

@@ -437,6 +437,9 @@ const server = http.createServer(async (req, res) => {
   if (path === '/api/mind/autonomous_step' && req.method === 'POST') {
     return jsonResponse(res, await mindCommand({ cmd: 'autonomous_step' }));
   }
+  if (path === '/api/mind/idle' && req.method === 'POST') {
+    return jsonResponse(res, await mindCommand({ cmd: 'idle' }));
+  }
   if (path === '/api/mind/heartbeat' && req.method === 'POST') {
     return jsonResponse(res, await mindCommand({ cmd: 'heartbeat' }));
   }
