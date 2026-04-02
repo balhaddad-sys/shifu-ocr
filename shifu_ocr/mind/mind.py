@@ -29,6 +29,7 @@ from .attention import Attention
 from .conviction import Conviction
 from .neuron import NeuralField
 from .golgi import Golgi
+from .packet import Packet, PacketStream
 from .language import Morphology, Syntax, Semantics, Curriculum
 
 
@@ -307,81 +308,49 @@ class ShifuMind:
 
                 connections = 0
 
-                # ═══ GOLGI APPARATUS: tag, route, process by pathway ═══
-                # Each word gets tagged with its pathway BEFORE processing.
-                # Short structural words → fast path (co-graph only).
-                # Long specialist words → deep path (identity + spokes).
-                # Like the Golgi tagging proteins for their destination.
+                # ═══ SPECIALIZE → RELAY → RE-SPECIALIZE ═══
+                #
+                # 1. SPECIALIZE: Golgi tags each word with its pathway
+                # 2. RELAY: each pathway processes with preserved provenance
+                # 3. RE-SPECIALIZE: downstream uses packets by task
+                #
+                # The packet carries: origin, modality, birth, cohort,
+                # confidence, position, lineage. Never stripped.
 
-                tags = self.golgi.tag_sentence(content, self.cortex._epoch, self.cortex.word_freq)
-                routes = self.golgi.route(tags)
+                stream = PacketStream().from_tokens(
+                    content, self.cortex._epoch,
+                    golgi=self.golgi, word_freqs=self.cortex.word_freq,
+                )
 
-                # PATH 1: Structural (len 2-3) — co-graph count only
-                for t in routes.get(1, []):
-                    w = t.word
+                # RELAY through co-graph — each pathway gets its own cap
+                caps = {1: 50, 2: 80, 3: 100, 4: 100}
+                for p in stream.packets:
+                    w = p.word
+                    cap = caps.get(p.origin, 100)
                     if w not in self._co_graph:
                         self._co_graph[w] = {}
                     co_w = self._co_graph[w]
-                    for other in content:
-                        if other != w:
-                            if other in co_w:
-                                co_w[other] += 1
-                            elif len(co_w) < 50:
-                                co_w[other] = 1
+                    for other_p in stream.packets:
+                        if other_p.word != w:
+                            ob = other_p.word
+                            if ob in co_w:
+                                co_w[ob] += 1
+                            elif len(co_w) < cap:
+                                co_w[ob] = 1
+                    p.relay('co_graph')
 
-                # PATH 2: Connector (len 4-5) — co-graph + nx
-                for t in routes.get(2, []):
-                    w = t.word
-                    if w not in self._co_graph:
-                        self._co_graph[w] = {}
-                    co_w = self._co_graph[w]
-                    for other in content:
-                        if other != w:
-                            if other in co_w:
-                                co_w[other] += 1
-                            elif len(co_w) < 80:
-                                co_w[other] = 1
+                # RELAY: content + specialist get breadth
+                for p in stream.packets:
+                    if p.origin >= 3:
+                        b = self.cortex.breadth.get(p.word)
+                        if b is not None and len(b) < 50:
+                            for other_p in stream.packets[:10]:
+                                if other_p.word != p.word:
+                                    b.add(other_p.word)
+                        p.relay('breadth')
+                        connections += 1
 
-                # PATH 3: Content (len 6-8) — co-graph + nx + breadth
-                for t in routes.get(3, []):
-                    w = t.word
-                    if w not in self._co_graph:
-                        self._co_graph[w] = {}
-                    co_w = self._co_graph[w]
-                    for other in content:
-                        if other != w:
-                            if other in co_w:
-                                co_w[other] += 1
-                            elif len(co_w) < 100:
-                                co_w[other] = 1
-                    # Breadth
-                    b = self.cortex.breadth.get(w)
-                    if b is not None and len(b) < 50:
-                        for other in content[:10]:
-                            if other != w:
-                                b.add(other)
-                    connections += 1
-
-                # PATH 4: Specialist (len 9+) — everything: co + nx + breadth + identity + syntax
-                for t in routes.get(4, []):
-                    w = t.word
-                    if w not in self._co_graph:
-                        self._co_graph[w] = {}
-                    co_w = self._co_graph[w]
-                    for other in content:
-                        if other != w:
-                            if other in co_w:
-                                co_w[other] += 1
-                            elif len(co_w) < 100:
-                                co_w[other] = 1
-                    b = self.cortex.breadth.get(w)
-                    if b is not None and len(b) < 50:
-                        for other in content[:10]:
-                            if other != w:
-                                b.add(other)
-                    connections += 1
-
-                # Nx-graph from ALL tokens (grammar needs structure words)
+                # Nx-graph from ALL tokens (grammar structure)
                 for i in range(len(tokens) - 1):
                     w = tokens[i]
                     if w not in self._nx_graph:
@@ -393,11 +362,14 @@ class ShifuMind:
                     elif len(nx_w) < 50:
                         nx_w[nxt] = 1
 
-                # Deep processing only for sentences with PATH 4 words
-                if routes.get(4):
+                # RE-SPECIALIZE: only specialist packets trigger deep processing
+                specialists = stream.by_origin(4)
+                if specialists:
                     self._extract_identity(text, content)
                     self.speaker.learn_frame(tokens)
                     self.language.syntax.feed(tokens)
+                    for p in specialists:
+                        p.relay('deep_processing')
 
                 if cycle == 0:
                     accepted += 1
@@ -751,17 +723,32 @@ class ShifuMind:
 
     def deliberate(self, query: str) -> dict:
         """
-        Multi-step reasoning with full 6-phase cognitive cycle.
-        Filters query through emergent stop words so "what", "the", "is"
-        don't drown out actual content words like "stroke", "dopamine".
+        specialize → relay → re-specialize
+
+        Query tokens become PACKETS with provenance.
+        Golgi tags them. Co-graph relays them. Spokes re-specialize.
+        The thinker receives content packets sorted by confidence.
+        Structural packets are used for grammar, not for meaning.
         """
         tokens = _tokenize(query)
-        # NO FILTERING. No heuristics. No stop word lists.
-        # Pass ALL words to the thinker. The FIELD decides what matters.
-        # Strong, specific connections (stroke→brain) amplify.
-        # Weak, diffuse connections (the→everything) get inhibited.
-        # The landscape IS the filter.
-        content = [t for t in tokens if len(t) > 1]
+
+        # SPECIALIZE: tag every token
+        stream = PacketStream().from_tokens(
+            tokens, self.cortex._epoch,
+            golgi=self.golgi, word_freqs=self.cortex.word_freq,
+        )
+        # RELAY: through co-graph (boosts connected words)
+        stream.relay_co_graph(self._co_graph)
+        # RELAY: through spokes (routes to semantic destinations)
+        stream.relay_spokes(self._co_graph)
+
+        # RE-SPECIALIZE: content packets become the focus
+        # Sorted by confidence — words the system KNOWS get priority
+        content_packets = stream.by_confidence(min_conf=0.0)
+        content = [p.word for p in content_packets if p.is_content()]
+        if not content:
+            # Fallback: use all packets sorted by confidence
+            content = [p.word for p in content_packets if len(p.word) > 1][:10]
         if not content:
             return {'focus': [], 'retrieved': [], 'coherence': 0.0,
                     'steps': 0, 'converged': False, 'trace': [],
