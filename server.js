@@ -22,97 +22,14 @@ const pipeline = shifu.createPipeline();
 const feedback = new FeedbackLoop(shifu, { stateDir: '.state' });
 const metrics = new MetricsTracker({ stateDir: '.state' });
 const ingestor = new DocumentIngestor(pipeline, { outputDir: '.ingested' });
-
-// ── THREE NERVOUS SYSTEMS ────────────────────────────────────
-// Enteric (feed): absorbs recklessly, can bloat
-// Cerebral (query): answers fast, stays light
-// Autonomic (maintenance): consolidates, practices, myelinates
-const { spawn } = require('child_process');
-const path = require('path');
-const readline = require('readline');
-
-function createWorker(name, script, timeout) {
-  const w = { process: null, ready: false, pending: {}, seq: 0, restarts: 0, name, timeout: timeout || 120000 };
-
-  w.boot = function() {
-    w.process = spawn('python', [path.join(__dirname, 'shifu_ocr', script)], { cwd: __dirname, stdio: ['pipe', 'pipe', 'pipe'] });
-    const rl = readline.createInterface({ input: w.process.stdout });
-    rl.on('line', (line) => {
-      try {
-        const data = JSON.parse(line);
-        if (data.status === 'ready') {
-          w.ready = true;
-          w.restarts = 0;
-          console.log('  ' + name + ' ready: ' + (data.vocabulary || 0) + 'w');
-          return;
-        }
-        const id = data._id;
-        if (id !== undefined && w.pending[id]) {
-          const { resolve, timer } = w.pending[id];
-          clearTimeout(timer);
-          delete w.pending[id];
-          delete data._id;
-          resolve(data);
-        }
-      } catch (e) {}
-    });
-    w.process.stderr.on('data', (d) => {
-      const msg = d.toString().trim();
-      if (msg) console.warn('  ' + name + ':', msg.slice(0, 150));
-    });
-    w.process.on('exit', (code) => {
-      console.warn(name + ' exited:', code);
-      w.ready = false;
-      for (const id of Object.keys(w.pending)) {
-        w.pending[id].resolve({ ok: false, error: name + ' crashed' });
-        clearTimeout(w.pending[id].timer);
-      }
-      w.pending = {};
-      if (w.restarts < 3) { w.restarts++; setTimeout(() => w.boot(), 2000); }
-    });
-  };
-
-  w.command = function(cmd) {
-    return new Promise((resolve) => {
-      if (!w.process || !w.ready) return resolve({ ok: false, error: name + ' not ready' });
-      const id = ++w.seq;
-      const timer = setTimeout(() => {
-        if (w.pending[id]) { delete w.pending[id]; resolve({ ok: false, error: name + ' timeout' }); }
-      }, w.timeout);
-      w.pending[id] = { resolve, timer };
-      cmd._id = id;
-      w.process.stdin.write(JSON.stringify(cmd) + '\n');
-    });
-  };
-
-  return w;
-}
-
-// ONE BRAIN — one process, one mind, one heartbeat.
-// Heart beats always. Brain states: delta/theta/alpha/beta.
-// Feedback loops intact. No broken disk sharing.
-const brain = createWorker('Brain', 'shifu_brain.py', 180000);
-brain.boot();
-
-function mindCommand(cmd) {
-  return brain.command(cmd);
-}
 console.log('Shifu OCR ready.');
 
-// Prevent crashes from killing the server
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception (server survived):', err.message);
-});
-process.on('unhandledRejection', (err) => {
-  console.error('Unhandled rejection (server survived):', err?.message || err);
-});
-
 function jsonResponse(res, data, status = 200) {
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:3737' });
   res.end(JSON.stringify(data, null, 2));
 }
 
-const MAX_BODY_SIZE = Infinity; // No size limit — Shifu eats everything
+const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
 const MAX_TEXT_LENGTH = 100000; // 100k chars for text inputs
 
 function parseBody(req) {
@@ -121,6 +38,11 @@ function parseBody(req) {
     let size = 0;
     req.on('error', err => reject(err));
     req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY_SIZE) {
+        req.destroy();
+        return reject(new Error('Request body too large'));
+      }
       body += chunk;
     });
     req.on('end', () => {
@@ -137,19 +59,7 @@ const server = http.createServer(async (req, res) => {
 
   // CORS preflight
   if (req.method === 'OPTIONS') {
-    res.writeHead(200, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Accept',
-      'Access-Control-Max-Age': '86400',
-    });
-    res.end();
-    return;
-  }
-
-  // Favicon — return empty to suppress browser 404
-  if (path === '/favicon.ico') {
-    res.writeHead(204);
+    res.writeHead(200, { 'Access-Control-Allow-Origin': 'http://localhost:3737', 'Access-Control-Allow-Methods': 'GET,POST', 'Access-Control-Allow-Headers': 'Content-Type' });
     res.end();
     return;
   }
@@ -293,6 +203,11 @@ const server = http.createServer(async (req, res) => {
     await new Promise((resolve, reject) => {
       req.on('error', err => reject(err));
       req.on('data', chunk => {
+        uploadSize += chunk.length;
+        if (uploadSize > MAX_BODY_SIZE) {
+          req.destroy();
+          return reject(new Error('Upload too large'));
+        }
         chunks.push(chunk);
       });
       req.on('end', resolve);
@@ -383,106 +298,6 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // ── Mind API routes ────────────────────────────────────────
-  if (path === '/api/mind/stats') return jsonResponse(res, await mindCommand({ cmd: 'stats' }));
-  if (path === '/api/mind/hungry') return jsonResponse(res, await mindCommand({ cmd: 'hungry' }));
-
-  if (path.startsWith('/api/mind/describe/')) {
-    const word = decodeURIComponent(path.split('/').pop());
-    return jsonResponse(res, await mindCommand({ cmd: 'describe', word }));
-  }
-  if (path.startsWith('/api/mind/generate/')) {
-    const word = decodeURIComponent(path.split('/').pop());
-    return jsonResponse(res, await mindCommand({ cmd: 'generate', word }));
-  }
-  if (path.startsWith('/api/mind/activate/')) {
-    const word = decodeURIComponent(path.split('/').pop());
-    return jsonResponse(res, await mindCommand({ cmd: 'activate', word }));
-  }
-  if (path.startsWith('/api/mind/confidence/')) {
-    const word = decodeURIComponent(path.split('/').pop());
-    return jsonResponse(res, await mindCommand({ cmd: 'confidence', word }));
-  }
-
-  if (path === '/api/mind/feed' && req.method === 'POST') {
-    const { text } = await parseBody(req);
-    return jsonResponse(res, await mindCommand({ cmd: 'feed', text }));
-  }
-  if (path === '/api/mind/feed-batch' && req.method === 'POST') {
-    const { texts } = await parseBody(req);
-    return jsonResponse(res, await mindCommand({ cmd: 'feed_batch', texts }));
-  }
-  if (path === '/api/mind/score' && req.method === 'POST') {
-    const { text } = await parseBody(req);
-    return jsonResponse(res, await mindCommand({ cmd: 'score', text }));
-  }
-  if (path === '/api/mind/candidates' && req.method === 'POST') {
-    const { candidates, context } = await parseBody(req);
-    return jsonResponse(res, await mindCommand({ cmd: 'candidates', candidates, context }));
-  }
-  if (path === '/api/mind/deliberate' && req.method === 'POST') {
-    const { query } = await parseBody(req);
-    return jsonResponse(res, await mindCommand({ cmd: 'deliberate', query }));
-  }
-  if (path === '/api/mind/connect' && req.method === 'POST') {
-    const body = await parseBody(req);
-    return jsonResponse(res, await mindCommand({ cmd: 'connect', from: body.from, to: body.to }));
-  }
-  if (path === '/api/mind/cry') {
-    return jsonResponse(res, await mindCommand({ cmd: 'cry' }));
-  }
-  if (path === '/api/mind/hunger') {
-    return jsonResponse(res, await mindCommand({ cmd: 'hunger' }));
-  }
-  if (path === '/api/mind/autonomous_step' && req.method === 'POST') {
-    return jsonResponse(res, await mindCommand({ cmd: 'autonomous_step' }));
-  }
-  if (path === '/api/mind/idle' && req.method === 'POST') {
-    return jsonResponse(res, await mindCommand({ cmd: 'idle' }));
-  }
-  if (path === '/api/mind/heartbeat' && req.method === 'POST') {
-    return jsonResponse(res, await mindCommand({ cmd: 'heartbeat' }));
-  }
-  if (path === '/api/mind/compass') {
-    return jsonResponse(res, await mindCommand({ cmd: 'compass' }));
-  }
-  if (path === '/api/mind/introspect') {
-    return jsonResponse(res, await mindCommand({ cmd: 'introspect' }));
-  }
-  if (path === '/api/mind/consolidate' && req.method === 'POST') {
-    const { focus_size } = await parseBody(req);
-    return jsonResponse(res, await mindCommand({ cmd: 'consolidate', focus_size }));
-  }
-  if (path === '/api/mind/practice' && req.method === 'POST') {
-    const { rounds } = await parseBody(req);
-    return jsonResponse(res, await mindCommand({ cmd: 'practice', rounds: rounds || 10 }));
-  }
-  if (path === '/api/mind/study' && req.method === 'POST') {
-    const { rounds, level } = await parseBody(req);
-    return jsonResponse(res, await mindCommand({ cmd: 'study', rounds: rounds || 5, level: level || null }));
-  }
-  if (path === '/api/mind/assess' && req.method === 'POST') {
-    return jsonResponse(res, await mindCommand({ cmd: 'assess' }));
-  }
-  if (path.startsWith('/api/mind/decompose/')) {
-    const word = decodeURIComponent(path.split('/').pop());
-    return jsonResponse(res, await mindCommand({ cmd: 'decompose', word }));
-  }
-  if (path.startsWith('/api/mind/synonyms/')) {
-    const word = decodeURIComponent(path.split('/').pop());
-    return jsonResponse(res, await mindCommand({ cmd: 'synonyms', word }));
-  }
-  if (path.startsWith('/api/mind/semantic/')) {
-    const word = decodeURIComponent(path.split('/').pop());
-    return jsonResponse(res, await mindCommand({ cmd: 'explain_semantic', word }));
-  }
-  if (path === '/api/mind/language') {
-    return jsonResponse(res, await mindCommand({ cmd: 'language_stats' }));
-  }
-  if (path === '/api/mind/save' && req.method === 'POST') {
-    return jsonResponse(res, await mindCommand({ cmd: 'save' }));
-  }
-
   jsonResponse(res, { error: 'not found' }, 404);
   } catch (err) {
     console.warn('Request error:', err.message);
@@ -494,397 +309,409 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// ── Unified Chat UI ──────────────────────────────────────────────
-
-// ── Unified Chat UI ──────────────────────────────────────────────
+// ── HTML UI ───────────────────────────────────────────────────────
 const HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>Shifu</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shifu OCR v2.0.0</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#f8f9fa;--surface:#fff;--accent:#6366f1;--accent2:#4f46e5;--green:#16a34a;--blue:#2563eb;--amber:#d97706;--red:#dc2626;--purple:#7c3aed;--text:#1e293b;--dim:#64748b;--faint:#cbd5e1;--user-bg:#eef2ff;--shifu-bg:#f0fdf4;--border:#e2e8f0;--radius:16px}
-html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',system-ui,sans-serif}
-body{display:flex;flex-direction:column}
-.top{padding:12px 20px;display:flex;align-items:center;gap:16px;background:var(--surface);border-bottom:1px solid var(--border);flex:0 0 auto;z-index:10;box-shadow:0 1px 3px rgba(0,0,0,0.05)}
-.logo{font-size:20px;font-weight:700;color:var(--accent);letter-spacing:2px}
-.stats{font-size:11px;color:var(--dim);line-height:1.4}
-.learning-bar{flex:1;max-width:200px;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
-.learning-bar-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--green));border-radius:3px;transition:width 1s ease}
-.learning-label{font-size:10px;color:var(--dim);white-space:nowrap}
-.chat{flex:1 1 0;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px 20px 100px 20px;display:flex;flex-direction:column;gap:12px}
-.chat::-webkit-scrollbar{width:4px}
-.chat::-webkit-scrollbar-thumb{background:var(--faint);border-radius:2px}
-.msg{max-width:85%;animation:fadeIn .25s ease}
-.msg.user{align-self:flex-end}
-.msg.shifu{align-self:flex-start}
-.bubble{padding:14px 18px;border-radius:var(--radius);font-size:14px;line-height:1.7;word-wrap:break-word}
-.msg.user .bubble{background:var(--user-bg);border-bottom-right-radius:4px;color:#3730a3}
-.msg.shifu .bubble{background:var(--shifu-bg);border-bottom-left-radius:4px;color:#14532d}
-.trace{font-size:11px;color:var(--dim);margin-top:8px;padding:8px 12px;background:rgba(99,102,241,0.05);border-radius:8px;line-height:1.7;border:1px solid rgba(99,102,241,0.1)}
-.trace .lbl{color:var(--accent);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
-.word{display:inline-block;padding:2px 6px;margin:1px;border-radius:4px;font-size:13px}
-.word.exact{background:#dcfce7;color:#166534}
-.word.high_confidence,.word.mind_corrected{background:#dbeafe;color:#1e40af}
-.word.corrected_verify{background:#fef3c7;color:#92400e}
-.word.low_confidence,.word.unknown{background:#fee2e2;color:#991b1b}
-.word.number,.word.dosage,.word.punctuation,.word.passthrough,.word.room_code,.word.title,.word.short,.word.clean,.word.short_unknown{background:#f1f5f9;color:#475569}
-.word.digraph_corrected{background:#ede9fe;color:#5b21b6}
-.word.DANGER_medication_ambiguity{background:#dc2626;color:white;font-weight:bold}
-.flag{display:inline-block;padding:3px 8px;margin:2px;border-radius:4px;font-size:11px;font-weight:600}
-.flag.danger{background:#fecaca;color:#991b1b}
-.flag.warning{background:#fef3c7;color:#92400e}
-.decision{display:inline-block;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:700;margin-top:6px}
-.decision.accept{background:#dcfce7;color:#166534}
-.decision.verify{background:#fef3c7;color:#92400e}
-.decision.reject{background:#fee2e2;color:#991b1b}
-.bottom{position:fixed;bottom:0;left:0;right:0;z-index:20;padding:10px 16px;background:var(--surface);border-top:1px solid var(--border);display:flex;gap:10px;align-items:flex-end;box-shadow:0 -1px 3px rgba(0,0,0,0.05)}
-.bottom textarea{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:24px;padding:12px 18px;color:var(--text);font-size:14px;resize:none;height:44px;max-height:120px;font-family:inherit;outline:none;transition:border-color .2s}
-.bottom textarea:focus{border-color:var(--accent)}
-.bottom textarea::placeholder{color:var(--faint)}
-.btn{width:40px;height:40px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;transition:all .15s}
-.btn-send{background:var(--accent);color:#fff;font-weight:700;font-size:18px}
-.btn-send:hover{background:var(--accent2)}
-@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
-.practicing{animation:pulse 2s ease-in-out infinite;color:var(--green) !important}
-@media(max-width:600px){.chat{padding:10px 12px 100px 12px}.bubble{font-size:13px;padding:10px 14px}}
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0e17; color: #e0e6f0; min-height: 100vh; }
+  .header { background: linear-gradient(135deg, #1a1f35, #0d1220); padding: 20px 30px; border-bottom: 1px solid #2a3050; }
+  .header h1 { font-size: 1.5rem; color: #7eb8ff; }
+  .header p { font-size: 0.85rem; color: #667; margin-top: 4px; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+  .tab { padding: 10px 20px; background: #151a2e; border: 1px solid #2a3050; border-radius: 8px 8px 0 0; cursor: pointer; color: #889; font-size: 0.9rem; }
+  .tab.active { background: #1e2540; color: #7eb8ff; border-bottom-color: #1e2540; }
+  .panel { display: none; background: #1e2540; border: 1px solid #2a3050; border-radius: 0 8px 8px 8px; padding: 24px; }
+  .panel.active { display: block; }
+  label { display: block; font-size: 0.8rem; color: #778; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+  input, textarea { width: 100%; padding: 10px 14px; background: #0d1220; border: 1px solid #2a3050; border-radius: 6px; color: #e0e6f0; font-size: 0.95rem; font-family: 'Consolas', monospace; margin-bottom: 12px; }
+  textarea { min-height: 80px; resize: vertical; }
+  button { padding: 10px 24px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 600; }
+  button:hover { background: #1d4ed8; }
+  button.secondary { background: #374151; }
+  button.secondary:hover { background: #4b5563; }
+  button.danger { background: #dc2626; }
+  .result { background: #0d1220; border: 1px solid #2a3050; border-radius: 8px; padding: 16px; margin-top: 16px; font-family: 'Consolas', monospace; font-size: 0.85rem; white-space: pre-wrap; max-height: 500px; overflow-y: auto; }
+  .word { display: inline-block; padding: 2px 6px; margin: 2px; border-radius: 4px; }
+  .word.exact { background: #064e3b; color: #6ee7b7; }
+  .word.high_confidence { background: #164e63; color: #67e8f9; }
+  .word.corrected_verify, .word.verify { background: #713f12; color: #fde68a; }
+  .word.low_confidence, .word.unknown { background: #7f1d1d; color: #fca5a5; }
+  .word.number, .word.title, .word.dosage, .word.room_code, .word.short, .word.punctuation, .word.passthrough { background: #1e293b; color: #94a3b8; }
+  .word.digraph_corrected { background: #312e81; color: #c4b5fd; }
+  .word.DANGER_medication_ambiguity { background: #dc2626; color: white; font-weight: bold; }
+  .flag { display: inline-block; padding: 3px 8px; margin: 2px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
+  .flag.danger { background: #dc2626; color: white; }
+  .flag.warning { background: #d97706; color: white; }
+  .flag.error { background: #ea580c; color: white; }
+  .decision { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 0.85rem; font-weight: 700; margin-top: 8px; }
+  .decision.accept { background: #064e3b; color: #6ee7b7; }
+  .decision.verify { background: #713f12; color: #fde68a; }
+  .decision.reject { background: #7f1d1d; color: #fca5a5; }
+  .row-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .stat { display: inline-block; background: #0d1220; padding: 8px 16px; border-radius: 6px; margin: 4px; }
+  .stat .val { font-size: 1.3rem; font-weight: 700; color: #7eb8ff; }
+  .stat .lbl { font-size: 0.7rem; color: #667; text-transform: uppercase; }
+  .actions { display: flex; gap: 8px; margin-top: 12px; }
 </style>
 </head>
 <body>
-<div class="top">
-  <div class="logo">SHIFU</div>
-  <div class="stats" id="topStats">booting...</div>
-  <div class="learning-bar"><div class="learning-bar-fill" id="learnBar" style="width:0%"></div></div>
-  <div class="learning-label" id="learnLabel">-</div>
+<div class="header">
+  <h1>Shifu OCR v2.0.0</h1>
+  <p>Medical OCR post-processing with adaptive learning, safety flags, and structural invariance</p>
 </div>
-<div class="chat" id="chat">
-  <div class="msg shifu"><div class="bubble">
-    <div style="color:var(--accent);font-weight:600">Model the medium. Detect the perturbation. Let experience shape the landscape.</div>
-    <div style="font-size:12px;color:var(--dim);margin-top:8px">
-      <b>Ask</b> anything &middot; <b>Paste OCR text</b> to correct &middot; <b>Feed</b> text to teach me<br>
-      <span style="color:var(--faint)">/correct &middot; /describe &middot; /generate &middot; /connect &middot; /stats &middot; /feed &middot; /practice &middot; /study &middot; /assess &middot; /roots &middot; /meaning &middot; /synonyms</span>
+<div class="container">
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('correct')">Correct Text</div>
+    <div class="tab" onclick="switchTab('ward')">Ward Census</div>
+    <div class="tab" onclick="switchTab('learn')">Learn</div>
+    <div class="tab" onclick="switchTab('upload')">Upload File</div>
+    <div class="tab" onclick="switchTab('structure')">Structure</div>
+    <div class="tab" onclick="switchTab('stats')">Stats</div>
+  </div>
+
+  <!-- Tab 1: Correct Text -->
+  <div id="correct" class="panel active">
+    <label>OCR Text (paste raw OCR output)</label>
+    <textarea id="ocrInput" placeholder="e.g. Levetiracetarn 5OOmg for seizure prophylaxis">Levetiracetarn 5OOmg for seizure prophylaxis</textarea>
+    <button onclick="correctText()">Correct</button>
+    <div id="correctResult" class="result" style="display:none"></div>
+  </div>
+
+  <!-- Tab 2: Ward Census Row -->
+  <div id="ward" class="panel">
+    <label>Ward Census Row (fill in columns)</label>
+    <div class="row-inputs">
+      <div><label>Patient</label><input id="wPatient" placeholder="e.g. Bader A1athoub"></div>
+      <div><label>Diagnosis</label><input id="wDiagnosis" placeholder="e.g. lschemic str0ke"></div>
+      <div><label>Doctor</label><input id="wDoctor" placeholder="e.g. Dr. Hisharn"></div>
+      <div><label>Medication</label><input id="wMedication" placeholder="e.g. Levetiracetarn"></div>
+      <div><label>Room</label><input id="wRoom" placeholder="e.g. 3O2A"></div>
+      <div><label>Status</label><input id="wStatus" placeholder="e.g. Red"></div>
     </div>
-  </div></div>
+    <div class="actions">
+      <button onclick="correctRow()">Correct Row</button>
+    </div>
+    <div id="wardResult" class="result" style="display:none"></div>
+  </div>
+
+  <!-- Tab 3: Learn -->
+  <div id="learn" class="panel">
+    <label>Teach the system (OCR vs Confirmed)</label>
+    <div class="row-inputs">
+      <div>
+        <label>OCR Column</label><input id="learnCol" value="Diagnosis">
+        <label>OCR Text</label><input id="learnOcr" placeholder="e.g. str0ke">
+      </div>
+      <div>
+        <label>&nbsp;</label><input disabled style="visibility:hidden">
+        <label>Confirmed Text</label><input id="learnConfirmed" placeholder="e.g. stroke">
+      </div>
+    </div>
+    <div class="actions">
+      <button onclick="learnCorrection()">Learn</button>
+      <button class="danger" onclick="undoLearn()">Undo Last</button>
+    </div>
+    <div id="learnResult" class="result" style="display:none"></div>
+    <div style="margin-top:16px"><label>Correction History</label></div>
+    <div id="historyResult" class="result" style="display:none"></div>
+  </div>
+
+  <!-- Tab: Upload File -->
+  <div id="upload" class="panel">
+    <label>Upload a document (PDF, CSV, TSV, TXT, or image)</label>
+    <div style="border: 2px dashed #2a3050; border-radius: 8px; padding: 40px; text-align: center; margin-bottom: 16px; cursor: pointer" id="dropZone" onclick="document.getElementById('fileInput').click()" ondrop="handleDrop(event)" ondragover="event.preventDefault(); this.style.borderColor='#7eb8ff'" ondragleave="this.style.borderColor='#2a3050'">
+      <p style="color: #667; font-size: 1rem;">Drop a file here or click to browse</p>
+      <p style="color: #445; font-size: 0.8rem; margin-top: 8px;">Supports: PDF, CSV, TSV, TXT, PNG, JPG, TIFF, BMP</p>
+      <input type="file" id="fileInput" style="display:none" accept=".pdf,.csv,.tsv,.txt,.png,.jpg,.jpeg,.tiff,.tif,.bmp" onchange="uploadFile(this.files[0])">
+    </div>
+    <div id="uploadStatus" style="display:none; color: #7eb8ff; margin-bottom: 12px;"></div>
+    <div id="uploadResult" class="result" style="display:none"></div>
+  </div>
+
+  <!-- Tab 4: Structure -->
+  <div id="structure" class="panel">
+    <label>Compare Structural Invariance</label>
+    <input id="structA" placeholder="e.g. doctor treats patient with medication">
+    <input id="structB" placeholder="e.g. patient was treated by the doctor with medication">
+    <div class="actions">
+      <button onclick="compareStructure()">Compare</button>
+      <button class="secondary" onclick="extractRoles()">Extract Roles (sentence A)</button>
+    </div>
+    <div id="structResult" class="result" style="display:none"></div>
+  </div>
+
+  <!-- Tab 5: Stats -->
+  <div id="stats" class="panel">
+    <button onclick="loadStats()">Refresh Stats</button>
+    <div id="statsResult" class="result" style="display:none"></div>
+  </div>
 </div>
-<div class="bottom">
-  <button class="btn" style="background:var(--bg);border:1px solid var(--border);color:var(--accent);font-size:18px;font-weight:700" onclick="document.getElementById('fileInput').click()" title="Upload PDFs / text files">+</button>
-  <input type="file" id="fileInput" accept=".pdf,.txt,.csv,.tsv,.md,.html,.json,text/*,application/pdf" multiple onchange="handleFiles(event)" style="display:none">
-  <textarea id="input" placeholder="Ask Shifu anything..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'"></textarea>
-  <button class="btn btn-send" onclick="send()">&rarr;</button>
-</div>
+
 <script>
-const chat=document.getElementById('chat'),inp=document.getElementById('input');
-function addMsg(h,w){const d=document.createElement('div');d.className='msg '+w;d.innerHTML='<div class="bubble">'+h+'</div>';chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
-async function api(p,b){const o=b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{};return(await fetch(p,o)).json()}
-function rw(ws){return(ws||[]).map(w=>{const c=w.flag||'unknown',t=w.original!==w.corrected?w.original+' \\u2192 '+w.corrected:w.corrected;return'<span class="word '+c+'" title="'+t+' ('+c+')">'+w.corrected+'</span>'}).join(' ')}
-function rf(fs){if(!fs||!fs.length)return'';return'<div style="margin-top:6px">'+fs.map(f=>'<span class="flag '+(f.severity||'warning')+'">'+f.message+'</span>').join(' ')+'</div>'}
+const API = '';
 
-function detect(t){
-  t=t.trim();
-  if(t.startsWith('/correct '))return{i:'correct',p:t.slice(9)};
-  if(t.startsWith('/feed '))return{i:'feed',p:t.slice(6)};
-  if(t.startsWith('/describe '))return{i:'describe',p:t.slice(10).trim().split(/\\s+/)[0]};
-  if(t.startsWith('/generate '))return{i:'generate',p:t.slice(10).trim().split(/\\s+/)[0]};
-  if(t.startsWith('/connect ')){const p=t.slice(9).trim().split(/\\s+/);return{i:'connect',f:p[0],t:p[1]||p[0]}}
-  if(t==='/stats'||t.startsWith('/stats'))return{i:'stats'};
-  if(t==='/compass'||t==='/how are you'||t==='/what do you need')return{i:'compass'};
-  if(t==='/consolidate')return{i:'consolidate'};
-  if(t.startsWith('/practice'))return{i:'practice',p:parseInt(t.split(/\\s+/)[1])||10};
-  if(t.startsWith('/study'))return{i:'study',p:parseInt(t.split(/\\s+/)[1])||5};
-  if(t==='/assess')return{i:'assess'};
-  if(t.startsWith('/roots ')||t.startsWith('/decompose '))return{i:'decompose',p:t.split(/\\s+/)[1]};
-  if(t.startsWith('/synonyms '))return{i:'synonyms',p:t.split(/\\s+/)[1]};
-  if(t.startsWith('/meaning '))return{i:'meaning',p:t.split(/\\s+/)[1]};
-  if(t.startsWith('/score '))return{i:'score',p:t.slice(7)};
-  if(/^(what|how|why|describe|explain|define|tell|discuss)\\b/i.test(t))return{i:'deliberate',p:t};
-  if(t.endsWith('?')||/^(is|are|does|can|should|when|which)\\b/i.test(t))return{i:'deliberate',p:t};
-  return{i:'correct',p:t};
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(name).classList.add('active');
+  event.target.classList.add('active');
 }
 
-function send_action(action){
-  // The baby asked to do something — execute it
-  if(action==='consolidate')inp.value='/consolidate';
-  else if(action==='practice')inp.value='/practice 5';
-  else if(action==='conviction')inp.value='/practice 3';
-  else inp.value='/'+action;
-  send();
+async function api(path, body) {
+  const res = await fetch(API + path, {
+    method: body ? 'POST' : 'GET',
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return res.json();
 }
 
-async function send(){
-  const text=inp.value.trim();if(!text)return;
-  inp.value='';inp.style.height='44px';
-  addMsg('<div style="white-space:pre-wrap">'+text.replace(/</g,'&lt;')+'</div>','user');
-  const d=detect(text),ld=addMsg('<div style="color:var(--dim);font-style:italic">Thinking...</div>','shifu');
-  let h='';
-  try{
-    if(d.i==='correct'){
-      // Fire correction + mind score in PARALLEL — don't wait sequentially
-      const [r,ms]=await Promise.all([api('/api/correct',{text:d.p}),api('/api/mind/score',{text:d.p}).catch(()=>({ok:false}))]);
-      h='<div style="margin-bottom:6px"><b>Corrected:</b></div><div>'+rw(r.words)+'</div>'+rf(r.safetyFlags);
-      if(r.decision)h+='<div><span class="decision '+r.decision+'">'+r.decision.toUpperCase()+'</span></div>';
-      if(ms.ok)h+='<div class="trace"><span class="lbl">mind coherence</span> '+(ms.coherence||0).toFixed(3)+'</div>';
-    }
-    else if(d.i==='deliberate'){
-      // The baby acts autonomously now. No forced consolidation before questions.
-      // The autonomous_step in the stats poll handles consolidation when needed.
-      const r=await api('/api/mind/deliberate',{query:d.p});
-      if(r.ok){
-        h='<div style="margin-bottom:4px"><b>Focus:</b> '+(r.focus||[]).join(', ')+'</div>';
-        h+='<div><b>Retrieved:</b> '+(r.retrieved||[]).map(x=>x.word).join(', ')+'</div>';
-        h+='<div class="trace"><span class="lbl">coherence</span> '+(r.coherence||0).toFixed(3)+' &middot; <span class="lbl">steps</span> '+(r.steps||0)+' &middot; <span class="lbl">converged</span> '+(r.converged?'yes':'no')+'</div>';
-        // Pick focus word with highest confidence (the one the mind KNOWS best)
-        let fw=null,fwScore=-1;
-        for(const w of (r.focus||[]).slice(0,6)){
-          if(w.length<4)continue;
-          try{const c=await api('/api/mind/confidence/'+w);if(c.score>fwScore){fwScore=c.score;fw=w;}}catch{}
-        }
-        if(fw&&fwScore>5){try{const ds=await api('/api/mind/describe/'+fw);if(ds.ok)h+='<div style="margin-top:8px">'+ds.description+'</div>'}catch{}}
-      }else{const r2=await api('/api/score',{text:d.p});h='<div class="trace"><span class="lbl">coherence</span> '+(r2.coherence||0).toFixed(3)+'</div>'}
-    }
-    else if(d.i==='feed'){
-      const[r1,r2]=await Promise.all([api('/api/mind/feed',{text:d.p}),api('/api/score',{text:d.p})]);
-      h='<div><b>Fed:</b> '+(r1.accepted?'accepted':'rejected')+'</div>';
-      if(r1.domain)h+='<div class="trace"><span class="lbl">domain</span> '+r1.domain+' &middot; <span class="lbl">quality</span> '+(r1.quality||0).toFixed(2)+'</div>';
-    }
-    else if(d.i==='describe'){const r=await api('/api/mind/describe/'+d.p);h='<div>'+(r.description||'Unknown.')+'</div>'}
-    else if(d.i==='generate'){const r=await api('/api/mind/generate/'+d.p);h='<div style="font-style:italic;color:var(--accent)">'+(r.text||'...')+'</div>'}
-    else if(d.i==='connect'){const r=await api('/api/mind/connect',{from:d.f,to:d.t});h=r.connected&&r.path?'<div>'+r.path.join(' \\u2192 ')+'</div>':'<div style="color:var(--dim)">No path found</div>'}
-    else if(d.i==='score'){const[js,m]=await Promise.all([api('/api/score',{text:d.p}),api('/api/mind/score',{text:d.p})]);h='<div class="trace"><span class="lbl">js</span> '+(js.coherence||0).toFixed(3)+' &middot; <span class="lbl">mind</span> '+(m.coherence||0).toFixed(3)+'</div>'}
-    else if(d.i==='consolidate'){
-      const r=await api('/api/mind/consolidate',{});
-      // Run heartbeats to myelinate the new connections
-      let totalMyel=0,totalShort=0;
-      for(let hb=0;hb<5;hb++){
-        const hr=await api('/api/mind/heartbeat',{});
-        totalMyel+=(hr.myelinated_new||0);
-        totalShort+=(hr.shortcuts||0);
-      }
-      h='<div><b>Consolidated:</b> '+r.routed+' routed, '+r.identities+' identities, '+r.pruned+' pruned</div>';
-      h+='<div class="trace"><span class="lbl">myelinated</span> '+totalMyel+' new &middot; <span class="lbl">shortcuts</span> '+totalShort+' saltatory paths</div>';
-      if(r.morphology)h+='<div class="trace"><span class="lbl">morphology</span> '+r.morphology.roots+' roots, '+r.morphology.prefixes+' prefixes, '+r.morphology.suffixes+' suffixes</div>';
-    }
-    else if(d.i==='compass'){
-      const c=await api('/api/mind/compass');
-      if(c.ok){
-        const stateColors={newborn:'var(--purple)',absorbing:'var(--amber)',curious:'var(--green)',determined:'var(--accent)',hungry:'var(--amber)',resting:'var(--dim)'};
-        h='<div style="margin-bottom:8px"><span style="color:'+(stateColors[c.state]||'var(--dim)')+';font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:1px">'+c.state+'</span></div>';
-        h+='<div style="font-size:15px;font-weight:500;margin-bottom:6px">'+c.desire+'</div>';
-        h+='<div style="color:var(--dim);font-size:12px">'+c.reason+'</div>';
-        // If the baby wants to do something, offer to do it
-        if(c.action){
-          h+='<div style="margin-top:10px"><button onclick=\"send_action(\\\''+c.action+'\\\')\" style=\"padding:6px 16px;background:var(--accent);color:white;border:none;border-radius:8px;cursor:pointer;font-size:12px\">Let me '+c.action+'</button></div>';
-        }
-        // Show conviction voice if available
-        const intr=await api('/api/mind/introspect');
-        if(intr.ok&&intr.voice)h+='<div style="margin-top:8px;font-style:italic;color:var(--dim);font-size:12px">"'+intr.voice+'"</div>';
-      }
-    }
-    else if(d.i==='study'){
-      const r=await api('/api/mind/study',{rounds:d.p||5});
-      if(r.ok){
-        h='<div style="margin-bottom:8px"><b>Language Study</b> Level '+r.level+' ('+['','Word','Phrase','Sentence','Paragraph','Reasoning'][r.level||1]+')</div>';
-        h+='<div class="trace"><span class="lbl">score</span> '+r.avg_score+' / '+r.threshold+' &middot; '+(r.passed?'<span style="color:var(--green)">PASSED</span>':'<span style="color:var(--red)">needs practice</span>')+' &middot; current level: '+r.current_level+'</div>';
-        for(const ex of (r.exercises||[])){
-          const color=ex.score>0.5?'var(--green)':ex.score>0.3?'var(--amber)':'var(--red)';
-          h+='<div style="margin:4px 0;font-size:12px"><span style="color:'+color+'">['+ex.type+'] '+ex.score+'</span>';
-          if(ex.sentence)h+=' <span style="color:var(--dim);font-style:italic">"'+ex.sentence+'"</span>';
-          if(ex.phrase)h+=' <span style="color:var(--dim);font-style:italic">"'+ex.phrase+'"</span>';
-          if(ex.query)h+=' <span style="color:var(--accent)">'+ex.query+'</span> &rarr; '+(ex.retrieved||[]).join(', ');
-          if(ex.sentences)for(const s of ex.sentences)h+='<br><span style="color:var(--dim);font-style:italic">"'+s+'"</span>';
-          h+='</div>';
-        }
-      }
-    }
-    else if(d.i==='assess'){
-      const r=await api('/api/mind/assess',{});
-      if(r.ok){
-        h='<div style="margin-bottom:8px"><b>Language Assessment</b> — Current Level: <span style="color:var(--accent);font-weight:700">'+r.level+'</span></div>';
-        const labels=['','Word','Phrase','Sentence','Paragraph','Reasoning'];
-        for(let l=1;l<=5;l++){
-          const s=r.scores?.[l]||0;
-          const bar='#'.repeat(Math.round(s*20));
-          const color=s>0.5?'var(--green)':s>0.3?'var(--amber)':'var(--red)';
-          h+='<div style="font-size:12px"><span style="color:'+color+'">L'+l+' '+labels[l].padEnd(10)+' '+bar+' '+s.toFixed(2)+'</span></div>';
-        }
-      }
-    }
-    else if(d.i==='decompose'){
-      const r=await api('/api/mind/decompose/'+d.p);
-      h='<div><b>'+d.p+'</b></div>';
-      if(r.root)h+='<div>Root: <span style="color:var(--accent)">'+r.root+'</span></div>';
-      if(r.prefix)h+='<div>Prefix: '+r.prefix+'</div>';
-      if(r.suffix)h+='<div>Suffix: '+r.suffix+'</div>';
-      if(r.family?.length)h+='<div>Family: '+(r.family||[]).join(', ')+'</div>';
-    }
-    else if(d.i==='synonyms'){
-      const r=await api('/api/mind/synonyms/'+d.p);
-      h='<div><b>Synonyms of '+d.p+':</b> '+(r.synonyms||[]).map(s=>s[0]+' ('+s[1]+')').join(', ')+'</div>';
-    }
-    else if(d.i==='meaning'){
-      const r=await api('/api/mind/semantic/'+d.p);
-      h='<div>'+r.explanation+'</div>';
-    }
-    else if(d.i==='practice'){
-      const r=await api('/api/mind/practice',{rounds:d.p||10});
-      if(r.ok){
-        h='<div style="margin-bottom:8px"><b>Practice Report</b>: '+r.rounds+' rounds, '+r.improved+' reinforced, '+r.degraded+' weakened</div>';
-        for(const p of (r.practice||[])){
-          const bar='#'.repeat(Math.round(p.coherence*20));
-          const color=p.coherence>0.4?'var(--green)':p.coherence>0.2?'var(--amber)':'var(--red)';
-          h+='<div style="margin:4px 0;font-size:12px"><span style="color:var(--accent);font-weight:600">'+p.word+'</span> <span style="color:var(--dim);font-style:italic">"'+p.sentence+'"</span><br><span style="color:'+color+'">'+bar+' '+p.coherence+'</span> surprise:'+p.surprise+'</div>';
-        }
-      }else{h='<div style="color:var(--dim)">Practice failed: '+(r.error||'?')+'</div>'}
-    }
-    else if(d.i==='stats'){const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);h='<div class="trace"><span class="lbl">JS Engine</span><br>Vocab: '+(js.core?.vocabulary||0)+' &middot; Resonance: '+(js.core?.resonancePairs||0)+'<br><br><span class="lbl">Python Mind</span><br>Vocab: '+(m.vocabulary||0)+' &middot; Domains: '+(m.domains||0)+' &middot; Assemblies: '+(m.assemblies||0)+' &middot; Myelinated: '+(m.myelinated||0)+'</div>'}
-    ld.querySelector('.bubble').innerHTML=h||'<div style="color:var(--dim)">No response.</div>';
-  }catch(e){ld.querySelector('.bubble').innerHTML='<div style="color:var(--red)">Error: '+e.message+'</div>'}
-  updateStats();
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-// ── File upload handler (multi-file, auto-feed to mind) ──
-// ── PDF.js client-side extraction — no server upload needed ──
-// PDFs are read in the BROWSER. Text extracted page by page.
-// Only the text goes to the server. Any size PDF works.
-if (typeof pdfjsLib !== 'undefined') pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+function renderWords(words) {
+  if (!words || !words.length) return '';
+  return words.map(w => {
+    const cls = esc(w.flag || 'unknown');
+    const orig = esc(w.original);
+    const corr = esc(w.corrected || w.original);
+    const tip = w.original !== w.corrected ? orig + ' -> ' + corr : orig;
+    return '<span class="word ' + cls + '" title="' + tip + ' [' + cls + '] conf:' + (w.confidence||0).toFixed(2) + '">' + corr + '</span>';
+  }).join(' ');
+}
 
-async function extractPdfText(file, onPage) {
-  const buf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
-  const lines = [];
-  for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const tc = await page.getTextContent();
-    const text = tc.items.map(i => i.str).join(' ');
-    if (text.trim().length > 5) lines.push(text.trim());
-    if (onPage) onPage(p, pdf.numPages);
+function renderFlags(flags) {
+  if (!flags || !flags.length) return '';
+  return flags.map(f => '<span class="flag ' + esc(f.severity||'warning') + '">' + esc(f.message||f.status) + '</span>').join(' ');
+}
+
+function show(id, html) {
+  const el = document.getElementById(id);
+  el.style.display = 'block';
+  el.innerHTML = html;
+}
+
+async function correctText() {
+  const text = document.getElementById('ocrInput').value;
+  if (!text) return;
+  const r = await api('/api/correct', { text });
+  let html = '<b>Output:</b> ' + renderWords(r.words) + '\\n\\n';
+  html += '<b>Text:</b> ' + esc(r.output||'') + '\\n';
+  html += '<b>Decision:</b> <span class="decision ' + (r.decision||'verify') + '">' + (r.decision||'?') + '</span>\\n';
+  html += '<b>Coherence:</b> ' + (r.coherence||0).toFixed(4) + '\\n';
+  html += '<b>Avg Confidence:</b> ' + (r.avgConfidence||0) + '\\n';
+  if (r.safetyFlags && r.safetyFlags.length) html += '\\n<b>Safety Flags:</b> ' + renderFlags(r.safetyFlags);
+  show('correctResult', html);
+}
+
+async function correctRow() {
+  const row = {};
+  for (const col of ['Patient','Diagnosis','Doctor','Medication','Room','Status']) {
+    const v = document.getElementById('w' + col).value;
+    if (v) row[col] = v;
   }
-  return { pages: pdf.numPages, lines };
+  if (!Object.keys(row).length) return;
+  const r = await api('/api/correct-row', { row });
+  let html = '<b>Decision:</b> <span class="decision ' + (r.decision||'verify') + '">' + (r.decision||'?') + '</span>\\n\\n';
+  for (const [col, data] of Object.entries(r.corrected || {})) {
+    html += '<b>' + esc(col) + ':</b> ' + esc(data.input||'') + ' -> ' + renderWords(data.words) + '\\n';
+  }
+  if (r.safetyFlags && r.safetyFlags.length) html += '\\n<b>Safety Flags:</b>\\n' + renderFlags(r.safetyFlags);
+  show('wardResult', html);
 }
 
-async function handleFiles(event) {
-  const files = event.target.files;
-  if (!files || !files.length) return;
-  addMsg('<div style="color:var(--dim)">' + files.length + ' file(s) selected</div>', 'user');
-  const loading = addMsg('<div id="feedProgress" style="color:var(--dim)">Starting...</div>', 'shifu');
-  const prog = loading.querySelector('#feedProgress');
-  let totalFed = 0, doneFiles = 0;
+async function learnCorrection() {
+  const col = document.getElementById('learnCol').value || 'Diagnosis';
+  const ocr = document.getElementById('learnOcr').value;
+  const confirmed = document.getElementById('learnConfirmed').value;
+  if (!ocr || !confirmed) return;
+  const ocrRow = {}; ocrRow[col] = ocr;
+  const confirmedRow = {}; confirmedRow[col] = confirmed;
+  const r = await api('/api/learn', { ocrRow, confirmedRow });
+  let html = '<b>Accepted:</b> ' + r.accepted + '\\n';
+  if (r.rejected && r.rejected.length) html += '<b>Rejected:</b> ' + esc(JSON.stringify(r.rejected)) + '\\n';
+  if (r.reason) html += '<b>Reason:</b> ' + esc(r.reason) + '\\n';
+  show('learnResult', html);
+  loadHistory();
+}
 
-  function showBar(pct, detail) {
-    prog.innerHTML = '<div style="background:var(--border);border-radius:4px;height:6px;margin:8px 0;overflow:hidden"><div style="background:var(--accent);height:100%;width:'+pct+'%;transition:width 0.3s"></div></div><div style="font-size:12px;color:var(--dim)">'+detail+'</div>';
+async function undoLearn() {
+  const r = await api('/api/undo', {});
+  show('learnResult', '<b>Undo:</b> ' + esc(JSON.stringify(r, null, 2)));
+  loadHistory();
+}
+
+async function loadHistory() {
+  const r = await api('/api/history');
+  if (!r || !r.length) { show('historyResult', 'No corrections yet.'); return; }
+  let html = r.map((h,i) => '#' + esc(h.id) + ' [' + esc(h.timestamp) + '] columns: ' + esc((h.columns||[]).join(', '))).join('\\n');
+  show('historyResult', html);
+}
+
+async function compareStructure() {
+  const a = document.getElementById('structA').value;
+  const b = document.getElementById('structB').value;
+  if (!a || !b) return;
+  const r = await api('/api/compare-structure', { sentA: a, sentB: b });
+  let html = '<b>Invariance Score:</b> ' + (r.invariance||0).toFixed(4) + '\\n\\n';
+  html += '<b>Sentence A roles:</b>\\n';
+  html += '  Agent: ' + esc(r.rolesA?.agent||'-') + ', Action: ' + esc(r.rolesA?.action||'-') + ', Patient: ' + esc(r.rolesA?.patient||'-') + ' (passive: ' + (r.rolesA?.passive||false) + ')\\n';
+  html += '<b>Sentence B roles:</b>\\n';
+  html += '  Agent: ' + esc(r.rolesB?.agent||'-') + ', Action: ' + esc(r.rolesB?.action||'-') + ', Patient: ' + esc(r.rolesB?.patient||'-') + ' (passive: ' + (r.rolesB?.passive||false) + ')\\n\\n';
+  const c = r.comparison || {};
+  html += '<b>Agent similarity:</b> ' + (c.agentSim||0).toFixed(3) + '\\n';
+  html += '<b>Action similarity:</b> ' + (c.actionSim||0).toFixed(3) + '\\n';
+  html += '<b>Patient similarity:</b> ' + (c.patientSim||0).toFixed(3) + '\\n';
+  if (c.swapDetected) html += '\\n<span class="flag danger">ROLE SWAP DETECTED</span>';
+  show('structResult', html);
+}
+
+async function extractRoles() {
+  const a = document.getElementById('structA').value;
+  if (!a) return;
+  const r = await api('/api/roles', { text: a });
+  show('structResult', esc(JSON.stringify(r, null, 2)));
+}
+
+async function loadStats() {
+  const r = await api('/api/stats');
+  let html = '<b>Core Engine</b>\\n';
+  html += '  Vocabulary: ' + (r.core?.vocabulary||0) + ' words\\n';
+  html += '  Sentences fed: ' + (r.core?.sentences||0) + '\\n';
+  html += '  Resonance pairs: ' + (r.core?.resonancePairs||0) + '\\n\\n';
+  html += '<b>Learning Engine</b>\\n';
+  html += '  Total corrections: ' + (r.learning?.totalCorrections||0) + '\\n';
+  html += '  Confusion pairs: ' + (r.learning?.confusionPairs||0) + '\\n';
+  html += '  Vocabulary size: ' + (r.learning?.vocabularySize||0) + '\\n';
+  html += '  Learned words: ' + (r.learning?.learnedWords||0) + '\\n';
+  html += '  Context chains: ' + (r.learning?.contextChains||0) + '\\n\\n';
+  if (r.learning?.topConfusions?.length) {
+    html += '<b>Top Confusions:</b>\\n';
+    for (const c of r.learning.topConfusions) html += '  ' + c.pair + ' (' + c.count + 'x, cost: ' + c.cost.toFixed(3) + ')\\n';
   }
+  show('statsResult', html);
+}
 
-  // PHASE 1: Extract ALL text from ALL files (client-side, no server)
-  let allSentences = [];
-  let results = '';
-  for (let fi = 0; fi < files.length; fi++) {
-    const file = files[fi];
-    try {
-      let sentences = [];
-      if (file.name.endsWith('.pdf') || file.type === 'application/pdf') {
-        showBar(fi/files.length*50, 'Extracting ' + file.name + '...');
-        const pdf = await extractPdfText(file, (p, total) => {
-          showBar((fi + p/total) / files.length * 50, file.name + ': page ' + p + '/' + total);
-        });
-        sentences = pdf.lines.flatMap(l => l.split(/[.!?]+/).map(s=>s.trim()).filter(s=>s.length>15));
-        results += '<div style="margin-bottom:6px"><b>' + file.name + '</b>: ' + pdf.pages + ' pages, ' + sentences.length + ' sentences</div>';
-      } else {
-        showBar(fi/files.length*50, 'Reading ' + file.name + '...');
-        const text = await file.text();
-        sentences = text.split(/[.!?\\n]+/).map(s=>s.trim()).filter(s=>s.length>15);
-        results += '<div style="margin-bottom:6px"><b>' + file.name + '</b>: ' + sentences.length + ' sentences</div>';
-      }
-      allSentences = allSentences.concat(sentences);
-      doneFiles++;
-    } catch (e) {
-      results += '<div style="color:var(--red)">' + file.name + ': ' + e.message + '</div>';
+function handleDrop(e) {
+  e.preventDefault();
+  e.currentTarget.style.borderColor = '#2a3050';
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFile(file);
+}
+
+async function uploadFile(file) {
+  if (!file) return;
+  document.getElementById('uploadStatus').style.display = 'block';
+  const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+  document.getElementById('uploadStatus').innerHTML = 'Processing <b>' + esc(file.name) + '</b> (' + sizeMB + ' MB)...<br><span style="color:#94a3b8;font-size:0.85rem">Large PDFs (1000+ pages) may take a few minutes for text extraction.</span>';
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const res = await fetch(API + '/api/upload?filename=' + encodeURIComponent(file.name), {
+      method: 'POST',
+      body: formData,
+    });
+    const r = await res.json();
+    document.getElementById('uploadStatus').textContent = 'Done: ' + file.name;
+
+    let html = '<b>Type:</b> ' + esc(r.type||'unknown') + '\\n';
+    if (r.extractionMethod) {
+      html += '<b>Extraction:</b> ' + esc(r.extractionMethod) + '\\n';
+      if (r.extractionDetail) html += '<span style="color:#94a3b8;font-size:0.85rem">' + esc(r.extractionDetail) + '</span>\\n';
+      if (r.pageCount) html += '<b>Pages:</b> ' + r.pageCount + '\\n';
+      if (r.charCount) html += '<b>Characters:</b> ' + r.charCount.toLocaleString() + '\\n';
     }
-  }
+    if (r.sourceMode) html += '<b>Mode:</b> ' + esc(r.sourceMode) + '\\n';
+    if (r.error) html += '<b style="color:#fca5a5">Error:</b> ' + esc(r.error) + '\\n';
+    if (r.overallDecision) html += '<b>Decision:</b> <span class="decision ' + r.overallDecision + '">' + r.overallDecision + '</span>\\n';
 
-  // PHASE 2: Stream EVERYTHING to mind in ONE request
-  if (allSentences.length > 0) {
-    showBar(55, 'Feeding ' + allSentences.length + ' sentences to mind...');
-    const t0 = Date.now();
-    const fr = await api('/api/mind/feed-batch', { texts: allSentences });
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    totalFed = fr.accepted || 0;
-    const rate = Math.round(allSentences.length / ((Date.now() - t0) / 1000));
-    results += '<div class="trace"><span class="lbl">fed</span> ' + totalFed + '/' + allSentences.length + ' accepted in ' + elapsed + 's (' + rate + ' sent/sec)</div>';
-
-    // PHASE 3: Ask the baby what it needs — don't force consolidation
-    showBar(90, 'Asking the baby...');
-    const compass = await api('/api/mind/compass', {});
-    if (compass.ok) {
-      results += '<div class="trace"><span class="lbl">' + compass.state + '</span> ' + compass.desire + '</div>';
-      // Do what the baby asks
-      if (compass.action === 'consolidate') {
-        const cr = await api('/api/mind/consolidate', {});
-        if (cr.ok) results += '<div class="trace"><span class="lbl">consolidated</span> ' + (cr.routed||0) + ' routed, ' + (cr.identities||0) + ' identities</div>';
-      } else if (compass.action === 'practice') {
-        const pr = await api('/api/mind/practice', {rounds: 3});
-        if (pr.ok) results += '<div class="trace"><span class="lbl">practiced</span> ' + (pr.improved||0) + ' improved</div>';
+    // Raw extracted text (what the PDF/file reader saw)
+    if (r.rawText) {
+      html += '\\n<b style="color:#94a3b8">--- Raw Extracted Text ---</b>\\n';
+      html += '<span style="color:#667">' + r.rawText.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</span>\\n';
+    }
+    if (r.rawLines && r.rawLines.length && !r.rawText) {
+      html += '\\n<b style="color:#94a3b8">--- Raw Extracted Lines ---</b>\\n';
+      for (const rl of r.rawLines) {
+        html += '<span style="color:#667">' + rl.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</span>\\n';
       }
     }
+
+    // Reconstructed table (from spatial coordinates)
+    if (r.table && r.table.rows && r.table.rows.length > 0) {
+      html += '\\n<b style="color:#7eb8ff">--- Reconstructed Table (' + r.table.columns + ' columns, ' + r.table.rows.length + ' rows) ---</b>\\n';
+      html += '<table style="border-collapse:collapse;width:100%;font-size:0.8rem;margin:8px 0">';
+      for (let ri = 0; ri < r.table.rows.length; ri++) {
+        const row = r.table.rows[ri];
+        const isHeader = ri <= 2 && row.some(c => /patient|name|diagnosis|doctor|status|room|ward/i.test(c));
+        html += '<tr>';
+        for (const cell of row) {
+          const tag = isHeader ? 'th' : 'td';
+          html += '<' + tag + ' style="border:1px solid #2a3050;padding:4px 8px;text-align:left;color:' + (isHeader ? '#7eb8ff' : '#ccc') + '">' + esc(cell || '') + '</' + tag + '>';
+        }
+        html += '</tr>';
+      }
+      html += '</table>\\n';
+    }
+
+    // Corrected lines (text/PDF)
+    if (r.lines && r.lines.length) {
+      html += '\\n<b style="color:#7eb8ff">--- Corrected Output ---</b>\\n';
+      for (let li = 0; li < r.lines.length; li++) {
+        const line = r.lines[li];
+        const rawLine = (r.rawLines && r.rawLines[li]) || '';
+        if (rawLine) html += '<span style="color:#445;font-size:0.75rem">RAW: ' + rawLine.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</span>\\n';
+        if (line && line.words) {
+          html += renderWords(line.words) + '\\n';
+          if (line.safetyFlags && line.safetyFlags.length) html += renderFlags(line.safetyFlags) + '\\n';
+        } else if (line && line.corrected) {
+          html += esc(line.corrected) + '\\n';
+        }
+        html += '\\n';
+      }
+    }
+
+    // Rows (CSV)
+    if (r.rows && r.rows.length) {
+      html += '\\n<b>Rows (' + r.rows.length + '):</b>\\n';
+      for (let i = 0; i < r.rows.length; i++) {
+        const row = r.rows[i];
+        html += '\\n<b>Row ' + (i+1) + '</b> <span class="decision ' + (row.decision||'verify') + '">' + (row.decision||'?') + '</span>\\n';
+        if (row.corrected) {
+          for (const [col, data] of Object.entries(row.corrected)) {
+            html += '  <b>' + esc(col) + ':</b> ' + esc(data.input||'') + ' -> ';
+            if (data.words) html += renderWords(data.words);
+            else html += esc(data.output||data);
+            html += '\\n';
+          }
+        }
+        if (row.safetyFlags && row.safetyFlags.length) {
+          html += '  ' + renderFlags(row.safetyFlags) + '\\n';
+        }
+      }
+    }
+
+    // Summary
+    if (r.summary) {
+      html += '\\n<b>Summary:</b> ' + r.summary.total + ' rows, ' + r.summary.accepted + ' accepted, ' + r.summary.needsVerification + ' verify, ' + r.summary.rejected + ' rejected';
+    }
+
+    show('uploadResult', html);
+  } catch (err) {
+    document.getElementById('uploadStatus').textContent = 'Error: ' + err.message;
+    show('uploadResult', '<b>Error:</b> ' + err.message);
   }
-
-  showBar(100, 'Complete');
-  results += '<div style="margin-top:8px;color:var(--green);font-weight:600">' + totalFed + ' passages fed from ' + doneFiles + ' file(s)</div>';
-  prog.innerHTML = results;
-  event.target.value = '';
-  updateStats();
 }
-
-let _statsTimer=null;
-function updateStats(){
-  if(_statsTimer)return;
-  _statsTimer=setTimeout(async()=>{
-    _statsTimer=null;
-    try{
-      const[js,m]=await Promise.all([api('/api/stats'),api('/api/mind/stats')]);
-      if(!m.ok&&!m.vocabulary)return;
-      const vocab=m.vocabulary||0;
-      const myel=m.myelinated||0;
-      document.getElementById('topStats').innerHTML=vocab+'w &middot; '+myel+' myel &middot; '+(m.domains||0)+' dom';
-      const progress=vocab>0?Math.min(myel/Math.max(vocab*0.3,1)*100,100):0;
-      document.getElementById('learnBar').style.width=progress.toFixed(0)+'%';
-      // The baby acts on its own and cries for what it needs
-      try{
-        const[a,c]=await Promise.all([
-          api('/api/mind/idle',{}),
-          api('/api/mind/cry'),
-        ]);
-        const pLabel=document.getElementById('learnLabel');
-        if(a.ok){
-          const stateColors={newborn:'#7c3aed',absorbing:'#d97706',curious:'#16a34a',determined:'#6366f1',ready:'#2563eb',resting:'#64748b'};
-          pLabel.style.color=stateColors[a.state]||'#64748b';
-          pLabel.textContent=a.did==='rest'?(c.ok&&c.cry?c.cry.slice(0,50):'resting'):(a.did+': '+a.result);
-          if(a.did!=='rest')pLabel.className='learning-label practicing';
-        }
-        // BABBLE: the baby talks in chat about what it's doing
-        if(a.ok&&a.did!=='rest'){
-          const babble=document.createElement('div');
-          babble.className='msg shifu';
-          babble.innerHTML='<div class="bubble" style="font-size:11px;color:var(--dim);padding:8px 12px;background:rgba(99,102,241,0.03)"><span style="color:var(--accent);font-weight:600;font-size:9px;text-transform:uppercase;letter-spacing:1px">'+a.state+'</span> '+a.did+': '+(a.result||'')+(a.voice?' <span style="font-style:italic">&quot;'+a.voice.slice(0,80)+'&quot;</span>':'')+'</div>';
-          chat.appendChild(babble);
-          chat.scrollTop=chat.scrollHeight;
-        }
-        // CRY: if hungry, babble the need
-        if(c.ok&&c.cry&&!c.cry.includes('content')&&!c.cry.includes('empty')){
-          const cryEl=document.createElement('div');
-          cryEl.className='msg shifu';
-          cryEl.innerHTML='<div class="bubble" style="font-size:11px;color:var(--amber);padding:8px 12px;background:rgba(217,119,6,0.03)"><span style="font-weight:600">NEED:</span> '+c.cry.slice(0,120)+'</div>';
-          chat.appendChild(cryEl);
-          chat.scrollTop=chat.scrollHeight;
-        }
-      }catch{}
-    }catch{}
-  },5000);
-}
-setInterval(updateStats,8000);  // Every 8 seconds — gives the baby time to act
-updateStats();
 </script>
 </body>
 </html>`;

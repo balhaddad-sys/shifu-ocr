@@ -16,10 +16,9 @@ than late experience, but learning never stops.
 
 from __future__ import annotations
 import math
-import re
 from typing import Dict, List, Set, Optional, Tuple, Any
 
-from ._types import Synapse, Assembly
+from ._types import Synapse, Assembly, tokenize as _tokenize
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -53,7 +52,7 @@ class Layer:
         return count
 
     def connect(self, source: str, target: str, weight: float, epoch: int) -> Synapse:
-        """Create or strengthen a connection. Cap at 50 targets per source."""
+        """Create or strengthen a connection. Returns the synapse."""
         self._node_set.add(source)
         self._node_set.add(target)
         if source not in self._connections:
@@ -62,9 +61,6 @@ class Layer:
         if existing is not None:
             existing.strengthen(weight, epoch)
             return existing
-        # Cap: don't create new synapse if source already has 50 targets
-        if len(self._connections[source]) >= 50:
-            return existing or Synapse(source=source, target=target)  # Dummy, not stored
         syn = Synapse(
             source=source, target=target, weight=weight,
             birth_epoch=epoch, last_active=epoch, activation_count=1,
@@ -149,14 +145,6 @@ class Layer:
 #  CORTEX — the full multi-layer semantic memory
 # ═══════════════════════════════════════════════════════════════
 
-_TOKEN_RE = re.compile(r'[a-z][a-z0-9-]*')
-
-
-def _tokenize(text: str) -> List[str]:
-    """Extract lowercase alphabetic tokens. No hardcoded stop words."""
-    return _TOKEN_RE.findall(text.lower())
-
-
 class Cortex:
     """
     Multi-layer weighted directed graph with temporal dynamics.
@@ -176,6 +164,7 @@ class Cortex:
         min_plasticity: float = 0.1,
         min_weight: float = 0.01,
         max_assembly_size: int = 25,
+        max_feed_tokens: int = 50,
     ):
         self._layers: Dict[str, Layer] = {}
         self._prune_interval = prune_interval
@@ -186,6 +175,7 @@ class Cortex:
         self._min_plasticity = min_plasticity
         self._min_weight = min_weight
         self._max_assembly_size = max_assembly_size
+        self._max_feed_tokens = max_feed_tokens
 
         # Global state
         self._epoch = 0
@@ -208,11 +198,6 @@ class Cortex:
 
         # Temporal tracking
         self._connection_birth: Dict[str, int] = {}  # word -> epoch first seen
-
-        # Activation cache — invalidated on feed/prune
-        self._activation_cache: Dict[str, Dict[str, float]] = {}
-        self._confidence_cache: Dict[str, dict] = {}
-        self._cache_epoch: int = 0
 
         # Seed layers
         if initial_layers:
@@ -296,7 +281,7 @@ class Cortex:
         connections_made = 0
 
         # Cap per-feed to prevent quadratic blowup on long inputs
-        feed_content = content[:20] if len(content) > 20 else content
+        feed_content = content[:self._max_feed_tokens]
 
         for i, src in enumerate(feed_content):
             if src not in self.breadth:
@@ -334,9 +319,6 @@ class Cortex:
         if 2 <= len(content) <= self._max_assembly_size:
             self._form_assembly(content)
 
-        # Invalidate caches
-        self._invalidate_cache()
-
         # Maybe prune
         if self._feed_count - self._last_prune >= self._prune_interval:
             self._prune()
@@ -352,91 +334,51 @@ class Cortex:
     # ═══ ASSEMBLIES ═══
 
     def _form_assembly(self, content: List[str]) -> Optional[str]:
-        """
-        Form or reinforce an assembly from co-occurring words.
-
-        CAPILLARY ARCHITECTURE:
-        - Only reinforce assemblies that overlap >50% with content (not all)
-        - Only create new assembly if no existing one matches >60%
-        - Cap total assemblies at 500 — prune weakest when exceeded
-        - Each word tracks at most 10 assembly memberships
-        """
+        """Form or reinforce an assembly from co-occurring words."""
         content_set = set(content)
-        if len(content_set) < 2:
-            return None
 
-        # Reinforce MATCHING assemblies only (>50% overlap)
-        # Use first content word to find candidates — O(assemblies_per_word) not O(all_assemblies)
+        # Reinforce existing assemblies
         reinforced = set()
-        best_match_id = None
-        best_match_overlap = 0.0
-        checked = set()
-
-        for w in content[:5]:  # Check first 5 words max
-            for aid in self._word_assemblies.get(w, [])[:10]:  # Max 10 assemblies per word
-                if aid in checked:
+        for w in content:
+            ids = self._word_assemblies.get(w, [])
+            for aid in ids:
+                if aid in reinforced:
                     continue
-                checked.add(aid)
                 asm = self._assemblies.get(aid)
                 if asm is None:
                     continue
-                overlap = asm.overlap_with_set(content_set)
-                if overlap > 0.5:
-                    asm.reinforce(self._epoch)
-                    reinforced.add(aid)
-                if overlap > best_match_overlap:
-                    best_match_overlap = overlap
-                    best_match_id = aid
+                asm.reinforce(self._epoch)
+                reinforced.add(aid)
+                # Grow assembly with new co-occurring words
+                if asm.words and len(asm.words) < self._max_assembly_size:
+                    for nw in content:
+                        if nw not in asm.words:
+                            asm.add(nw, self._epoch)
+                            if nw not in self._word_assemblies:
+                                self._word_assemblies[nw] = []
+                            if aid not in self._word_assemblies[nw]:
+                                self._word_assemblies[nw].append(aid)
 
-        # DON'T create new assembly if an existing one matches >60%
-        if best_match_overlap > 0.6 and best_match_id:
-            # Grow the best match instead
-            asm = self._assemblies[best_match_id]
-            if len(asm.words) < self._max_assembly_size:
-                for nw in content:
-                    if nw not in asm.words:
-                        asm.add(nw, self._epoch)
-                        if nw not in self._word_assemblies:
-                            self._word_assemblies[nw] = []
-                        if best_match_id not in self._word_assemblies[nw]:
-                            self._word_assemblies[nw].append(best_match_id)
-            return best_match_id
-
-        # Create new assembly only if truly novel
-        # Cap at 500 assemblies — prune weakest if exceeded
-        if len(self._assemblies) >= 500:
-            # Find weakest assembly (lowest strength × recency)
-            weakest_id = min(
-                self._assemblies,
-                key=lambda k: self._assemblies[k].strength / max(1, self._assemblies[k].dormancy(self._epoch) + 1),
+        # Only create new assembly if no existing one has high overlap
+        if len(content_set) >= 2:
+            for aid in reinforced:
+                asm = self._assemblies.get(aid)
+                if asm and asm.overlap_with_set(content_set) > 0.5:
+                    return aid  # existing assembly covers this content
+            aid = f'a{self._assembly_seq}'
+            self._assembly_seq += 1
+            asm = Assembly(
+                id=aid, words=content_set, strength=1,
+                birth_epoch=self._epoch, last_active=self._epoch,
+                max_size=self._max_assembly_size,
             )
-            weakest = self._assemblies.pop(weakest_id)
-            for w in weakest.words:
-                wl = self._word_assemblies.get(w, [])
-                if weakest_id in wl:
-                    wl.remove(weakest_id)
-
-        aid = f'a{self._assembly_seq}'
-        self._assembly_seq += 1
-        asm = Assembly(
-            id=aid, words=content_set, strength=1,
-            birth_epoch=self._epoch, last_active=self._epoch,
-            max_size=self._max_assembly_size,
-        )
-        self._assemblies[aid] = asm
-        for w in content_set:
-            if w not in self._word_assemblies:
-                self._word_assemblies[w] = []
-            # Cap memberships per word at 10
-            if len(self._word_assemblies[w]) < 10:
+            self._assemblies[aid] = asm
+            for w in content_set:
+                if w not in self._word_assemblies:
+                    self._word_assemblies[w] = []
                 self._word_assemblies[w].append(aid)
-        return aid
-
-    def _invalidate_cache(self) -> None:
-        """Clear activation/confidence caches after state change."""
-        self._activation_cache.clear()
-        self._confidence_cache.clear()
-        self._cache_epoch = self._epoch
+            return aid
+        return None
 
     # ═══ ACTIVATION ═══
 
@@ -444,7 +386,7 @@ class Cortex:
                  min_weight: float = 0.0) -> Dict[str, float]:
         """
         Activate a word and return its neighborhood with weights.
-        If layer is None, aggregates across all layers. Cached.
+        If layer is None, aggregates across all layers.
         """
         word = word.lower()
         if layer is not None:
@@ -453,18 +395,11 @@ class Cortex:
                 return {}
             return ly.get_neighbors(word, min_weight)
 
-        # Check cache
-        cache_key = word
-        if cache_key in self._activation_cache:
-            return self._activation_cache[cache_key]
-
         # Cross-layer aggregation
         combined: Dict[str, float] = {}
         for ly in self._layers.values():
             for tgt, w in ly.get_neighbors(word, min_weight).items():
                 combined[tgt] = combined.get(tgt, 0.0) + w
-
-        self._activation_cache[cache_key] = combined
         return combined
 
     def cross_layer_activation(self, word: str) -> Dict[str, Dict[str, float]]:
@@ -482,11 +417,9 @@ class Cortex:
     def confidence(self, word: str) -> dict:
         """
         How well does the cortex know this word?
-        Returns score (0-100), state, and diagnostic info. Cached.
+        Returns score (0-100), state, and diagnostic info.
         """
         word = word.lower()
-        if word in self._confidence_cache:
-            return self._confidence_cache[word]
         freq = self.word_freq.get(word, 0)
         if freq == 0:
             return {
@@ -530,20 +463,21 @@ class Cortex:
         else:
             state = 'glimpsed'
 
-        result = {
+        return {
             'score': score, 'state': state,
             'layers': lc, 'assemblies': ac, 'myelinated': ms,
         }
-        self._confidence_cache[word] = result
-        return result
 
-    # ═══ IDF ═══
+    # ═══ INVERSE BREADTH ═══
 
-    def idf(self, word: str) -> float:
-        """Inverse document frequency analog. Rare words score higher."""
+    def inverse_breadth(self, word: str) -> float:
+        """Inverse breadth score. Words with fewer connections score higher."""
         b = len(self.breadth.get(word, set())) or 1
         V = max(len(self.word_freq), 1)
         return math.log(1 + V / b)
+
+    # Keep backward compat
+    idf = inverse_breadth
 
     # ═══ PRUNING ═══
 
@@ -576,41 +510,6 @@ class Cortex:
                     wl.remove(aid)
 
         return total_pruned
-
-    # ═══ HARMONIZE — cross-layer resonance ═══
-
-    def harmonize(self, words_a: List[str], words_b: List[str],
-                  weight: float = 0.15) -> None:
-        """
-        Connect two word groups across layers via _general.
-        Expands each group through breadth neighbors, then cross-links.
-        """
-        expand_a = set(words_a)
-        expand_b = set(words_b)
-        for w in words_a:
-            if w in self.breadth:
-                for n in list(self.breadth[w])[:10]:
-                    expand_a.add(n)
-        for w in words_b:
-            if w in self.breadth:
-                for n in list(self.breadth[w])[:10]:
-                    expand_b.add(n)
-
-        gen = self.ensure_layer('_general')
-        for a in expand_a:
-            if len(a) <= 2:
-                continue
-            for b in expand_b:
-                if len(b) <= 2 or a == b:
-                    continue
-                gen.connect(a, b, weight, self._epoch)
-                gen.connect(b, a, weight, self._epoch)
-                if a not in self.breadth:
-                    self.breadth[a] = set()
-                if b not in self.breadth:
-                    self.breadth[b] = set()
-                self.breadth[a].add(b)
-                self.breadth[b].add(a)
 
     # ═══ TEMPORAL QUERIES ═══
 
@@ -650,10 +549,14 @@ class Cortex:
                         rate = myel_decay if syn.myelinated else decay_mod
                         syn.weight = max(floor, syn.weight * rate)
 
-        # Gentle frequency decay for unused words
-        for w in self.word_freq:
-            if w not in used:
-                self.word_freq[w] *= 0.9995
+        # Gentle frequency decay for unused words (keep int type)
+        decay_candidates = [w for w in self.word_freq if w not in used]
+        for w in decay_candidates:
+            decayed = int(self.word_freq[w] * 0.9995)
+            if decayed < 1:
+                del self.word_freq[w]
+            else:
+                self.word_freq[w] = decayed
 
     # ═══ STATS ═══
 
@@ -705,6 +608,7 @@ class Cortex:
                 'min_plasticity': self._min_plasticity,
                 'min_weight': self._min_weight,
                 'max_assembly_size': self._max_assembly_size,
+                'max_feed_tokens': self._max_feed_tokens,
             },
         }
 
@@ -720,6 +624,7 @@ class Cortex:
             min_plasticity=params.get('min_plasticity', 0.1),
             min_weight=params.get('min_weight', 0.01),
             max_assembly_size=params.get('max_assembly_size', 25),
+            max_feed_tokens=params.get('max_feed_tokens', 50),
         )
         # Restore layers
         for name, ly_d in d.get('layers', {}).items():
