@@ -1427,16 +1427,37 @@ class ShifuMind:
                 candidates.append((word, breadth))
         candidates.sort(key=lambda x: x[1])
 
-        # Pick ONE focus word — conviction target or weakest
+        # Pick ONE focus word — ROTATE through candidates.
+        # Don't re-study the same chapter forever.
+        # Track which words have been practiced. Move to the next.
+        if not hasattr(self, '_practiced_words'):
+            self._practiced_words = set()
+
         focus_word = None
+        # Try conviction target first — but only if not already practiced
         purpose = self.conviction.discover_purpose(self)
         if purpose:
             goal_info = self.conviction._goals.get(purpose, {})
             fw = goal_info.get('frontier') or goal_info.get('core')
-            if fw and len(fw) > 4:
+            if fw and len(fw) > 4 and fw not in self._practiced_words:
                 focus_word = fw
-        if not focus_word and candidates:
-            focus_word = candidates[0][0]
+
+        # Otherwise pick the next unpracticed candidate
+        if not focus_word:
+            for word, _ in candidates:
+                if word not in self._practiced_words:
+                    focus_word = word
+                    break
+
+        # If all practiced, reset and start over (deeper learning)
+        if not focus_word:
+            self._practiced_words.clear()
+            if candidates:
+                focus_word = candidates[0][0]
+
+        # Mark as practiced after this session
+        if focus_word:
+            self._practiced_words.add(focus_word)
         if not focus_word:
             return {'rounds': 0, 'improved': 0, 'degraded': 0, 'practice': []}
 

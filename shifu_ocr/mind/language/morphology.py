@@ -39,20 +39,26 @@ class Morphology:
 
     def feed_vocabulary(self, word_freqs: Dict[str, int]) -> dict:
         """
-        Analyze the entire vocabulary for morphological patterns.
+        Analyze vocabulary for morphological patterns.
         Discovers roots, prefixes, suffixes from frequency.
+
+        Processes top 5000 words by frequency — they carry 90% of
+        morphological knowledge. The long tail adds noise, not signal.
+        Subsequent consolidations will pick up newly frequent words.
         """
-        words = [w for w in word_freqs if len(w) >= 4]
+        # Frequency-ranked: process the most important words first
+        ranked = sorted(
+            [(w, f) for w, f in word_freqs.items() if len(w) >= 4],
+            key=lambda x: -x[1],
+        )[:5000]
+        words = [w for w, _ in ranked]
         if len(words) < 20:
             return {'roots': 0, 'prefixes': 0, 'suffixes': 0}
 
         # Phase 1: Find shared substrings (potential roots)
-        # For each pair of words, find their longest common substring
-        # Substrings that appear in 3+ words are candidate roots
         substring_words: Dict[str, Set[str]] = defaultdict(set)
 
         for word in words:
-            # Extract all substrings of length >= min_root
             for start in range(len(word)):
                 for end in range(start + self._min_root, min(len(word) + 1, start + 12)):
                     sub = word[start:end]
@@ -62,18 +68,18 @@ class Morphology:
         self.roots = {}
         for sub, members in substring_words.items():
             if len(members) >= self._min_family and len(sub) >= self._min_root:
-                # Filter: root shouldn't be a whole common word itself
-                # unless it's genuinely a root (e.g., "nerve" in "nervous", "nervously")
                 if len(sub) < max(len(w) for w in members):
                     self.roots[sub] = members
 
         # Remove roots that are substrings of other roots
-        # Keep the LONGEST root for each word family
+        # Cap to top 2000 roots by family size to avoid O(n²) blowup
+        root_by_size = sorted(self.roots.items(), key=lambda x: -len(x[1]))[:2000]
+        self.roots = dict(root_by_size)
         to_remove = set()
         root_list = sorted(self.roots.keys(), key=len, reverse=True)
         for i, r1 in enumerate(root_list):
             for r2 in root_list[i + 1:]:
-                if r2 in r1 and self.roots[r2] <= self.roots[r1]:
+                if r2 in r1 and self.roots.get(r2, set()) <= self.roots.get(r1, set()):
                     to_remove.add(r2)
         for r in to_remove:
             self.roots.pop(r, None)
