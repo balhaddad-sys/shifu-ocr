@@ -35,7 +35,7 @@ for line in sys.stdin:
         op = cmd.get('cmd', '')
 
         # Always reload latest graphs before maintenance
-        if op in ('consolidate', 'practice', 'study', 'heartbeat'):
+        if op in ('consolidate', 'practice', 'study', 'heartbeat', 'autonomous_step'):
             import_graphs(mind)
 
         if op == 'ping':
@@ -65,6 +65,15 @@ for line in sys.stdin:
         elif op == 'heartbeat':
             r = mind.heartbeat()
             export_cortex(mind)
+            result = {'ok': True, **r}
+        elif op == 'autonomous_step':
+            r = mind.autonomous_step()
+            # Write changes to disk AND increment epoch so thalamus reloads
+            mind.cortex._epoch += 1
+            export_cortex(mind)
+            export_graphs(mind)
+            from shifu_ocr.mind.nervous_system import write_epoch
+            write_epoch(mind.cortex._epoch)
             result = {'ok': True, **r}
         elif op == 'assess':
             r = mind.assess_language()

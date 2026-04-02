@@ -104,8 +104,8 @@ feedWorker.boot();
 maintWorker.boot();
 
 // Route: heavy ops to isolated workers, everything else to thalamus
-const FEED_OPS = new Set(['feed_batch']);  // Only batch feed is heavy
-const MAINT_OPS = new Set(['consolidate', 'practice', 'study', 'heartbeat', 'assess', 'save']);
+const FEED_OPS = new Set(['feed_batch']);
+const MAINT_OPS = new Set(['consolidate', 'practice', 'study', 'heartbeat', 'assess', 'save', 'autonomous_step']);
 
 function mindCommand(cmd) {
   const op = cmd.cmd || '';
