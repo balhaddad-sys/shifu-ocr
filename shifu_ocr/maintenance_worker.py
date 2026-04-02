@@ -67,12 +67,12 @@ for line in sys.stdin:
             result = {'ok': True, **r}
         elif op == 'autonomous_step':
             r = mind.autonomous_step()
-            # Only export CORTEX (layers, synapses, signal).
-            # Do NOT export co_graph/nx_graph/vocab — the FEED worker owns those.
-            # Exporting here would overwrite the feed worker's 59K-word graphs
-            # with the maintenance worker's tiny seed graphs.
+            # Export BOTH cortex AND co-graph.
+            # The maintenance worker imported the feed worker's co-graph at boot.
+            # Practice adds new connections to it. Export the combined graph.
             mind.cortex._epoch += 1
             export_cortex(mind)
+            export_graphs(mind)
             from shifu_ocr.mind.nervous_system import write_epoch
             write_epoch(mind.cortex._epoch)
             result = {'ok': True, **r}

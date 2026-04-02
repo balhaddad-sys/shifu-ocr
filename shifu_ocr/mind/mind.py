@@ -1414,21 +1414,36 @@ class ShifuMind:
         improved = 0
         degraded = 0
 
-        # Find concepts worth practicing — FAST: skip confidence() call
-        # (it's expensive). Use word_freq + breadth as proxy.
+        # FOCUSED PRACTICE: pick ONE concept and repeat ALL rounds on it.
+        # Like studying one chapter until you know it.
+        # Repetition strengthens connections until they myelinate.
+        # Conviction target gets priority. Otherwise least-connected.
         candidates = []
         for word, freq in self.cortex.word_freq.items():
-            if len(word) <= 3 or freq < 2:
+            if len(word) <= 4 or freq < 2:
                 continue
-            # Proxy for "still learning": has frequency but few connections
             breadth = len(self.cortex.breadth.get(word, set()))
-            if breadth < 30:  # Not yet well-connected
+            if breadth < 30:
                 candidates.append((word, breadth))
-        # Sort by breadth ascending — practice least connected first
         candidates.sort(key=lambda x: x[1])
 
-        for i in range(min(rounds, len(candidates))):
-            word, before_conf = candidates[i]
+        # Pick ONE focus word — conviction target or weakest
+        focus_word = None
+        purpose = self.conviction.discover_purpose(self)
+        if purpose:
+            goal_info = self.conviction._goals.get(purpose, {})
+            fw = goal_info.get('frontier') or goal_info.get('core')
+            if fw and len(fw) > 4:
+                focus_word = fw
+        if not focus_word and candidates:
+            focus_word = candidates[0][0]
+        if not focus_word:
+            return {'rounds': 0, 'improved': 0, 'degraded': 0, 'practice': []}
+
+        # ALL rounds on the SAME word — repetition builds strength
+        for i in range(rounds):
+            word = focus_word
+            before_conf = len(self.cortex.breadth.get(word, set()))
 
             # Generate a sentence from this concept
             generated = self.generate([word], max_length=10)
@@ -1460,23 +1475,33 @@ class ShifuMind:
             # The only difference is HOW MUCH, not WHETHER.
             # Every connection the mind makes is a step. Every step
             # is the right step because it's a step FORWARD.
-            gen_layer = self.cortex.get_layer('_general')
-            if gen_layer and len(generated) >= 2:
-                # Weight by coherence — but never zero, never negative
-                # High coherence: strong step (0.5)
-                # Low coherence: gentle step (0.05)
-                # The floor is NOT zero. Every step matters.
-                step_weight = max(0.05, coherence * 0.5)
+            # Reinforce in CO-GRAPH (where heartbeat reads for myelination)
+            # NOT just cortex. The co-graph is the shared knowledge.
+            if len(generated) >= 2:
+                step_weight = max(1.0, coherence * 3.0)
                 for j in range(len(generated) - 1):
                     a, b = generated[j], generated[j + 1]
-                    gen_layer.connect(a, b, step_weight, self.cortex._epoch)
-                    improved += 1
+                    if len(a) > 4 and len(b) > 4:
+                        if a not in self._co_graph:
+                            self._co_graph[a] = {}
+                        if b in self._co_graph[a]:
+                            self._co_graph[a][b] += step_weight
+                        elif len(self._co_graph[a]) < 100:
+                            self._co_graph[a][b] = step_weight
+                        improved += 1
 
-            # Feed EVERY sentence back — not just "good" ones.
-            # The baby learns from ALL its attempts.
-            # A bad sentence teaches what doesn't connect.
-            # That knowledge is just as valuable.
-            self.cortex.feed(generated, layer='_general')
+            # CREATIVE LEAP: connect focus word to its GENERATED neighbors
+            # Not random. FOCUSED. Every leap builds toward the conviction goal.
+            # Repetition on the SAME connections = accumulation = myelination.
+            if len(generated) >= 2:
+                for j in range(len(generated) - 1):
+                    a, b = generated[j], generated[j + 1]
+                    if len(a) > 4 and len(b) > 4:
+                        # Bidirectional — both directions accumulate
+                        for x, y in [(a, b), (b, a)]:
+                            if x not in self._co_graph:
+                                self._co_graph[x] = {}
+                            self._co_graph[x][y] = self._co_graph[x].get(y, 0) + 1.0
 
             after_conf = self.cortex.confidence(word)['score']
             results.append({
