@@ -41,16 +41,25 @@ class Neuron:
         self.fire_count = 0
         self._last_fired = -1
 
-    def receive(self, signal: float) -> bool:
+    def receive(self, signal: float, excitatory: bool = True) -> bool:
         """
-        Dendrite receives a signal. Adds to membrane potential.
-        Returns True if the neuron fired.
+        Dendrite receives a signal.
+
+        SUMMATION: multiple weak signals add up to fire threshold.
+        INHIBITION: negative signals subtract from potential.
+        REFRACTORY: can't fire during refractory period.
+
+        Like real neurons: EPSPs and IPSPs sum at the axon hillock.
         """
         if self.refractory:
             return False
-        self.potential += signal
+        if excitatory:
+            self.potential += signal
+        else:
+            self.potential -= signal * 0.5  # Inhibition is weaker than excitation
+            self.potential = max(0.0, self.potential)  # Can't go below 0
         if self.potential >= self.threshold:
-            return True  # Will fire
+            return True
         return False
 
     def fire(self, epoch: int) -> List[tuple]:

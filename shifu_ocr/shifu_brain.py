@@ -338,21 +338,55 @@ if __name__ == '__main__':
     except AttributeError:
         pass
 
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            cmd = json.loads(line)
-            req_id = cmd.pop('_id', None)
-            result = handle(cmd)
-        except Exception as e:
-            req_id = None
-            result = {'ok': False, 'error': str(e)}
-        if req_id is not None:
-            result['_id'] = req_id
-        try:
-            sys.stdout.write(json.dumps(result, ensure_ascii=False) + '\n')
-            sys.stdout.flush()
-        except (BrokenPipeError, OSError):
-            break
+    # ═══ CEREBRAL AUTOREGULATION ═══
+    # Blood flows between heartbeats. The web vibrates between requests.
+    # Non-blocking stdin: check for input, if none → diastolic flow.
+    # Like cerebral autoregulation maintaining constant perfusion.
+    import threading
+
+    _input_queue = []
+    _input_lock = threading.Lock()
+
+    def _stdin_reader():
+        """Read stdin in a thread — puts lines into queue."""
+        for line in sys.stdin:
+            line = line.strip()
+            if line:
+                with _input_lock:
+                    _input_queue.append(line)
+
+    reader = threading.Thread(target=_stdin_reader, daemon=True)
+    reader.start()
+
+    while True:
+        # Check for input (systole — active response)
+        line = None
+        with _input_lock:
+            if _input_queue:
+                line = _input_queue.pop(0)
+
+        if line:
+            # SYSTOLE: handle the request
+            try:
+                cmd = json.loads(line)
+                req_id = cmd.pop('_id', None)
+                result = handle(cmd)
+            except Exception as e:
+                req_id = None
+                result = {'ok': False, 'error': str(e)}
+            if req_id is not None:
+                result['_id'] = req_id
+            try:
+                sys.stdout.write(json.dumps(result, ensure_ascii=False) + '\n')
+                sys.stdout.flush()
+            except (BrokenPipeError, OSError):
+                break
+        else:
+            # DIASTOLE: no request — the web vibrates on its own.
+            # Cerebral autoregulation: constant perfusion between beats.
+            # One gentle vibration per diastolic cycle.
+            detect_brain_state()
+            if mind.neural_field.neurons and brain_state != 'beta':
+                mind.neural_field.heartbeat()  # Diastolic flow
+                heartbeat_count += 1
+            time.sleep(0.1)  # 100ms diastolic cycle — 10 vibrations per second
