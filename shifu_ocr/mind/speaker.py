@@ -1,57 +1,77 @@
 """
-Speaker — language generation from connections.
+Speaker — packet-aware language generation.
 
-Grammar is learned from observed sentence frames, not coded.
-Generation follows graph connections with learned transition
-probabilities and bigram context.
+specialize → relay → re-specialize applied to PRODUCTION:
 
-The Wernicke equivalent — but without hardcoded grammar rules.
+1. CONTENT SKELETON: activate seed, collect content words (PATH 3-4)
+   from co-graph. These are the MEANING carriers.
+
+2. STRUCTURAL GLUE: for each pair of content words, find the
+   structural words (PATH 1-2) that connect them in the nx-graph.
+   These are the GRAMMAR carriers.
+
+3. ASSEMBLE: interleave content + glue into a sentence.
+   Content words carry meaning. Glue words carry structure.
+   The sentence is the INTERFERENCE PATTERN of both.
+
+Not one-word-at-a-time bigram chains.
+Content skeleton first. Glue second. Like the brain:
+Broca assembles meaning from Wernicke's content.
 """
 
 from __future__ import annotations
-import math
-from collections import deque
 from typing import Dict, List, Set, Optional, Tuple, Any
+from collections import deque
 
 
 class Speaker:
-    """
-    Language generation engine.
-
-    learn_frame(tokens) — record sentence structure
-    generate(seeds, graphs) — produce token sequence from graph
-    find_path(src, tgt, graph) — conceptual path via BFS
-    describe(word, graphs) — natural-language description from connections
-    """
 
     def __init__(self, max_repetition_window: int = 10):
-        self._frames: Dict[str, int] = {}  # frame pattern -> frequency
-        self._bigrams: Dict[str, Dict[str, float]] = {}  # word -> {next: count}
-        self._starters: Dict[str, int] = {}  # first-word patterns
+        self._bigrams: Dict[str, Dict[str, float]] = {}
+        self._starters: Dict[str, int] = {}
+        self._glue: Dict[str, Dict[str, Dict[str, float]]] = {}
         self._max_rep_window = max_repetition_window
 
     # ═══ LEARNING ═══
 
     def learn_frame(self, tokens: List[str]) -> None:
-        """
-        Learn sentence structure from a token sequence.
-        Records bigram transitions and starter patterns.
-        """
+        """Learn sentence structure from a token sequence."""
         if len(tokens) < 2:
             return
-
-        # Record starter
         self._starters[tokens[0]] = self._starters.get(tokens[0], 0) + 1
-
-        # Record bigrams
         for i in range(len(tokens) - 1):
-            src = tokens[i]
-            tgt = tokens[i + 1]
+            src, tgt = tokens[i], tokens[i + 1]
             if src not in self._bigrams:
                 self._bigrams[src] = {}
             self._bigrams[src][tgt] = self._bigrams[src].get(tgt, 0) + 1
 
-    # ═══ GENERATION ═══
+        # Learn glue between content words
+        content_positions = []
+        for i, t in enumerate(tokens):
+            if len(t) > 3:
+                content_positions.append(i)
+        for idx in range(len(content_positions) - 1):
+            ci, cj = content_positions[idx], content_positions[idx + 1]
+            w1, w2 = tokens[ci], tokens[cj]
+            glue_words = tokens[ci + 1:cj]
+            if glue_words:
+                glue_str = ' '.join(glue_words)
+                if w1 not in self._glue:
+                    self._glue[w1] = {}
+                if w2 not in self._glue[w1]:
+                    self._glue[w1][w2] = {}
+                self._glue[w1][w2][glue_str] = self._glue[w1][w2].get(glue_str, 0) + 1
+
+    def _get_glue(self, w1: str, w2: str) -> str:
+        """Get the most common function words connecting w1 to w2."""
+        glue_map = self._glue.get(w1, {}).get(w2, {})
+        if not glue_map:
+            glue_map = self._glue.get(w2, {}).get(w1, {})
+        if not glue_map:
+            return ''
+        return max(glue_map, key=glue_map.get)
+
+    # ═══ PACKET-AWARE GENERATION ═══
 
     def generate(
         self,
@@ -59,54 +79,77 @@ class Speaker:
         co_graph: Dict[str, Dict[str, float]],
         nx_graph: Optional[Dict[str, Dict[str, float]]] = None,
         max_length: int = 20,
+        golgi=None,
     ) -> List[str]:
         """
-        Generate a token sequence starting from seed words.
-        Follows graph connections with bigram transition probabilities.
+        specialize → relay → re-specialize for PRODUCTION.
+
+        1. Build CONTENT SKELETON from co-graph (PATH 3-4 words)
+        2. Insert STRUCTURAL GLUE between content words (PATH 1-2)
+        3. Assemble into sentence
         """
         if not seed_words:
             return []
 
-        result = list(seed_words)
-        used = set(seed_words)
-        current = seed_words[-1]
+        seed = seed_words[0]
 
-        for _ in range(max_length - len(seed_words)):
-            candidates: Dict[str, float] = {}
+        # STEP 1: Content skeleton — collect PATH 3-4 words from co-graph
+        skeleton = [seed]
+        used = {seed}
+        current = seed
 
-            # Source 1: learned bigram transitions
-            bg = self._bigrams.get(current, {})
-            for w, count in bg.items():
-                if w not in used:
-                    candidates[w] = candidates.get(w, 0) + count
-
-            # Source 2: next-word graph
-            if nx_graph:
-                nx = nx_graph.get(current, {})
-                for w, weight in nx.items():
-                    if w not in used:
-                        candidates[w] = candidates.get(w, 0) + weight * 0.5
-
-            # Source 3: co-occurrence graph (weaker signal)
+        for _ in range(max_length // 2):  # Content words are ~half the sentence
             co = co_graph.get(current, {})
-            for w, weight in sorted(co.items(), key=lambda x: -x[1])[:10]:
-                if w not in used:
-                    candidates[w] = candidates.get(w, 0) + weight * 0.3
-
+            # Pick best content neighbor (len > 5 = likely content/specialist)
+            candidates = sorted(
+                [(w, wt) for w, wt in co.items()
+                 if w not in used and len(w) > 4],
+                key=lambda x: -x[1],
+            )
+            if not candidates:
+                # Fall back to any neighbor
+                candidates = sorted(
+                    [(w, wt) for w, wt in co.items()
+                     if w not in used and len(w) > 2],
+                    key=lambda x: -x[1],
+                )
             if not candidates:
                 break
-
-            # Pick highest-scored candidate
-            best = max(candidates, key=candidates.get)
-            result.append(best)
+            best = candidates[0][0]
+            skeleton.append(best)
             used.add(best)
             current = best
 
-            # Prevent infinite loops
-            if len(used) > self._max_rep_window * 2:
-                break
+        if len(skeleton) < 2:
+            return skeleton
 
-        return result
+        # STEP 2: Insert glue between content words
+        result = []
+        for i in range(len(skeleton)):
+            if i > 0:
+                # Find glue between skeleton[i-1] and skeleton[i]
+                glue = self._get_glue(skeleton[i - 1], skeleton[i])
+                if glue:
+                    for gw in glue.split():
+                        result.append(gw)
+                        if len(result) >= max_length:
+                            break
+                elif nx_graph:
+                    # No learned glue — try nx-graph for a bridge word
+                    nx = nx_graph.get(skeleton[i - 1], {})
+                    # Find a short word that leads to the next content word
+                    for bridge, bw in sorted(nx.items(), key=lambda x: -x[1])[:5]:
+                        if len(bridge) <= 4:  # Structural
+                            bridge_nx = nx_graph.get(bridge, {})
+                            if skeleton[i] in bridge_nx:
+                                result.append(bridge)
+                                break
+
+            if len(result) >= max_length:
+                break
+            result.append(skeleton[i])
+
+        return result[:max_length]
 
     # ═══ PATH FINDING ═══
 
@@ -117,32 +160,22 @@ class Speaker:
         co_graph: Dict[str, Dict[str, float]],
         max_hops: int = 5,
     ) -> Optional[List[str]]:
-        """
-        Find shortest conceptual path from source to target
-        via BFS on the co-occurrence graph.
-        """
+        """Shortest conceptual path via BFS."""
         if source == target:
             return [source]
-
         visited = {source}
         queue: deque = deque([(source, [source])])
-
         while queue:
             current, path = queue.popleft()
             if len(path) > max_hops:
                 continue
-
             neighbors = co_graph.get(current, {})
-            # Sort by weight descending, limit branching
-            sorted_n = sorted(neighbors.items(), key=lambda x: -x[1])[:20]
-
-            for neighbor, _ in sorted_n:
+            for neighbor, _ in sorted(neighbors.items(), key=lambda x: -x[1])[:20]:
                 if neighbor == target:
                     return path + [neighbor]
                 if neighbor not in visited:
                     visited.add(neighbor)
                     queue.append((neighbor, path + [neighbor]))
-
         return None
 
     # ═══ DESCRIPTION ═══
@@ -154,46 +187,39 @@ class Speaker:
         nx_graph: Optional[Dict[str, Dict[str, float]]] = None,
         layer_connections: Optional[Dict[str, Dict[str, float]]] = None,
     ) -> str:
-        """
-        Generate a natural-language description from connections.
-        Uses layer connections if available, falls back to co-occurrence.
-        """
+        """Generate description from connections."""
         parts = []
-
         if layer_connections:
             for layer_name, neighbors in layer_connections.items():
                 if not neighbors:
                     continue
                 top = sorted(neighbors.items(), key=lambda x: -x[1])[:3]
-                words = [w for w, _ in top]
+                words = [w for w, _ in top if len(w) > 2]
                 if words:
                     parts.append(f"{layer_name}: {', '.join(words)}")
-
         if not parts:
-            # Fall back to co-occurrence neighbors
             neighbors = co_graph.get(word, {})
             top = sorted(neighbors.items(), key=lambda x: -x[1])[:6]
             if top:
-                words = [w for w, _ in top]
+                words = [w for w, _ in top if len(w) > 2]
                 parts.append(f"{word} connects to {', '.join(words)}")
             else:
                 return f"No connections found for {word}."
-
         return '. '.join(parts) + '.'
 
     # ═══ SERIALIZATION ═══
 
     def to_dict(self) -> dict:
         return {
-            'frames': self._frames,
             'bigrams': self._bigrams,
             'starters': self._starters,
+            'glue': self._glue,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> Speaker:
         s = cls()
-        s._frames = d.get('frames', {})
         s._bigrams = d.get('bigrams', {})
         s._starters = d.get('starters', {})
+        s._glue = d.get('glue', {})
         return s
