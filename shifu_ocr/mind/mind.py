@@ -846,7 +846,7 @@ class ShifuMind:
             result_text = f"routed {r.get('routed',0)}, {r.get('identities',0)} id, {myel_new} myel"
             return {'did': 'consolidate', 'result': result_text, 'voice': voice, 'state': c['state']}
         elif action == 'practice':
-            r = self.practice(rounds=2)
+            r = self.practice(rounds=5)  # 5 rounds = 5.0 weight = myelinate in one session
             result_text = f"{r.get('improved',0)} reinforced, {myel_new} myel"
             return {'did': 'practice', 'result': result_text, 'voice': r.get('voice', voice), 'state': c['state']}
         else:
@@ -933,13 +933,20 @@ class ShifuMind:
     # Like thymic selection: wild proliferation → selection pressure →
     # only the connections that fit the architecture survive.
 
-    def consolidate(self, focus_size: int = 500) -> dict:
+    def consolidate(self, focus_size: Optional[int] = None) -> dict:
         """
         FOCUSED CONSOLIDATION — one chapter at a time.
 
-        Not 57K words at once. 500 words the baby ATTENDS to.
-        Focus selected by: conviction target, recent queries,
-        then highest-frequency content words.
+        Not 57K words at once. The first pass stays deliberately small so the
+        baby can organize itself quickly on first contact, then later passes
+        widen the aperture.
+
+        Default focus size:
+          - first consolidation: 200 words
+          - later consolidations: 500 words
+
+        Focus selected by: conviction target, recent queries, then
+        highest-frequency content words.
 
         Phase 1: IDENTITY — extract from co-graph structure.
           "X is a Y" detected from nx_graph bigrams.
@@ -974,6 +981,8 @@ class ShifuMind:
         # second time only the new stuff needs a place.
         last_epoch = getattr(self, '_last_consolidation_epoch', 0)
         current_epoch = self.cortex._epoch
+        if focus_size is None:
+            focus_size = 200 if last_epoch == 0 else 500
 
         # Which words are NEW since last consolidation?
         new_words = set()
@@ -1574,24 +1583,42 @@ class ShifuMind:
         shortcuts_created = 0
         gen = self.cortex.ensure_layer('_general')
 
-        # Phase 1: Promote top co-graph content connections to cortex + myelinate
+        # Phase 1: AUC MYELINATION
+        # Y = frequency of exposure. X = time. Area under curve = myelination.
+        # Every heartbeat adds current co-graph weight to cumulative AUC.
+        # AUC >= 3.0 → myelinate. No hard threshold on instantaneous weight.
+        # 100 weak exposures (0.1 each) myelinate just like 3 strong ones.
+        if not hasattr(self, '_auc'):
+            self._auc = {}
+        if not hasattr(self, '_hb_cursor'):
+            self._hb_cursor = 0  # Rotating cursor through co-graph
+
+        # Scan a WINDOW of 200 words per heartbeat — not the entire co-graph.
+        # Rotate through the co-graph over multiple beats.
+        # Like a heartbeat pumping blood to one organ at a time.
+        co_words = list(self._co_graph.keys())
+        window_size = 200
+        start = self._hb_cursor % max(len(co_words), 1)
+        end = min(start + window_size, len(co_words))
+        self._hb_cursor = end  # Next beat starts where this one stopped
+
         promoted = 0
-        for source, neighbors in self._co_graph.items():
+        for idx in range(start, end):
+            source = co_words[idx]
             if len(source) <= 4:
                 continue
+            neighbors = self._co_graph[source]
             for target, weight in sorted(neighbors.items(), key=lambda x: -x[1])[:10]:
-                if len(target) <= 4 or weight < 3:
+                if len(target) <= 4:
                     continue
+                key = (source, target)
+                self._auc[key] = self._auc.get(key, 0) + weight * 0.5
                 syn = gen.connect(source, target, min(weight, 10.0), self.cortex._epoch)
-                if not syn.myelinated:
+                if not syn.myelinated and self._auc[key] >= 3.0:
                     syn.myelinate()
                     myelinated_new += 1
                     self.cortex._myel_count += 1
                 promoted += 1
-                if promoted > 2000:
-                    break
-            if promoted > 2000:
-                break
 
         # Phase 2: Saltatory shortcuts
         if myelinated_new > 0:
