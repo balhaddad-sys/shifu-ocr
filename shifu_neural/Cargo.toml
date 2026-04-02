@@ -1,0 +1,14 @@
+[package]
+name = "shifu_neural"
+version = "0.1.0"
+edition = "2021"
+description = "Rust neural field core for Shifu cognitive architecture"
+
+[lib]
+name = "shifu_neural"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module"] }
+rand = "0.8"
+rustc-hash = "2.1"

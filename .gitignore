@@ -50,3 +50,4 @@ _d*.png
 
 # Generated docs (rebuild with generate_pdf.py)
 Shifu_OCR_Functions_Reference.pdf
+shifu_neural/target/

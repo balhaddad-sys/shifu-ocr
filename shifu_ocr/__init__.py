@@ -29,8 +29,9 @@ Author: Bader & Claude — March 2026
 from .engine import ShifuOCR, Landscape
 from .clinical import ClinicalPostProcessor
 from .ensemble import ShifuEnsemble, create_ensemble, train_ensemble
+from .mind import ShifuMind
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 __all__ = [
     "ShifuOCR",
     "Landscape",
@@ -38,4 +39,5 @@ __all__ = [
     "ShifuEnsemble",
     "create_ensemble",
     "train_ensemble",
+    "ShifuMind",
 ]
