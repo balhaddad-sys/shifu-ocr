@@ -36,12 +36,13 @@ def reload_shared_state():
     """Reload what feed worker and maintenance worker wrote."""
     global _last_epoch
     epoch = read_epoch()
-    if epoch > _last_epoch:
+    if epoch >= _last_epoch:
+        # Always reload — multiple writers may update without incrementing epoch
         import_graphs(mind)
-        import_cortex(mind)  # This also imports neural field from disk if available
+        import_cortex(mind)
         mind.cortex._invalidate_cache()
         mind.field.invalidate_cache()
-        _last_epoch = epoch
+        _last_epoch = epoch + 1  # Advance past current to detect next change
 
 # Seed only if no shared state exists
 import_graphs(mind)

@@ -56,8 +56,7 @@ for line in sys.stdin:
             result = {'ok': True, **r}
         elif op == 'practice':
             r = mind.practice(rounds=cmd.get('rounds', 10))
-            export_cortex(mind)
-            export_graphs(mind)
+            export_cortex(mind)  # Only cortex, not graphs
             result = {'ok': True, **r}
         elif op == 'study':
             r = mind.study(rounds=cmd.get('rounds', 5), level=cmd.get('level'))
@@ -68,10 +67,12 @@ for line in sys.stdin:
             result = {'ok': True, **r}
         elif op == 'autonomous_step':
             r = mind.autonomous_step()
-            # Write changes to disk AND increment epoch so thalamus reloads
+            # Only export CORTEX (layers, synapses, signal).
+            # Do NOT export co_graph/nx_graph/vocab — the FEED worker owns those.
+            # Exporting here would overwrite the feed worker's 59K-word graphs
+            # with the maintenance worker's tiny seed graphs.
             mind.cortex._epoch += 1
             export_cortex(mind)
-            export_graphs(mind)
             from shifu_ocr.mind.nervous_system import write_epoch
             write_epoch(mind.cortex._epoch)
             result = {'ok': True, **r}
