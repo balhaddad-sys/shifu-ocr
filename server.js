@@ -445,6 +445,9 @@ const server = http.createServer(async (req, res) => {
     const body = await parseBody(req);
     return jsonResponse(res, await mindCommand({ cmd: 'connect', from: body.from, to: body.to }));
   }
+  if (path === '/api/mind/autonomous_step' && req.method === 'POST') {
+    return jsonResponse(res, await mindCommand({ cmd: 'autonomous_step' }));
+  }
   if (path === '/api/mind/heartbeat' && req.method === 'POST') {
     return jsonResponse(res, await mindCommand({ cmd: 'heartbeat' }));
   }
@@ -633,15 +636,8 @@ async function send(){
       if(ms.ok)h+='<div class="trace"><span class="lbl">mind coherence</span> '+(ms.coherence||0).toFixed(3)+'</div>';
     }
     else if(d.i==='deliberate'){
-      // Before answering: ask the compass. If it needs something, do it silently.
-      // After doing it, ping the thalamus to force reload from disk.
-      try{
-        const c=await api('/api/mind/compass',{});
-        if(c.ok&&c.action==='consolidate'){
-          await api('/api/mind/consolidate',{});
-          await api('/api/mind/stats');  // Force thalamus to reload shared state
-        }
-      }catch{}
+      // The baby acts autonomously now. No forced consolidation before questions.
+      // The autonomous_step in the stats poll handles consolidation when needed.
       const r=await api('/api/mind/deliberate',{query:d.p});
       if(r.ok){
         h='<div style="margin-bottom:4px"><b>Focus:</b> '+(r.focus||[]).join(', ')+'</div>';
@@ -858,19 +854,28 @@ function updateStats(){
       if(!m.ok&&!m.vocabulary)return;
       const vocab=m.vocabulary||0;
       const myel=m.myelinated||0;
-      const feeds=m.feed_count||0;
       document.getElementById('topStats').innerHTML=vocab+'w &middot; '+myel+' myel &middot; '+(m.domains||0)+' dom';
-      // Learning progress bar: myelinated / vocabulary ratio
       const progress=vocab>0?Math.min(myel/Math.max(vocab*0.3,1)*100,100):0;
       document.getElementById('learnBar').style.width=progress.toFixed(0)+'%';
-      const pLabel=document.getElementById('learnLabel');
-      if(feeds>10){pLabel.textContent='Learning';pLabel.className='learning-label practicing';}
-      else{pLabel.textContent=progress.toFixed(0)+'%';pLabel.className='learning-label';}
+      // The baby acts on its own and tells you what it did
+      try{
+        const a=await api('/api/mind/autonomous_step',{});
+        if(a.ok){
+          const pLabel=document.getElementById('learnLabel');
+          const stateColors={newborn:'#7c3aed',absorbing:'#d97706',curious:'#16a34a',determined:'#6366f1',ready:'#2563eb',resting:'#64748b'};
+          pLabel.style.color=stateColors[a.state]||'#64748b';
+          if(a.did==='rest'){
+            pLabel.textContent=a.state;
+          }else{
+            pLabel.textContent=a.did+': '+a.result;
+            pLabel.className='learning-label practicing';
+          }
+        }
+      }catch{}
     }catch{}
-  },3000);
+  },5000);
 }
-// Poll learning progress every 5 seconds
-setInterval(updateStats,5000);
+setInterval(updateStats,8000);  // Every 8 seconds — gives the baby time to act
 updateStats();
 </script>
 </body>

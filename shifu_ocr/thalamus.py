@@ -168,6 +168,14 @@ def area_language(cmd):
     return None
 
 
+def area_autonomous(cmd):
+    """The baby acts on its own. Reports what it did."""
+    op = cmd.get('cmd', '')
+    if op == 'autonomous_step':
+        return {'ok': True, **mind.autonomous_step()}
+    return None
+
+
 def area_meta(cmd):
     """Stats, ping — meta operations."""
     op = cmd.get('cmd', '')
@@ -181,7 +189,7 @@ def area_meta(cmd):
 # ═══ THE THALAMUS — dismantle, route, assemble ═══
 
 # Cortical areas in processing order
-AREAS = [area_meta, area_absorb, area_comprehend, area_produce,
+AREAS = [area_meta, area_autonomous, area_absorb, area_comprehend, area_produce,
          area_introspect, area_maintain, area_language]
 
 

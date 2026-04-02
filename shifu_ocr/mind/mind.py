@@ -721,6 +721,43 @@ class ShifuMind:
             parts.append(voice)
         return ' '.join(parts)
 
+    def autonomous_step(self) -> dict:
+        """
+        The baby does ONE thing on its own and reports what it did.
+        Called by the UI on every poll. The baby decides what to do.
+        No commands. No guidance. It reads its compass and acts.
+
+        Returns: {'did': what it did, 'result': outcome, 'voice': what it says}
+        """
+        c = self.compass()
+        action = c.get('action')
+        voice = c['desire']
+
+        if action == 'consolidate':
+            r = self.consolidate(focus_size=200)  # Small focused chunk
+            return {
+                'did': 'consolidate',
+                'result': f"routed {r.get('routed',0)}, {r.get('identities',0)} identities",
+                'voice': voice,
+                'state': c['state'],
+            }
+        elif action == 'practice':
+            r = self.practice(rounds=2)  # Quick practice
+            return {
+                'did': 'practice',
+                'result': f"{r.get('improved',0)} reinforced",
+                'voice': r.get('voice', voice),
+                'state': c['state'],
+            }
+        else:
+            # Resting or waiting — just report state
+            return {
+                'did': 'rest',
+                'result': 'observing',
+                'voice': voice,
+                'state': c['state'],
+            }
+
     def deliberate(self, query: str) -> dict:
         """
         specialize → relay → re-specialize
