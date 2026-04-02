@@ -9,10 +9,10 @@ from frequency. Quality thresholds adapt with corpus maturity.
 from __future__ import annotations
 import re
 import math
+from collections import Counter
 from typing import Dict, List, Set, Optional, Tuple
 
-from ._types import TOKEN_RE
-
+_TOKEN_RE = re.compile(r'[a-z][a-z0-9-]*')
 _URL_RE = re.compile(r'https?://\S+')
 _BRACKET_RE = re.compile(r'\[[^\]]{0,100}\]')
 _PAREN_LONG_RE = re.compile(r'\([^)]{40,}\)')
@@ -67,9 +67,13 @@ class Gate:
             return set()
         sorted_words = sorted(word_freqs.items(), key=lambda x: -x[1])
         n = max(1, int(len(sorted_words) * frac))
+        # Also include very short words (length <= 2) as likely function words
         stops = set()
         for w, _ in sorted_words[:n]:
             stops.add(w)
+        for w in word_freqs:
+            if len(w) <= 2:
+                stops.add(w)
         return stops
 
     # ═══ CLEANING ═══
@@ -115,8 +119,29 @@ class Gate:
     # ═══ TOKENIZATION ═══
 
     def tokenize(self, text: str) -> List[str]:
-        """Extract lowercase alphabetic tokens."""
-        return TOKEN_RE.findall(text.lower())
+        """Extract lowercase alphabetic tokens. Filter noise emergently:
+        - Words with no vowels are likely abbreviations (xvii, bnf, ct)
+        - Words where one letter is >60% of the word are likely noise (xxxx, aaaa)
+        No hardcoded lists — just letter distribution."""
+        raw = _TOKEN_RE.findall(text.lower())
+        vowels = set('aeiouy')
+        result = []
+        for w in raw:
+            if len(w) <= 2:
+                result.append(w)  # Short words pass (is, a, the)
+                continue
+            # Vowel ratio: real English words have >= 20% vowels
+            # "stroke" = 2/6 = 33%. "xvii" = 1/4 = 25%. "bnf" = 0%.
+            # "osahs" = 2/5 = 40%. Tighten to 25% to catch "xvii" class.
+            vowel_count = sum(1 for c in w if c in vowels)
+            if vowel_count / len(w) < 0.25:
+                continue
+            # No single letter should be >50% of the word
+            counts = Counter(w)
+            if counts.most_common(1)[0][1] / len(w) > 0.5:
+                continue
+            result.append(w)
+        return result
 
     # ═══ FILTERING ═══
 

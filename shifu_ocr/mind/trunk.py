@@ -263,20 +263,18 @@ class Trunk:
                 # Compute overlap
                 smaller = a if a.size() < b.size() else b
                 larger = b if a.size() < b.size() else a
-                smaller_name = names[i] if a.size() < b.size() else names[j]
-                larger_name = names[j] if a.size() < b.size() else names[i]
                 overlap = len(smaller.words & larger.words)
                 ratio = overlap / max(smaller.size(), 1)
                 if ratio >= self._merge_overlap:
-                    # Merge smaller into larger
-                    for w in smaller.words:
-                        larger.absorb(w)
+                    # Merge b into a
+                    for w in b.words:
+                        a.absorb(w)
                         wd = self.word_domain.get(w, [])
-                        if smaller_name in wd:
-                            idx = wd.index(smaller_name)
-                            wd[idx] = larger_name
-                    del self.domains[smaller_name]
-                    merged.add(smaller_name)
+                        if names[j] in wd:
+                            idx = wd.index(names[j])
+                            wd[idx] = names[i]
+                    del self.domains[names[j]]
+                    merged.add(names[j])
 
     def detect_bridges(self, co_graph: Dict[str, Dict[str, float]]) -> List[dict]:
         """Detect high-breadth cross-domain words."""

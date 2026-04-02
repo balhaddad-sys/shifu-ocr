@@ -82,6 +82,7 @@ class Signal:
         # Recalibrate failed policies
         if (pol['count'] >= self._recal_threshold
                 and pol['avg_quality'] < self._recal_quality):
+            pol['avg_quality'] = 0.0
             pol['count'] = max(1, pol['count'] // 2)
             pol['total_quality'] = pol['avg_quality'] * pol['count']
             self._predictions[state] = 0.3  # Reset expectation

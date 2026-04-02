@@ -15,18 +15,29 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Episode:
-    """A single recorded moment."""
+    """A single recorded moment — episodic first.
+
+    The brain remembers WHERE, WHEN, WITH WHO first.
+    Semantic extraction happens later during replay (delta/theta states).
+
+    raw_text: the original sentence (needed for identity extraction during replay)
+    tokens: tokenized content words
+    replayed: how many times this episode has been replayed (0 = never)
+    """
     epoch: int
     tokens: List[str]
     significance: float
     context: dict = field(default_factory=dict)
     timestamp: float = 0.0
+    raw_text: str = ''
+    replayed: int = 0
 
     def to_dict(self) -> dict:
         return {
             'epoch': self.epoch, 'tokens': self.tokens,
             'significance': self.significance,
             'context': self.context, 'ts': self.timestamp,
+            'raw': self.raw_text, 'replayed': self.replayed,
         }
 
     @classmethod
@@ -36,6 +47,8 @@ class Episode:
             significance=d.get('significance', 0.0),
             context=d.get('context', {}),
             timestamp=d.get('ts', 0.0),
+            raw_text=d.get('raw', ''),
+            replayed=d.get('replayed', 0),
         )
 
 
@@ -61,61 +74,109 @@ class Memory:
         self._active_topic: Optional[str] = None
         self._topic_strength: int = 0
         self._recent_focus: List[List[str]] = []
+        # Inverted index: word -> set of episode indices for O(1) recall
+        self._word_index: Dict[str, Set[int]] = {}
+        # Correction detection
+        self._corrections: List[dict] = []  # {rejected, wanted, ts}
 
     def record(self, epoch: int, tokens: List[str],
                significance: float, context: Optional[dict] = None,
-               timestamp: float = 0.0) -> Optional[Episode]:
+               timestamp: float = 0.0, raw_text: str = '',
+               force: bool = False) -> Optional[Episode]:
         """
         Record an episode if significant enough.
         Evicts least significant when at capacity.
+
+        force=True bypasses significance threshold (used during batch feed —
+        every sentence is an episode, significance is judged later during replay).
         """
-        if significance < self._sig_threshold:
+        if not force and significance < self._sig_threshold:
             return None
 
         ep = Episode(
             epoch=epoch, tokens=list(tokens),
-            significance=significance,
+            significance=max(significance, 0.1),  # Never zero — every memory matters
             context=context or {},
             timestamp=timestamp,
+            raw_text=raw_text,
         )
+        idx = len(self.episodes)
         self.episodes.append(ep)
+
+        # Update inverted index
+        for t in tokens:
+            if t not in self._word_index:
+                self._word_index[t] = set()
+            self._word_index[t].add(idx)
 
         # Update topic tracking
         self._update_topic(tokens)
 
         # Evict if over capacity
         if len(self.episodes) > self._capacity:
-            # Remove least significant
             min_idx = 0
             min_sig = self.episodes[0].significance
             for i, e in enumerate(self.episodes):
                 if e.significance < min_sig:
                     min_sig = e.significance
                     min_idx = i
+            # Remove from inverted index
+            evicted = self.episodes[min_idx]
+            for t in evicted.tokens:
+                if t in self._word_index:
+                    self._word_index[t].discard(min_idx)
             self.episodes.pop(min_idx)
+            # Rebuild index (indices shifted)
+            self._rebuild_index()
 
         return ep
+
+    def _rebuild_index(self) -> None:
+        """Rebuild inverted index after eviction."""
+        self._word_index.clear()
+        for i, ep in enumerate(self.episodes):
+            for t in ep.tokens:
+                if t not in self._word_index:
+                    self._word_index[t] = set()
+                self._word_index[t].add(i)
+
+    def unreplayed(self, k: int = 20) -> List[Episode]:
+        """
+        Return episodes that haven't been replayed yet, oldest first.
+        Like the hippocampus replaying recent experiences during sleep.
+        """
+        return [ep for ep in self.episodes if ep.replayed == 0][:k]
+
+    def least_replayed(self, k: int = 10) -> List[Episode]:
+        """
+        Return episodes with fewest replays for reinforcement.
+        Even replayed episodes benefit from re-replay (spaced repetition).
+        """
+        candidates = sorted(self.episodes, key=lambda e: (e.replayed, -e.significance))
+        return candidates[:k]
 
     def recall(self, query_tokens: List[str], k: int = 5) -> List[Episode]:
         """
         Retrieve episodes most relevant to query.
-        Scored by token overlap weighted by significance.
+        Uses inverted index for O(query_words) lookup instead of O(episodes).
         """
         if not self.episodes or not query_tokens:
             return []
 
-        query_set = set(query_tokens)
-        scored = []
-        for ep in self.episodes:
-            ep_set = set(ep.tokens)
-            overlap = len(query_set & ep_set)
-            if overlap == 0:
-                continue
-            score = overlap * ep.significance
-            scored.append((score, ep))
+        # Gather candidate episode indices from inverted index
+        candidate_scores: Dict[int, float] = {}
+        for qt in query_tokens:
+            indices = self._word_index.get(qt, set())
+            for idx in indices:
+                if idx < len(self.episodes):
+                    ep = self.episodes[idx]
+                    candidate_scores[idx] = candidate_scores.get(idx, 0) + ep.significance
 
-        scored.sort(key=lambda x: -x[0])
-        return [ep for _, ep in scored[:k]]
+        if not candidate_scores:
+            return []
+
+        ranked = sorted(candidate_scores.items(), key=lambda x: -x[1])[:k]
+        return [self.episodes[idx] for idx, _ in ranked]
 
     def _update_topic(self, tokens: List[str]) -> None:
         """Track active topic from recent episodes."""
@@ -161,6 +222,32 @@ class Memory:
         continuity = overlap / max(total, 1)
         return 1.0 - continuity
 
+    def detect_correction(self, input_tokens: List[str],
+                          last_output_tokens: Optional[List[str]] = None) -> Optional[dict]:
+        """
+        Detect "not X, I want Y" patterns.
+        Short input + low overlap with last output = rejection signal.
+        """
+        if not last_output_tokens or not input_tokens:
+            return None
+        # Short input that doesn't overlap much with last output
+        if len(input_tokens) > 8:
+            return None  # Not a correction, too long
+        input_set = set(input_tokens)
+        output_set = set(last_output_tokens)
+        overlap = len(input_set & output_set)
+        if overlap <= 1 and len(input_tokens) <= 5:
+            correction = {
+                'rejected': list(output_set - input_set)[:5],
+                'wanted': list(input_set - output_set)[:5],
+                'ts': time.time() if 'time' in dir() else 0,
+            }
+            self._corrections.append(correction)
+            if len(self._corrections) > 20:
+                self._corrections = self._corrections[-10:]
+            return correction
+        return None
+
     def get_context(self) -> dict:
         """Current episodic context for the thinker."""
         return {
@@ -168,6 +255,7 @@ class Memory:
             'topic_strength': self._topic_strength,
             'last_focus': self._recent_focus[-1] if self._recent_focus else [],
             'turn_count': len(self.episodes),
+            'corrections': self._corrections[-3:],
         }
 
     # ═══ SERIALIZATION ═══
@@ -177,7 +265,7 @@ class Memory:
             'capacity': self._capacity,
             'sig_threshold': self._sig_threshold,
             'topic_window': self._topic_window,
-            'episodes': [e.to_dict() for e in self.episodes[-self._capacity:]],
+            'episodes': [e.to_dict() for e in self.episodes[-200:]],
             'active_topic': self._active_topic,
             'topic_strength': self._topic_strength,
         }
