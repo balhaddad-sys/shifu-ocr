@@ -414,13 +414,18 @@ if __name__ == '__main__':
 
                 elif brain_state == 'theta':
                     # GOAL-DIRECTED: seed the conviction frontier
-                    purpose = mind.conviction.discover_purpose(mind)
-                    if purpose:
-                        info = mind.conviction._goals.get(purpose, {})
-                        frontier = info.get('frontier') or info.get('core')
-                        if frontier and frontier in nf.neurons:
-                            seed = frontier
-                            energy = 1.0  # Strong — reaching toward the goal
+                    # Cache purpose — don't recompute every 200ms
+                    if heartbeat_count % 50 == 0 or not hasattr(heartbeat, '_cached_frontier'):
+                        purpose = mind.conviction.discover_purpose(mind)
+                        if purpose:
+                            info = mind.conviction._goals.get(purpose, {})
+                            heartbeat._cached_frontier = info.get('frontier') or info.get('core')
+                        else:
+                            heartbeat._cached_frontier = None
+                    frontier = getattr(heartbeat, '_cached_frontier', None)
+                    if frontier and frontier in nf.neurons:
+                        seed = frontier
+                        energy = 1.0
 
                 elif brain_state == 'alpha':
                     # RESTING TONE: seed the most-fired neuron (maintain highways)
@@ -438,8 +443,4 @@ if __name__ == '__main__':
                     nf.heartbeat()
                     heartbeat_count += 1
 
-            # Recovery: all neurons gradually return to resting threshold
-            for n in nf.neurons.values():
-                n.recover()
-
-            time.sleep(0.1)  # 100ms diastolic cycle
+            time.sleep(0.2)  # 200ms diastolic cycle — leave room for requests
