@@ -1520,78 +1520,62 @@ class ShifuMind:
 
     def heartbeat(self) -> dict:
         """
-        Continuous maintenance. Like blood + glucose supply.
-        Called periodically to keep the mind alive.
-
-        1. MYELINATION: connections used in recent deliberation/practice
-           get their activation count incremented. Those reaching
-           threshold get myelinated.
-        2. SALTATORY CONDUCTION: myelinated connections create SHORTCUTS
-           in the co-graph — direct links that skip intermediate nodes.
-        3. DECAY: unused connections weaken slightly. Myelinated resist.
+        Blood supply: promote co-graph edges to cortex AND myelinate.
+        No separate consolidation needed for myelination.
+        Only CONTENT words (PATH 3+, len > 4).
         """
         myelinated_new = 0
         shortcuts_created = 0
+        gen = self.cortex.ensure_layer('_general')
 
-        # Phase 1: Myelinate connections that appear in co-graph with high weight
-        # (proxy for "used repeatedly" — co-graph weight = co-occurrence count)
-        gen = self.cortex.get_layer('_general')
-        if gen:
-            for source, targets in gen._connections.items():
-                for target, syn in targets.items():
-                    if syn.myelinated:
-                        continue
-                    # Only myelinate CONTENT↔CONTENT connections
-                    # The Golgi tag tells us the pathway. No tag = check length.
-                    src_path = self.golgi.get_pathway(source) if hasattr(self, 'golgi') else (3 if len(source) > 5 else 1)
-                    tgt_path = self.golgi.get_pathway(target) if hasattr(self, 'golgi') else (3 if len(target) > 5 else 1)
-                    if src_path < 3 or tgt_path < 3:
-                        continue  # Don't myelinate structural connections
-                    co_weight = self._co_graph.get(source, {}).get(target, 0)
-                    if co_weight >= 3:
-                        syn.myelinate()
-                        myelinated_new += 1
-                        self.cortex._myel_count += 1
+        # Phase 1: Promote top co-graph content connections to cortex + myelinate
+        promoted = 0
+        for source, neighbors in self._co_graph.items():
+            if len(source) <= 4:
+                continue
+            for target, weight in sorted(neighbors.items(), key=lambda x: -x[1])[:10]:
+                if len(target) <= 4 or weight < 3:
+                    continue
+                syn = gen.connect(source, target, min(weight, 10.0), self.cortex._epoch)
+                if not syn.myelinated:
+                    syn.myelinate()
+                    myelinated_new += 1
+                    self.cortex._myel_count += 1
+                promoted += 1
+                if promoted > 2000:
+                    break
+            if promoted > 2000:
+                break
 
-        # Phase 2: Saltatory conduction — myelinated paths create shortcuts
-        # If A→B myelinated and B→C myelinated, create A→→C shortcut
-        if gen:
+        # Phase 2: Saltatory shortcuts
+        if myelinated_new > 0:
             new_shortcuts = []
             for source, targets in gen._connections.items():
+                if len(source) <= 4:
+                    continue
                 for target, syn in targets.items():
-                    if not syn.myelinated:
+                    if not syn.myelinated or len(target) <= 4:
                         continue
-                    # This connection is myelinated. Look for myelinated extensions.
-                    ext_targets = gen._connections.get(target, {})
-                    for ext_target, ext_syn in ext_targets.items():
-                        if not ext_syn.myelinated or ext_target == source or len(ext_target) <= 4:
-                            continue
-                        # A→B→C both myelinated. Create A→→C shortcut.
-                        existing = gen.get_synapse(source, ext_target)
-                        if not existing:
-                            new_shortcuts.append((source, ext_target, min(syn.weight, ext_syn.weight) * 0.7))
-                            shortcuts_created += 1
-                            if shortcuts_created > 100:
-                                break
+                    ext = gen._connections.get(target, {})
+                    for et, es in ext.items():
+                        if es.myelinated and et != source and len(et) > 4:
+                            if not gen.get_synapse(source, et):
+                                new_shortcuts.append((source, et, min(syn.weight, es.weight) * 0.7))
+                                shortcuts_created += 1
+                                if shortcuts_created > 100:
+                                    break
                     if shortcuts_created > 100:
                         break
                 if shortcuts_created > 100:
                     break
             for src, tgt, wt in new_shortcuts:
                 s = gen.connect(src, tgt, wt, self.cortex._epoch)
-                s.myelinate()  # Shortcuts are born myelinated
+                s.myelinate()
                 self.cortex._myel_count += 1
-
-        # Phase 3: Gentle decay (metabolism cost)
-        self.cortex.tick()
 
         self.cortex._invalidate_cache()
         self.field.invalidate_cache()
-
-        return {
-            'myelinated_new': myelinated_new,
-            'shortcuts': shortcuts_created,
-        }
+        return {'myelinated_new': myelinated_new, 'shortcuts': shortcuts_created}
 
     def save(self, path: str) -> None:
         """Save full state to JSON file."""
