@@ -71,10 +71,27 @@ class Neuron:
             mult = 1.5 if i in self.myelinated_targets else 1.0
             signals.append((target, self.potential * weight * mult))
 
+        # Hebbian strengthening: firing strengthens the connections that carried signal
+        self.strengthen_last_fired()
+
         # Reset
         self.potential = 0.0
         self.refractory = True
         return signals
+
+    def strengthen_last_fired(self):
+        """
+        After firing, the connections that JUST carried signal get stronger.
+        Hebbian: neurons that fire together wire together.
+        Called automatically after fire(). No scanning needed.
+        """
+        if self._last_fired < 0:
+            return
+        for i in range(len(self.axon_weights)):
+            self.axon_weights[i] += 0.1  # Every firing strengthens
+            # Myelinate when weight crosses threshold through USAGE
+            if i not in self.myelinated_targets and self.axon_weights[i] >= 2.0:
+                self.myelinated_targets.add(i)
 
     def reset_refractory(self):
         """End refractory period. Neuron can fire again."""
@@ -264,6 +281,96 @@ class NeuralField:
 
         coherence = sum(scores) / len(scores)
         return {'coherence': coherence, 'scores': scores}
+
+    # ═══ SPIDER WEB — everything through vibration ═══
+
+    def heartbeat(self) -> dict:
+        """
+        The spider sits in the center and FEELS the web.
+        Don't scan dictionaries. Send a vibration through the web.
+        Every neuron that vibrates gets its connections strengthened.
+        Myelination happens through USAGE (Hebbian), not through scanning.
+
+        Pick a random seed neuron. Activate it. The wave propagates.
+        Every neuron that fires strengthens its own connections.
+        Connections that strengthen past threshold myelinate automatically.
+        """
+        if not self.neurons:
+            return {'myelinated_new': 0, 'shortcuts': 0, 'fired': 0}
+
+        import random
+        # Pick a random neuron as the heartbeat pulse
+        seed_word = random.choice(list(self.neurons.keys()))
+        # Send a gentle vibration (not full activation — just a pulse)
+        field = self.activate(seed_word, energy=0.5)
+
+        # Count what happened from the vibration
+        fired = len(field)
+        myel_before = sum(len(n.myelinated_targets) for n in self.neurons.values())
+
+        # Every neuron that fired already strengthened its connections
+        # (Hebbian in fire() → strengthen_last_fired())
+        # Count new myelinations
+        myel_after = sum(len(n.myelinated_targets) for n in self.neurons.values())
+
+        return {
+            'myelinated_new': myel_after - myel_before,
+            'shortcuts': 0,
+            'fired': fired,
+            'seed': seed_word,
+        }
+
+    def practice(self, focus_word: str) -> dict:
+        """
+        Practice = activate the focus word STRONGLY.
+        The strong activation propagates further, reaching more neurons.
+        More neurons fire = more Hebbian strengthening = faster myelination.
+        Like a spider plucking a specific thread hard.
+        """
+        if focus_word not in self.neurons:
+            return {'improved': 0, 'fired': 0}
+
+        myel_before = sum(len(n.myelinated_targets) for n in self.neurons.values())
+        field = self.activate(focus_word, energy=2.0)  # Strong activation
+        myel_after = sum(len(n.myelinated_targets) for n in self.neurons.values())
+
+        return {
+            'improved': myel_after - myel_before,
+            'fired': len(field),
+        }
+
+    def prune(self, decay: float = 0.99, min_weight: float = 0.05) -> int:
+        """
+        Delta-state maintenance: decay unused connections.
+        Connections that haven't fired weaken.
+        Myelinated connections resist decay (they barely weaken).
+        Weak connections below min_weight get removed.
+        """
+        pruned = 0
+        for neuron in self.neurons.values():
+            dead = []
+            for i in range(len(neuron.axon_weights)):
+                if i in neuron.myelinated_targets:
+                    neuron.axon_weights[i] *= 0.999  # Myelinated barely decay
+                else:
+                    neuron.axon_weights[i] *= decay
+                if neuron.axon_weights[i] < min_weight:
+                    dead.append(i)
+            # Remove dead connections (reverse order to preserve indices)
+            for i in sorted(dead, reverse=True):
+                neuron.axon_targets.pop(i)
+                neuron.axon_weights.pop(i)
+                neuron.myelinated_targets.discard(i)
+                # Shift myelinated indices
+                new_myel = set()
+                for m in neuron.myelinated_targets:
+                    if m > i:
+                        new_myel.add(m - 1)
+                    elif m < i:
+                        new_myel.add(m)
+                neuron.myelinated_targets = new_myel
+                pruned += 1
+        return pruned
 
     def stats(self) -> dict:
         total_connections = sum(len(n.axon_targets) for n in self.neurons.values())

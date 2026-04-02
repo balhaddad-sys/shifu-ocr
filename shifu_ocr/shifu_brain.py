@@ -126,51 +126,50 @@ def detect_brain_state():
 
 def heartbeat():
     """
-    The heart is the RHYTHM SOURCE. Not the learner.
-    Each tick schedules different work based on brain state.
+    The SPIDER sits in the center and FEELS the web.
+    Don't scan. Vibrate. The web does its own maintenance.
 
-    BETA:  freeze topology. Only traverse. Heartbeat = just count.
-    ALPHA: light hygiene. AUC accumulate gently.
-    THETA: practice reinforcement enters AUC. Promote candidates.
-    DELTA: full maintenance. Myelinate. Prune weak. Compress.
+    Each beat: pick a random thread, pluck it, feel the response.
+    Every neuron that vibrates strengthens its connections (Hebbian).
+    Myelination happens through USAGE, not through scanning.
     """
     global heartbeat_count
     heartbeat_count += 1
 
-    hb = {'myelinated_new': 0, 'shortcuts': 0}
+    hb = {'myelinated_new': 0, 'fired': 0}
 
     if brain_state == 'beta':
-        # Freeze topology. Just count the beat.
-        pass
+        pass  # Freeze. Don't pluck the web during active thinking.
 
     elif brain_state == 'alpha':
-        # Light AUC accumulation — gentle myelination
-        hb = mind.heartbeat()
+        # Gentle pluck — one random vibration
+        if mind.neural_field.neurons:
+            hb = mind.neural_field.heartbeat()
 
     elif brain_state == 'theta':
-        # Active myelination + AUC from practice
-        hb = mind.heartbeat()
+        # Strong pluck — multiple vibrations
+        if mind.neural_field.neurons:
+            for _ in range(3):
+                r = mind.neural_field.heartbeat()
+                hb['myelinated_new'] += r.get('myelinated_new', 0)
+                hb['fired'] += r.get('fired', 0)
 
     elif brain_state == 'delta':
-        # FULL maintenance: myelinate + prune + consolidate
-        hb = mind.heartbeat()
-        # Prune weak connections (downselection, not just reinforcement)
-        gen = mind.cortex.get_layer('_general')
-        pruned = 0
-        if gen:
-            pruned = gen.prune(
-                mind.cortex._epoch, 0.95, 0.999, 0.1
-            )
-        hb['pruned'] = pruned
+        # Full maintenance: vibrate + prune
+        if mind.neural_field.neurons:
+            for _ in range(5):
+                r = mind.neural_field.heartbeat()
+                hb['myelinated_new'] += r.get('myelinated_new', 0)
+                hb['fired'] += r.get('fired', 0)
+            hb['pruned'] = mind.neural_field.prune()
 
     return hb
 
 
 def idle_cycle():
     """
-    What the brain does between requests.
-    Heart beats. Then state-specific processing.
-    Baroreceptor feedback adjusts behavior.
+    Brain state determines what happens between requests.
+    Everything goes through the web — vibrations, not scans.
     """
     detect_brain_state()
     hb = heartbeat()
@@ -182,21 +181,28 @@ def idle_cycle():
     }
 
     if brain_state == 'delta':
+        # Deep sleep: consolidate (builds neural field) + prune
         r = mind.consolidate(focus_size=100)
-        result['did'] = f'delta: consolidate({r.get("routed",0)}r) + prune({hb.get("pruned",0)}) + myel({hb.get("myelinated_new",0)})'
+        result['did'] = f'delta: consolidate + prune({hb.get("pruned",0)}) + myel({hb.get("myelinated_new",0)})'
 
     elif brain_state == 'theta':
-        r = mind.practice(rounds=5)
-        hb2 = mind.heartbeat()  # Second heartbeat after practice to myelinate new connections
-        result['did'] = f'theta: practice({r.get("improved",0)}r) + myel({hb.get("myelinated_new",0)+hb2.get("myelinated_new",0)})'
-        if r.get('voice'):
-            result['voice'] = r['voice']
+        # Practice through the web: pluck the conviction target hard
+        purpose = mind.conviction.discover_purpose(mind)
+        focus = None
+        if purpose:
+            info = mind.conviction._goals.get(purpose, {})
+            focus = info.get('frontier') or info.get('core')
+        if focus and mind.neural_field.neurons and focus in mind.neural_field.neurons:
+            pr = mind.neural_field.practice(focus)
+            result['did'] = f'theta: practice({focus}, fired={pr.get("fired",0)}) + myel({hb.get("myelinated_new",0)+pr.get("improved",0)})'
+        else:
+            result['did'] = f'theta: heartbeat(fired={hb.get("fired",0)}, myel={hb.get("myelinated_new",0)})'
 
     elif brain_state == 'alpha':
-        result['did'] = f'alpha: heartbeat({hb.get("myelinated_new",0)} myel)'
+        result['did'] = f'alpha: heartbeat(fired={hb.get("fired",0)}, myel={hb.get("myelinated_new",0)})'
 
     else:
-        result['did'] = f'beta: heartbeat'
+        result['did'] = 'beta: active'
 
     return result
 
