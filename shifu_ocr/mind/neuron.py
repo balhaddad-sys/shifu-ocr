@@ -90,7 +90,8 @@ class Neuron:
         for i in range(len(self.axon_weights)):
             self.axon_weights[i] += 0.1  # Every firing strengthens
             # Myelinate when weight crosses threshold through USAGE
-            if i not in self.myelinated_targets and self.axon_weights[i] >= 2.0:
+            # Baby brains myelinate faster (lower threshold)
+            if i not in self.myelinated_targets and self.axon_weights[i] > 0.75:
                 self.myelinated_targets.add(i)
 
     def reset_refractory(self):

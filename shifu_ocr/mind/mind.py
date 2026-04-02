@@ -377,6 +377,17 @@ class ShifuMind:
                     elif len(nx_w) < 50:
                         nx_w[nxt] = 1
 
+                # BUILD WEB: content words become neurons IMMEDIATELY.
+                # No waiting for consolidation. The web grows as the baby eats.
+                content_packets = [p for p in stream.packets if p.origin >= 3]
+                for p in content_packets:
+                    neuron = self.neural_field.ensure_neuron(p.word)
+                    # Connect to other content words in the same sentence
+                    for other_p in content_packets:
+                        if other_p.word != p.word:
+                            neuron.add_connection(other_p.word, 0.3)
+                            self.neural_field.ensure_neuron(other_p.word)
+
                 # RE-SPECIALIZE: only specialist packets trigger deep processing
                 specialists = stream.by_origin(4)
                 if specialists:
@@ -1324,7 +1335,7 @@ class ShifuMind:
             'vocabulary': cx['vocabulary'],
             'total_words': cx['total_words'],
             'assemblies': cx['assemblies'],
-            'myelinated': cx['myelinated'],
+            'myelinated': cx['myelinated'] + self.neural_field.stats().get('myelinated', 0),
             'plasticity': cx['plasticity'],
             'domains': tr['domains'],
             'trunk_words': tr['trunk_words'],

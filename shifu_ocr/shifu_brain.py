@@ -147,9 +147,9 @@ def heartbeat():
             hb = mind.neural_field.heartbeat()
 
     elif brain_state == 'theta':
-        # Strong pluck — multiple vibrations
+        # Strong pluck — MANY vibrations (theta is active learning)
         if mind.neural_field.neurons:
-            for _ in range(3):
+            for _ in range(20):  # 20 beats per theta cycle
                 r = mind.neural_field.heartbeat()
                 hb['myelinated_new'] += r.get('myelinated_new', 0)
                 hb['fired'] += r.get('fired', 0)
