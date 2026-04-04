@@ -18,8 +18,13 @@ canvas{display:block}
 .chip{background:rgba(14,18,25,0.7);border:1px solid rgba(26,33,48,0.6);padding:4px 12px;border-radius:16px;font-size:0.68em;backdrop-filter:blur(8px)}
 .chip b{color:#48b89a}
 
-#search{position:fixed;top:22px;right:28px;z-index:10;background:rgba(14,18,25,0.7);border:1px solid rgba(26,33,48,0.6);color:#a8b4c4;padding:10px 16px;border-radius:20px;font-family:inherit;font-size:0.82em;width:200px;outline:none;transition:all 0.3s;backdrop-filter:blur(8px)}
-#search:focus{border-color:#48b89a;width:260px;box-shadow:0 0 20px rgba(72,184,154,0.15)}
+#input-bar{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:10;display:flex;align-items:center;gap:0;background:rgba(6,10,16,0.88);border:1px solid rgba(26,33,48,0.5);border-radius:28px;padding:4px 6px 4px 16px;backdrop-filter:blur(12px);transition:all 0.3s;width:480px}
+#input-bar:focus-within{border-color:#48b89a;box-shadow:0 0 30px rgba(72,184,154,0.12);width:560px}
+#input-mode{color:#3a4a5a;font-size:0.6em;text-transform:uppercase;letter-spacing:2px;min-width:48px;transition:color 0.2s}
+#input-bar:focus-within #input-mode{color:#48b89a}
+#main-input{flex:1;background:none;border:none;color:#a8b4c4;padding:12px 8px;font-family:inherit;font-size:0.85em;outline:none}
+#main-input::placeholder{color:#2a3a4a}
+#input-hint{color:#2a3a4a;font-size:0.6em;padding-right:14px;white-space:nowrap;transition:opacity 0.2s}
 
 #panel{position:fixed;right:0;top:0;bottom:0;width:300px;background:rgba(6,10,16,0.92);border-left:1px solid rgba(26,33,48,0.5);padding:80px 20px 20px;overflow-y:auto;transform:translateX(100%);transition:transform 0.35s cubic-bezier(0.4,0,0.2,1);z-index:9;backdrop-filter:blur(12px)}
 #panel.open{transform:translateX(0)}
@@ -42,11 +47,6 @@ canvas{display:block}
 .dc-count{width:50px;color:#2a3a4a}
 
 #hint{position:fixed;bottom:22px;right:28px;color:#1a2a3a;font-size:0.65em;text-align:right;z-index:10;line-height:1.6}
-#feed-bar{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:10;display:flex;gap:8px;align-items:center}
-#feed-input{background:rgba(6,10,16,0.85);border:1px solid rgba(26,33,48,0.5);color:#a8b4c4;padding:12px 18px;border-radius:24px;font-family:inherit;font-size:0.85em;width:400px;outline:none;backdrop-filter:blur(8px);transition:all 0.3s}
-#feed-input:focus{border-color:#48b89a;box-shadow:0 0 25px rgba(72,184,154,0.15);width:500px}
-#feed-btn{background:rgba(72,184,154,0.15);border:1px solid rgba(72,184,154,0.3);color:#48b89a;padding:12px 20px;border-radius:24px;font-family:inherit;font-weight:600;font-size:0.82em;cursor:pointer;transition:all 0.2s;backdrop-filter:blur(8px)}
-#feed-btn:hover{background:rgba(72,184,154,0.25);border-color:#48b89a}
 #feed-status{color:#2a3a4a;font-size:0.7em;position:fixed;bottom:60px;left:50%;transform:translateX(-50%);z-index:10;transition:opacity 0.5s}
 .burst{position:absolute;width:6px;height:6px;border-radius:50%;pointer-events:none;z-index:20}
 @keyframes burstAnim{0%{transform:scale(0);opacity:1}100%{transform:scale(8);opacity:0}}
@@ -61,8 +61,6 @@ canvas{display:block}
     <div class="stats-row" id="stats"></div>
   </div>
 </div>
-<input type="text" id="search" placeholder="search the brain...">
-
 <div id="panel">
   <button class="panel-close" onclick="document.getElementById('panel').classList.remove('open')">&times;</button>
   <div id="panel-content"></div>
@@ -70,13 +68,12 @@ canvas{display:block}
 
 <div id="depth-chart"></div>
 
-<form id="feed-bar" onsubmit="return false">
-  <input type="text" id="feed-input" placeholder="type a sentence to feed the brain...">
-  <button id="feed-btn" type="submit">Feed</button>
-</form>
+<div id="input-bar">
+  <div id="input-mode">search</div>
+  <input type="text" id="main-input" placeholder="search words or type a sentence and press Enter to feed..." autocomplete="off" spellcheck="false">
+  <div id="input-hint"></div>
+</div>
 <div id="feed-status"></div>
-
-<div id="hint">drag to rotate &middot; scroll to zoom &middot; click a neuron &middot; type below to feed</div>
 
 <script type="importmap">{"imports":{
   "three":"https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
@@ -296,27 +293,55 @@ window.addEventListener('resize', () => {
   composer.setSize(innerWidth, innerHeight);
 });
 
-document.getElementById('search').addEventListener('input', e => {
-  const v = e.target.value.toLowerCase();
+// Unified input: searches as you type, feeds on Enter
+const mainInput = document.getElementById('main-input');
+const modeLabel = document.getElementById('input-mode');
+const hintLabel = document.getElementById('input-hint');
+
+mainInput.addEventListener('input', e => {
+  const v = e.target.value.toLowerCase().trim();
   searched = v.length >= 2 ? v : null;
-  // Find and fly to matched word
+
   if (searched) {
-    const match = nodes.find(n => n.id === searched) || nodes.find(n => n.id.startsWith(searched));
+    // Find matches
+    const exact = nodes.find(n => n.id === searched);
+    const partial = !exact ? nodes.find(n => n.id.startsWith(searched)) : null;
+    const match = exact || partial;
+
     if (match) {
       selected = match.idx;
       showPanel(match);
       controls.autoRotate = false;
+      modeLabel.textContent = 'found';
+      modeLabel.style.color = '#48b89a';
+      hintLabel.textContent = 'Enter to feed';
+    } else {
+      const words = (v.match(/[a-z0-9]+/g) || []).filter(w => w.length > 1);
+      const known = words.filter(w => nodeMap[w] !== undefined).length;
+      modeLabel.textContent = 'search';
+      modeLabel.style.color = '#3a4a5a';
+      hintLabel.textContent = words.length >= 2 ? `Enter to feed (${known}/${words.length} known)` : '';
     }
+  } else {
+    modeLabel.textContent = 'search';
+    modeLabel.style.color = '#3a4a5a';
+    hintLabel.textContent = '';
+    selected = -1;
+    document.getElementById('panel').classList.remove('open');
   }
 });
 
-// Live feed — type text, watch it enter the brain
-const newNodeBursts = []; // {x,y,z,time,color} for burst animation
-document.getElementById('feed-btn').addEventListener('click', feedBrain);
-document.getElementById('feed-input').addEventListener('keydown', e => { if (e.key === 'Enter') feedBrain(); });
+mainInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    feedBrain();
+  }
+});
+
+const newNodeBursts = [];
 
 function feedBrain() {
-  const input = document.getElementById('feed-input');
+  const input = mainInput;
   const text = input.value.trim();
   if (!text) return;
   input.value = '';
@@ -379,9 +404,16 @@ function feedBrain() {
   status.style.opacity = 1;
   setTimeout(() => { status.style.opacity = 0; }, 3000);
 
+  // Update mode indicator
+  modeLabel.textContent = 'fed';
+  modeLabel.style.color = '#d4a843';
+  hintLabel.textContent = `${words.length} words`;
+  setTimeout(() => { modeLabel.textContent = 'search'; modeLabel.style.color = '#3a4a5a'; hintLabel.textContent = ''; }, 2000);
+
   // Temporarily highlight all fed words
   feedHighlight = { words: mentioned, time: clock.getElapsedTime() };
   controls.autoRotate = false;
+  searched = null;
 }
 
 let feedHighlight = null;
