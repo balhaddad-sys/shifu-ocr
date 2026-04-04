@@ -140,7 +140,7 @@ document.getElementById('depth-chart').innerHTML = '<div class="dc-title">Depth 
 
 // Setup Three.js
 scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x000000, 0.0008);
+scene.fog = new THREE.FogExp2(0x000000, 0.0004);
 camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 1, 5000);
 camera.position.set(0, 0, 500);
 renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -153,7 +153,7 @@ document.body.appendChild(renderer.domElement);
 // Bloom post-processing
 composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.6, 0.4, 0.85);
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 1.0, 0.6, 0.7);
 composer.addPass(bloom);
 
 // Controls
@@ -185,7 +185,7 @@ DATA.nodes.forEach((n, i) => {
   positions.push(x, y, z);
   const c = DC[n.depth] || DC.surface;
   colors.push(c.r, c.g, c.b);
-  sizes.push(Math.max(1.5, Math.min(6, Math.pow(n.freq, 0.28) * 0.8)));
+  sizes.push(Math.max(1.5, Math.min(6, Math.pow(n.freq, 0.28) * 1.6)));
   nodeData.push({ ...n, x, y, z, idx: i });
   nodeMap[n.id] = i;
 });
@@ -243,7 +243,7 @@ edgeLines = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({
 scene.add(edgeLines);
 
 // Particles flowing along edges
-const PARTICLES_PER_EDGE = 2;
+const PARTICLES_PER_EDGE = 5;
 const totalParticles = Math.min(links.length, 2000) * PARTICLES_PER_EDGE;
 const particlePositions = new Float32Array(totalParticles * 3);
 const particleColors = new Float32Array(totalParticles * 3);
@@ -265,7 +265,7 @@ const particleGeo = new THREE.BufferGeometry();
 particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
 particleGeo.setAttribute('color', new THREE.BufferAttribute(particleColors, 3));
 particleSystem = new THREE.Points(particleGeo, new THREE.PointsMaterial({
-  size: 1.5, vertexColors: true, transparent: true, opacity: 0.4,
+  size: 2.5, vertexColors: true, transparent: true, opacity: 0.8,
   blending: THREE.AdditiveBlending, depthWrite: false
 }));
 scene.add(particleSystem);
@@ -432,7 +432,7 @@ async function feedBrain() {
     }
 
     // Camera flies to this word — slow, cinematic
-    flyToNode(targetNode, 1.5);
+    flyToNode(targetNode, 2.5);
     selected = targetNode.idx;
 
     // Floating label above the word
@@ -457,7 +457,7 @@ async function feedBrain() {
     if (wi > 0) rebuildNodeMesh();
 
     // Wait between words — slow enough to see each construction step
-    await new Promise(r => setTimeout(r, 1200));
+    await new Promise(r => setTimeout(r, 2500));
   }
 
   feedHighlight = { words: mentioned, time: clock.getElapsedTime() };
@@ -519,7 +519,7 @@ function rebuildNodeMesh() {
 
   for (let i = 0; i < newN; i++) {
     const n = nodes[i];
-    const sz = n.radius || Math.max(1.5, Math.min(6, Math.pow(n.freq, 0.28) * 0.8));
+    const sz = n.radius || Math.max(1.5, Math.min(6, Math.pow(n.freq, 0.28) * 1.6));
     sizes[i] = sz;
     dummy.position.set(n.x, n.y, n.z);
     dummy.scale.set(sz, sz, sz);
@@ -546,7 +546,7 @@ function rebuildNodeMesh() {
   eg.setAttribute('position', new THREE.Float32BufferAttribute(ep, 3));
   eg.setAttribute('color', new THREE.Float32BufferAttribute(ec, 3));
   edgeLines = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({
-    vertexColors: true, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, linewidth: 1
+    vertexColors: true, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, linewidth: 2
   }));
   scene.add(edgeLines);
 }
