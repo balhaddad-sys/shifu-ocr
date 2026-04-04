@@ -474,6 +474,33 @@ stats · plan · diagnose · history · reset`);
         Surviving: {r.surviving.join(', ')}<br/>Removed: {r.removed.map(c=>c.join(',')).join(' | ')}
       </div>);setInput("");return;}
 
+    // ── Explain: "what connects X and Y", "why X and Y", "explain X and Y" ──
+    const explainMatch = raw.match(/(?:connect|relate|between|link|why|explain)\w*\s+(\w+)\s+(?:and|to|with|from)\s+(\w+)/i);
+    if(explainMatch && typeof engine.explain === 'function'){
+      const ea=explainMatch[1].toLowerCase(), eb=explainMatch[2].toLowerCase();
+      const r=engine.explain(ea,eb);
+      addMsg('shifu',r.explanation,<div className="mt-2 space-y-2 text-[10px]">
+        <div className="text-gray-400">coherence: {(r.coherence||0).toFixed(3)}</div>
+        {r.paths?.length>0&&<div className="bg-[#0d1117] p-2 rounded">
+          <span className="text-[#48b89a] block mb-1">Paths</span>
+          {r.paths.map((p,i)=><div key={i} className="text-gray-300 mb-1">{p.text} <span className="text-gray-600">({p.coherence.toFixed(3)} {p.type})</span></div>)}
+        </div>}
+        {r.shared?.length>0&&<div className="bg-[#0d1117] p-2 rounded">
+          <span className="text-blue-400 block mb-1">Shared Identity</span>
+          <div className="flex flex-wrap gap-1">{r.shared.map(s=><span key={s.word} className="px-1 bg-[#1a2130] rounded">{s.word} <span className="text-gray-600">A:{s.specA.toFixed(2)} B:{s.specB.toFixed(2)}</span></span>)}</div>
+        </div>}
+        {r.chains?.length>0&&<div className="bg-[#0d1117] p-2 rounded">
+          <span className="text-yellow-400 block mb-1">Sequences</span>
+          {r.chains.map((c,i)=><div key={i} className="text-gray-400">{c.words.join(' → ')} <span className="text-gray-600">({c.type} ×{c.weight})</span></div>)}
+        </div>}
+        {r.all?.length>1&&<div className="bg-[#0d1117] p-2 rounded">
+          <span className="text-gray-500 block mb-1">Alternative Explanations</span>
+          {r.all.slice(1).map((e,i)=><div key={i} className="text-gray-400">{e.text} <span className="text-gray-600">({e.coherence.toFixed(3)})</span></div>)}
+        </div>}
+      </div>);
+      setInput("");return;
+    }
+
     // ══════════════════════════════════════════════════════════
     // PERTURBATION: score the input against the graph
     // ══════════════════════════════════════════════════════════

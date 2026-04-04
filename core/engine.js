@@ -198,6 +198,98 @@ compact(maxNbrs=30){let stripped=0;
   }
   return{stripped};}
 
+// ─── Explain: WHY are two words connected? ───────────────────────
+// Finds multiple paths, shared identity words, directional nx2 chains.
+// Assembles explanation from what the graph actually contains.
+// No hardcoding — the grooves speak for themselves.
+explain(a,b){
+  const al=a.toLowerCase(),bl=b.toLowerCase();
+  const na=this.nodes[al],nb=this.nodes[bl];
+  if(!na||!nb)return{a:al,b:bl,explanation:"unknown words",paths:[],shared:[],chains:[]};
+
+  // 1. Find multiple paths (shortest + alternatives via different bridge words)
+  const paths=[];
+  const mainPath=this.path(al,bl,10);
+  if(mainPath.ok)paths.push({words:mainPath.words,text:mainPath.text,coherence:mainPath.coherence,type:'forward'});
+  const reversePath=this.path(bl,al,10);
+  if(reversePath.ok)paths.push({words:reversePath.words,text:reversePath.text,coherence:reversePath.coherence,type:'reverse'});
+
+  // Alternative paths: go through high-specificity bridge words
+  const aNbrs=Object.entries(na.neighbors).sort((x,y)=>y[1]-x[1]).slice(0,15);
+  const bNbrs=new Set(Object.keys(nb.neighbors));
+  for(const[mid]of aNbrs){
+    if(mid===al||mid===bl)continue;
+    if(!bNbrs.has(mid))continue;
+    // mid connects both — try path through it
+    const p1=this.path(al,mid,6);
+    const p2=this.path(mid,bl,6);
+    if(p1.ok&&p2.ok){
+      const combined=[...p1.words,...p2.words.slice(1)];
+      const text=combined.join(' ');
+      const sc=this.scoreSentence(text);
+      if(!paths.find(p=>p.text===text))
+        paths.push({words:combined,text,coherence:sc.coherence,type:'via:'+mid});
+    }
+    if(paths.length>=5)break;
+  }
+  paths.sort((a,b)=>b.coherence-a.coherence);
+
+  // 2. Shared identity: words that spike near BOTH a and b
+  const idA=typeof this.identity==='function'?this.identity(al,15):[];
+  const idB=typeof this.identity==='function'?this.identity(bl,15):[];
+  const idAset=new Map(idA.map(x=>[x.word,x]));
+  const shared=[];
+  for(const ib of idB){
+    const ia=idAset.get(ib.word);
+    if(ia){shared.push({word:ib.word,heatA:ia.heat,heatB:ib.heat,combined:ia.heat+ib.heat,specA:ia.specificity,specB:ib.specificity});}
+  }
+  shared.sort((a,b)=>b.combined-a.combined);
+
+  // 3. nx2 chains: what 3-word sequences connect them?
+  const chains=[];
+  // a -> mid -> b (direct trajectory)
+  if(na.next2){for(const[mid,targets]of Object.entries(na.next2)){if(targets[bl])chains.push({words:[al,mid,bl],weight:targets[bl],type:'a→?→b'});}}
+  // b -> mid -> a
+  if(nb.next2){for(const[mid,targets]of Object.entries(nb.next2)){if(targets[al])chains.push({words:[bl,mid,al],weight:targets[al],type:'b→?→a'});}}
+  // Through shared neighbors: a -> shared -> ?  and  ? -> shared -> b
+  for(const s of shared.slice(0,5)){
+    const sn=this.nodes[s.word];
+    if(sn?.next2){for(const[mid,targets]of Object.entries(sn.next2)){if(targets[bl]&&!chains.find(c=>c.words.join()===[s.word,mid,bl].join()))chains.push({words:[s.word,mid,bl],weight:targets[bl],type:'shared→?→b'});if(targets[al]&&!chains.find(c=>c.words.join()===[s.word,mid,al].join()))chains.push({words:[s.word,mid,al],weight:targets[al],type:'shared→?→a'});}}
+  }
+  chains.sort((a,b)=>b.weight-a.weight);
+
+  // 4. Assemble explanation from the best material
+  // Pick the highest-coherence path as the main statement
+  // Add shared identity words as context
+  // Add nx2 chains as evidence
+  const bestPath=paths[0];
+  const topShared=shared.slice(0,5).map(s=>s.word);
+  const topChains=chains.slice(0,3).map(c=>c.words.join(' '));
+
+  // Build explanation sentences from the graph material
+  const explanations=[];
+  if(bestPath)explanations.push(bestPath.text);
+  if(topChains.length)for(const c of topChains)explanations.push(c);
+  // Generate a bridging sentence if we have shared words
+  if(topShared.length>=2){
+    const gen=this.generate(al,bl,topShared[0],12);
+    if(gen.text&&gen.coherence>0.1)explanations.push(gen.text);
+  }
+  // Score all explanation sentences and pick the best
+  const scored=explanations.map(e=>({text:e,coherence:this.scoreSentence(e).coherence}));
+  scored.sort((a,b)=>b.coherence-a.coherence);
+
+  return{
+    a:al,b:bl,
+    explanation:scored[0]?.text||'no explanation found',
+    coherence:scored[0]?.coherence||0,
+    paths:paths.slice(0,3),
+    shared:shared.slice(0,8),
+    chains:chains.slice(0,5),
+    all:scored.slice(0,5),
+  };
+}
+
 // ─── Correct (indexed) ───────────────────────────────────────────
 correct(garbled,k=5){const g=garbled.toLowerCase(),cands=new Set();for(let d=-2;d<=2;d++){const ws=this._idxLen[g.length+d];if(ws)for(const w of ws)cands.add(w);}for(let i=0;i<g.length-1;i++){const ws=this._idxBg[g.slice(i,i+2)];if(ws)for(const w of ws)cands.add(w);}const scored=[...cands].map(w=>{const o=1-ocrDistance(g,w)/Math.max(g.length,w.length,1),b=sharedBigrams(g,w);return{word:w,score:o*0.7+b*0.3};});scored.sort((a,b)=>b.score-a.score||(this.nodes[b.word]?.freq||0)-(this.nodes[a.word]?.freq||0));const top=scored.slice(0,k),conf=top.length>=2?top[0].score-top[1].score:top.length?1:0;return{candidates:top,confidence:conf};}
 
