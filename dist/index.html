@@ -633,9 +633,20 @@ stats · plan · diagnose · history · reset`);
                       text=pages.join('\n');
                     }else{text=await f.text();}
                     if(!text.trim()){addMsg('system',`${f.name}: empty or unreadable, skipped.`);continue;}
-                    const r=engine.feedText(text);
-                    totalSent+=r.sentences;totalTok+=r.tokens;totalFiles++;
-                    addMsg('system',`${f.name}: ${r.sentences} sentences, ${r.tokens} tokens`);
+                    // Batch feed — process in chunks so UI doesn't freeze
+                    const sents=text.split(/[.!?\n]+/).map(s=>s.trim()).filter(s=>s.length>5);
+                    const BATCH=200;let fTok=0,fSent=0;
+                    for(let b=0;b<sents.length;b+=BATCH){
+                      const chunk=sents.slice(b,b+BATCH);
+                      for(const s of chunk){fTok+=engine.feed(s);fSent++;}
+                      // Breathe — let UI update
+                      if(b+BATCH<sents.length){
+                        addMsg('system',`${f.name}: ${fSent}/${sents.length} sentences...`);
+                        await new Promise(r=>setTimeout(r,0));
+                      }
+                    }
+                    totalSent+=fSent;totalTok+=fTok;totalFiles++;
+                    addMsg('system',`${f.name}: ${fSent} sentences, ${fTok} tokens`);
                   }catch(err){addMsg('system',`${f.name}: error — ${err.message}`);}
                 }
                 if(totalFiles>0){save();addMsg('system',`Done. Fed ${totalFiles} file${totalFiles>1?'s':''}: ${totalSent} sentences, ${totalTok} tokens. Vocab: ${Object.keys(engine.nodes).length}`);}
