@@ -3,6 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#48b89a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icon-192.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.svg">
   <title>Shifu v2 — Embryo Engine</title>
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
@@ -236,8 +242,18 @@ function App() {
   const autoRef = useRef(null);
   const endRef = useRef(null);
 
-  // Load from IndexedDB, or fetch trained brain from server
-  useEffect(()=>{IDB.get('engine').then(async d=>{if(d){engine.deserialize(d);refresh();addMsg('system',"Restored: "+engine.stats().vocab+" words from IndexedDB.");}else{try{addMsg('system','Loading trained brain from server...');const r=await fetch('/state');if(r.ok){const json=await r.text();engine.deserialize(json);await IDB.set('engine',json);refresh();addMsg('system',"Loaded trained brain: "+engine.stats().vocab+" words ("+Math.round(json.length/1024/1024)+"MB)");}}catch(e){addMsg('system','No pre-trained brain found. Starting empty.');}}});},[]);
+  const [loading, setLoading] = useState('');
+  // Load from IndexedDB, or fetch trained brain from server with progress
+  useEffect(()=>{IDB.get('engine').then(async d=>{if(d){engine.deserialize(d);refresh();addMsg('system',"Restored: "+engine.stats().vocab+" words from IndexedDB.");}else{try{setLoading('Connecting...');const r=await fetch('/state');if(r.ok){const len=parseInt(r.headers.get('content-length'))||0;const totalMB=Math.round(len/1024/1024);const reader=r.body.getReader();const chunks=[];let received=0;
+    while(true){const{done,value}=await reader.read();if(done)break;chunks.push(value);received+=value.length;if(len>0)setLoading(`Downloading brain... ${Math.round(received/1024/1024)}/${totalMB}MB`);}
+    setLoading('Parsing...');await new Promise(r=>setTimeout(r,50));
+    const jsonText=await new Blob(chunks).text();
+    setLoading('Building graph...');await new Promise(r=>setTimeout(r,50));
+    engine.deserialize(jsonText);
+    setLoading('Saving to IndexedDB...');await new Promise(r=>setTimeout(r,50));
+    await IDB.set('engine',jsonText);refresh();setLoading('');
+    addMsg('system',"Loaded trained brain: "+engine.stats().vocab+" words ("+Math.round(jsonText.length/1024/1024)+"MB). Saved to IndexedDB for offline use.");
+    }else{setLoading('');addMsg('system','No pre-trained brain on server. Starting empty.');}}catch(e){setLoading('');addMsg('system','Starting empty — feed text to begin.');}}});},[]);
   useEffect(()=>{endRef.current?.scrollIntoView({behavior:'smooth'});},[messages]);
 
   const refresh = () => { const s=engine.stats(); setStats({vocab:s.vocab,tokens:s.tokenCount,sentences:s.sentences}); };
@@ -649,6 +665,11 @@ Forgetting:
           </div>
         </div>
 
+        {/* LOADING BAR */}
+        {loading && <div className="px-4 py-2 bg-[#0d1117] border-b border-[#1a2130] text-[10px] text-[#48b89a] flex items-center gap-2 shrink-0">
+          <div className="w-2 h-2 rounded-full bg-[#48b89a] pulse"></div>{loading}
+        </div>}
+
         {/* MESSAGES */}
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {messages.map(msg=>(
@@ -687,5 +708,7 @@ const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<App/>);
   </script>
 </head>
-<body><div id="root"></div></body>
+<body><div id="root"></div>
+<script>if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});</script>
+</body>
 </html>

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" fill="none">
+  <rect width="192" height="192" rx="32" fill="#0a0e14"/>
+  <circle cx="96" cy="96" r="40" stroke="#48b89a" stroke-width="3" fill="none"/>
+  <circle cx="96" cy="96" r="8" fill="#48b89a"/>
+  <line x1="96" y1="56" x2="96" y2="30" stroke="#48b89a" stroke-width="2" opacity="0.5"/>
+  <line x1="96" y1="136" x2="96" y2="162" stroke="#48b89a" stroke-width="2" opacity="0.5"/>
+  <line x1="56" y1="96" x2="30" y2="96" stroke="#48b89a" stroke-width="2" opacity="0.5"/>
+  <line x1="136" y1="96" x2="162" y2="96" stroke="#48b89a" stroke-width="2" opacity="0.5"/>
+  <text x="96" y="186" text-anchor="middle" font-family="monospace" font-size="14" fill="#48b89a">SHIFU</text>
+</svg>
