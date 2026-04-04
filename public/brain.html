@@ -311,7 +311,7 @@ mainInput.addEventListener('input', e => {
     if (match) {
       selected = match.idx;
       showPanel(match);
-      controls.autoRotate = false;
+      flyToNode(match);
       modeLabel.textContent = 'found';
       modeLabel.style.color = '#48b89a';
       hintLabel.textContent = 'Enter to feed';
@@ -340,83 +340,136 @@ mainInput.addEventListener('keydown', e => {
 
 const newNodeBursts = [];
 
-function feedBrain() {
+let feeding = false;
+async function feedBrain() {
   const input = mainInput;
   const text = input.value.trim();
-  if (!text) return;
+  if (!text || feeding) return;
   input.value = '';
+  feeding = true;
 
-  // Tokenize same as engine
   const words = (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(w => w.length > 1);
-  if (words.length < 2) return;
+  if (words.length < 2) { feeding = false; return; }
 
-  // Find which words are NEW (not in current visualization)
   const existingSet = new Set(nodes.map(n => n.id));
-  const newWords = words.filter(w => !existingSet.has(w));
-  const existingWords = words.filter(w => existingSet.has(w));
-
-  // Highlight existing words that were mentioned
-  searched = null;
   const mentioned = new Set(words);
+  controls.autoRotate = false;
 
-  // Add new nodes to the visualization
-  for (const w of newWords) {
-    const angle = Math.random() * Math.PI * 2;
-    const elev = (Math.random() - 0.5) * Math.PI;
-    const r = 130 + Math.random() * 40; // surface layer — new words start shallow
-    const x = r * Math.cos(elev) * Math.cos(angle);
-    const y = r * Math.cos(elev) * Math.sin(angle);
-    const z = r * Math.sin(elev);
+  modeLabel.textContent = 'feeding';
+  modeLabel.style.color = '#d4a843';
 
-    const newNode = {
-      id: w, freq: 1, depth: 'surface', ev: 0.1, nb: words.length - 1,
-      nx: 0, topNb: words.filter(ww => ww !== w).slice(0, 5), topNx: [],
-      pos: 0.5, x, y, z, idx: nodes.length,
-      color: DC.surface, radius: 2, pulse: Math.random() * Math.PI * 2,
-      isNew: true, birthTime: clock.getElapsedTime()
-    };
-    nodes.push(newNode);
-    nodeMap[w] = newNode.idx;
-    existingSet.add(w);
+  // Animate word by word
+  for (let wi = 0; wi < words.length; wi++) {
+    const w = words[wi];
+    hintLabel.textContent = `${wi + 1}/${words.length}: ${w}`;
 
-    // Create burst effect
-    newNodeBursts.push({ x, y, z, time: clock.getElapsedTime(), color: DC.surface });
-  }
+    let targetNode;
 
-  // Add connections between all words in the sentence
-  for (let i = 0; i < words.length; i++) {
-    for (let j = i + 1; j < Math.min(words.length, i + 4); j++) {
-      const si = nodeMap[words[i]], ti = nodeMap[words[j]];
+    if (!existingSet.has(w)) {
+      // New word — create node, animate birth
+      // Place near previous word if exists, else random
+      let x, y, z;
+      if (wi > 0 && nodeMap[words[wi-1]] !== undefined) {
+        const prev = nodes[nodeMap[words[wi-1]]];
+        const offset = 20 + Math.random() * 15;
+        const a = Math.random() * Math.PI * 2;
+        const e = (Math.random() - 0.5) * Math.PI * 0.6;
+        x = prev.x + offset * Math.cos(e) * Math.cos(a);
+        y = prev.y + offset * Math.cos(e) * Math.sin(a);
+        z = prev.z + offset * Math.sin(e);
+      } else {
+        const angle = Math.random() * Math.PI * 2;
+        const elev = (Math.random() - 0.5) * Math.PI;
+        const r = 130 + Math.random() * 40;
+        x = r * Math.cos(elev) * Math.cos(angle);
+        y = r * Math.cos(elev) * Math.sin(angle);
+        z = r * Math.sin(elev);
+      }
+
+      const newNode = {
+        id: w, freq: 1, depth: 'surface', ev: 0.1, nb: 0, nx: 0,
+        topNb: [], topNx: [], pos: 0.5, x, y, z, idx: nodes.length,
+        color: DC.surface, radius: 2.5, pulse: Math.random() * Math.PI * 2,
+        isNew: true, birthTime: clock.getElapsedTime()
+      };
+      nodes.push(newNode);
+      nodeMap[w] = newNode.idx;
+      existingSet.add(w);
+      targetNode = newNode;
+
+      // Ring burst
+      addRingBurst(x, y, z);
+      rebuildNodeMesh();
+    } else {
+      targetNode = nodes[nodeMap[w]];
+      // Flash existing node
+      targetNode.isNew = true;
+      targetNode.birthTime = clock.getElapsedTime();
+    }
+
+    // Camera flies to this word
+    flyToNode(targetNode, 0.6);
+    selected = targetNode.idx;
+
+    // Add connections to previous words in window
+    for (let j = Math.max(0, wi - 3); j < wi; j++) {
+      const si = nodeMap[words[j]], ti = nodeMap[w];
       if (si !== undefined && ti !== undefined) {
         links.push({ si, ti, w: 1, isNew: true, birthTime: clock.getElapsedTime() });
       }
     }
+    if (wi > 0) rebuildNodeMesh();
+
+    // Wait between words — let the animation breathe
+    await new Promise(r => setTimeout(r, 500));
   }
 
-  // Rebuild instanced mesh with new nodes
-  rebuildNodeMesh();
-
-  // Status message
-  const status = document.getElementById('feed-status');
-  status.textContent = newWords.length > 0
-    ? `+${newWords.length} new neurons: ${newWords.slice(0, 5).join(', ')}${newWords.length > 5 ? '...' : ''}`
-    : `reinforced: ${existingWords.slice(0, 5).join(', ')}`;
-  status.style.opacity = 1;
-  setTimeout(() => { status.style.opacity = 0; }, 3000);
-
-  // Update mode indicator
-  modeLabel.textContent = 'fed';
-  modeLabel.style.color = '#d4a843';
-  hintLabel.textContent = `${words.length} words`;
-  setTimeout(() => { modeLabel.textContent = 'search'; modeLabel.style.color = '#3a4a5a'; hintLabel.textContent = ''; }, 2000);
-
-  // Temporarily highlight all fed words
   feedHighlight = { words: mentioned, time: clock.getElapsedTime() };
-  controls.autoRotate = false;
+
+  // Status
+  const newCount = words.filter(w => nodes[nodeMap[w]]?.freq === 1).length;
+  const status = document.getElementById('feed-status');
+  status.textContent = `fed ${words.length} words` + (newCount > 0 ? ` (+${newCount} new neurons)` : '');
+  status.style.opacity = 1;
+  setTimeout(() => { status.style.opacity = 0; }, 4000);
+
+  modeLabel.textContent = 'done';
+  modeLabel.style.color = '#48b89a';
+  hintLabel.textContent = `${nodes.length} neurons`;
+  setTimeout(() => { modeLabel.textContent = 'search'; modeLabel.style.color = '#3a4a5a'; hintLabel.textContent = ''; }, 3000);
+
   searched = null;
+  feeding = false;
 }
 
 let feedHighlight = null;
+
+// Camera fly-to animation
+let flyTarget = null; // {from, to, lookAt, startTime, duration}
+
+function flyToNode(n, duration = 1.2) {
+  const pos = new THREE.Vector3(n.x, n.y, n.z);
+  const dir = pos.clone().normalize();
+  const target = dir.multiplyScalar(pos.length() + 180);
+  flyTarget = {
+    from: camera.position.clone(),
+    to: target,
+    lookAt: pos,
+    startTime: clock.getElapsedTime(),
+    duration,
+  };
+  controls.autoRotate = false;
+}
+
+// Ring burst effect for new nodes
+const ringBursts = []; // {center, startTime, color}
+const ringGeo = new THREE.RingGeometry(0.8, 1, 32);
+const ringGroup = new THREE.Group();
+scene.add(ringGroup);
+
+function addRingBurst(x, y, z, color) {
+  ringBursts.push({ x, y, z, startTime: clock.getElapsedTime(), color: color || new THREE.Color(0.9, 0.75, 0.2) });
+}
 
 function rebuildNodeMesh() {
   // Remove old mesh
@@ -484,6 +537,33 @@ function animate() {
   requestAnimationFrame(animate);
   const t = clock.getElapsedTime();
   controls.update();
+
+  // Camera fly-to animation
+  if (flyTarget) {
+    const elapsed = t - flyTarget.startTime;
+    const progress = Math.min(elapsed / flyTarget.duration, 1);
+    // Smooth ease-in-out
+    const ease = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+    camera.position.lerpVectors(flyTarget.from, flyTarget.to, ease);
+    controls.target.lerp(flyTarget.lookAt, ease * 0.5);
+    if (progress >= 1) flyTarget = null;
+  }
+
+  // Ring bursts — expanding rings around new nodes
+  while (ringGroup.children.length > 0) ringGroup.remove(ringGroup.children[0]);
+  for (let i = ringBursts.length - 1; i >= 0; i--) {
+    const rb = ringBursts[i];
+    const age = t - rb.startTime;
+    if (age > 2) { ringBursts.splice(i, 1); continue; }
+    const scale = age * 15;
+    const opacity = Math.max(0, 1 - age / 2);
+    const mat = new THREE.MeshBasicMaterial({ color: rb.color, transparent: true, opacity: opacity * 0.4, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(ringGeo, mat);
+    mesh.position.set(rb.x, rb.y, rb.z);
+    mesh.scale.set(scale, scale, scale);
+    mesh.lookAt(camera.position);
+    ringGroup.add(mesh);
+  }
 
   // Raycaster for hover
   raycaster.setFromCamera(mouse, camera);
