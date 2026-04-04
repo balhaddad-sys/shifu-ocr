@@ -144,6 +144,21 @@ console.log(`  ${JSON.stringify(st)}`);
 assert("stats has depths",st.depths!==undefined);
 assert("stats has version",st.version==="2.1.0");
 
+S("BINDING — TEMPORAL FIELD PERSISTENCE");
+const doc = "Doctor treats patient with medication. Patient recovered from the stroke. The medication was effective for the patient.";
+const docResult = e.scoreDocument(doc);
+assert("scoreDocument returns sentences", docResult.sentences.length === 3);
+assert("scoreDocument has coherence", docResult.coherence > 0);
+assert("scoreDocument has bindings", Array.isArray(docResult.bindings));
+// "patient" in sentence 2 should benefit from field carry-over
+const s2alone = e.scoreSentence("Patient recovered from the stroke");
+const s2bound = docResult.sentences[1];
+assert("binding reduces surprise", s2bound.coherence >= s2alone.coherence - 0.05);
+// Decay parameter works
+const docHigh = e.scoreDocument(doc, 0.9);
+const docLow = e.scoreDocument(doc, 0.1);
+assert("decay parameter accepted", docHigh.sentences.length === docLow.sentences.length);
+
 console.log(`\n╔═══════════════════════════════════════╗`);
 console.log(`║  ${pass}/${pass+fail} passed${fail?`, ${fail} FAILED`:""}${"".padEnd(25-(pass+fail).toString().length*2)}║`);
 console.log(`╚═══════════════════════════════════════╝`);

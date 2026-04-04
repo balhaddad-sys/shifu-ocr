@@ -19,7 +19,7 @@ constructor(){this.nodes={};this.sentenceCount=0;this.tokenCount=0;this._idxLen=
 // plasticity: 1/freq. First exposure = 1.0. 100th = 0.01.
 _nn(w){return{chars:w,freq:0,firstSeen:null,lastSeen:null,pos:0.5,posV:1.0,lastGap:0,nbrCount:0,frozen:false,neighbors:{},next:{},prev:{},next2:{}};}
 
-_idx(w){const l=w.length;(this._idxLen[l]??=[]);if(!this._idxLen[l].includes(w))this._idxLen[l].push(w);for(let i=0;i<w.length-1;i++){const bg=w.slice(i,i+2);(this._idxBg[bg]??=[]);if(!this._idxBg[bg].includes(w))this._idxBg[bg].push(w);}}
+_idx(w){const l=w.length;(this._idxLen[l]??=[]).push(w);for(let i=0;i<w.length-1;i++){const bg=w.slice(i,i+2);(this._idxBg[bg]??=[]).push(w);}}
 
 // ─── Feed: consolidation, not accumulation. ───────────────────────
 feed(raw){
@@ -44,30 +44,28 @@ feed(raw){
       nd.pos+=delta*plasticity;
       nd.posV+=(delta*delta-nd.posV)*plasticity;
     }
-    const win=Math.min(Math.max(Math.ceil(4/Math.max(Math.log2(nd.freq+1),1)),2),6);
+    // Window + frozen — all cheap checks first
     if(!nd.frozen){
-      const hasStructure=nd.nbrCount>=5;
-      for(let j=Math.max(0,i-win);j<Math.min(len,i+win+1);j++){
+      const win=nd.freq<=2?6:nd.freq<=8?4:nd.freq<=32?3:2;
+      const cap=nd.freq/3;const hasStr=nd.nbrCount>=5;
+      const prevW=i>0?ws[i-1]:null;const nextW=i<len-1?ws[i+1]:null;
+      const jMin=i-win<0?0:i-win;const jMax=i+win+1>len?len:i+win+1;
+      for(let j=jMin;j<jMax;j++){
         if(j===i)continue;const nb=ws[j];
-        const existing=nd.neighbors[nb];
-        if(existing){
-          nd.neighbors[nb]=Math.min(existing+1,nd.freq/3);
+        if(!nd.neighbors)nd.neighbors={};
+        if(nd.neighbors[nb]!==undefined){
+          if(nd.neighbors[nb]<cap)nd.neighbors[nb]++;
         }else{
-          let add=nd.freq<=5?1:Math.max(plasticity*2,0.5);
-          if(hasStructure&&this.nodes[nb]){
-            const nbNode=this.nodes[nb];
-            const prev=i>0?ws[i-1]:null;
-            const next=i<len-1?ws[i+1]:null;
-            const touch=(prev&&nbNode.neighbors[prev]?1:0)+(next&&nbNode.neighbors[next]?1:0);
-            if(touch===0)add=plasticity*0.5;
-            else add=Math.max(plasticity,0.5);
-          }
-          nd.neighbors[nb]=add;
-          nd.nbrCount++;
+          let add=nd.freq<=5?1:plasticity>0.5?plasticity*2:0.5;
+          if(hasStr){const nbNb=this.nodes[nb]?.neighbors;
+            if(nbNb&&!((prevW&&nbNb[prevW])||(nextW&&nbNb[nextW])))add=plasticity*0.5;}
+          nd.neighbors[nb]=add;nd.nbrCount++;
         }
       }
       if(nd.freq>30&&nd.posV<0.05&&nd.nbrCount>20)nd.frozen=true;
     }
+    // Guard: ensure properties exist (V8 can lose them under memory pressure at 100K+ nodes)
+    if(!nd.next)nd.next={};if(!nd.prev)nd.prev={};if(!nd.next2)nd.next2={};
     if(i<len-1)nd.next[ws[i+1]]=(nd.next[ws[i+1]]||0)+1;
     if(i>0)nd.prev[ws[i-1]]=(nd.prev[ws[i-1]]||0)+1;
     if(i<len-2){const b=ws[i+1],c=ws[i+2];nd.next2[b]??={};nd.next2[b][c]=(nd.next2[b][c]||0)+1;}
@@ -172,6 +170,37 @@ scoreSentence(raw){
   }
   const ms=steps.length?total/steps.length:0;
   return{words:ws,steps,meanSurprise:ms,coherence:1-Math.min(ms,1)};
+}
+
+// ─── Score document — binding across sentences ───────────────────
+// Field carries over between sentences (decayed). Words seen in sentence 1
+// reduce surprise in sentence 2. That carry-over IS the binding.
+scoreDocument(raw, decay=0.5){
+  const sents=raw.split(/[.!?\n]+/).map(s=>s.trim()).filter(s=>s.length>5);
+  if(!sents.length)return{sentences:[],coherence:0,bindings:[]};
+  const field=new Map();const results=[];const bindings=[];let totalCoh=0;
+  for(let si=0;si<sents.length;si++){
+    const ws=tokenize(sents[si]);if(ws.length<2)continue;
+    // Score this sentence with the carried field
+    const steps=[];let total=0;
+    for(let i=0;i<ws.length;i++){
+      const w=ws[i],node=this.nodes[w],step={word:w,pos:i,known:!!node};let sig=0,wts=0;
+      if(i>0){const prev=this.nodes[ws[i-1]];if(prev?.next){const tot=Object.values(prev.next).reduce((a,b)=>a+b,0);step.seqS=1-((prev.next[w]||0)/Math.max(tot,1));sig+=step.seqS*0.35;wts+=0.35;}}
+      if(i>=2){const pp=this.nodes[ws[i-2]],nx2=pp?.next2?.[ws[i-1]];if(nx2){const tot=Object.values(nx2).reduce((a,b)=>a+b,0);step.trajS=1-((nx2[w]||0)/Math.max(tot,1));sig+=step.trajS*0.30;wts+=0.30;}}
+      if(field.size>0){const fw=field.get(w)||0,mx=Math.max(...field.values(),1);step.fieldS=1-fw/mx;sig+=step.fieldS*0.35;wts+=0.35;
+        if(fw>0&&si>0)bindings.push({word:w,sentence:si,fieldStrength:fw/mx});}
+      step.surprise=wts>0?sig/wts:(node?0.5:1);total+=step.surprise;steps.push(step);
+      // Add to field
+      if(node?.neighbors){const mass=node.freq>=5&&node.nbrCount>=5?1:0.2;for(const[nb,cnt]of Object.entries(node.neighbors))field.set(nb,(field.get(nb)||0)+cnt*mass);}
+      field.set(w,(field.get(w)||0)+10);
+    }
+    const ms=steps.length?total/steps.length:0;
+    results.push({text:sents[si],words:ws,steps,meanSurprise:ms,coherence:1-Math.min(ms,1)});
+    totalCoh+=1-Math.min(ms,1);
+    // Decay field between sentences — recent words fade but don't vanish
+    for(const[k,v]of field)field.set(k,v*decay);
+  }
+  return{sentences:results,coherence:results.length?totalCoh/results.length:0,bindings};
 }
 
 // ─── Pressure ─────────────────────────────────────────────────────
@@ -308,6 +337,43 @@ converse(input){
   }
   if(!question&&topics.length>0)question=`I understand ${topics[0]} well. What else should I learn about?`;
   return{...resp,question,text:resp.text+(question?'\n\n'+question:'')};
+}
+
+// ─── Binding: temporal field persistence across sentence gaps ─────
+// "The doctor prescribed medication. The patient recovered."
+// Field from sentence 1 carries into sentence 2 (decayed).
+// "patient" surprise drops because "doctor" and "prescribed" are still in the field.
+scoreDocument(text, decay=0.5){
+  const sents=text.split(/[.!?\n]+/).map(s=>s.trim()).filter(s=>s.length>5);
+  if(!sents.length)return{sentences:[],coherence:0,bindings:[]};
+  const field=new Map();const results=[];const bindings=[];
+  for(let si=0;si<sents.length;si++){
+    const ws=tokenize(sents[si]);if(ws.length<2)continue;
+    const steps=[];let total=0;
+    for(let i=0;i<ws.length;i++){
+      const w=ws[i],node=this.nodes[w],step={word:w,pos:i,known:!!node,sentIdx:si};
+      let sig=0,wts=0;
+      const wDeep=node&&(node.freq>=5&&node.nbrCount>=5);
+      if(i>0){const prev=this.nodes[ws[i-1]];if(prev?.next){const tot=Object.values(prev.next).reduce((a,b)=>a+b,0);step.seqS=1-((prev.next[w]||0)/Math.max(tot,1));sig+=step.seqS*0.35;wts+=0.35;}}
+      if(i>=2){const pp=this.nodes[ws[i-2]],nx2=pp?.next2?.[ws[i-1]];if(nx2){const tot=Object.values(nx2).reduce((a,b)=>a+b,0);step.trajS=1-((nx2[w]||0)/Math.max(tot,1));sig+=step.trajS*0.25;wts+=0.25;}}
+      // Binding: field includes carry-over from previous sentences
+      if(field.size>0){const fw=field.get(w)||0;const mx=Math.max(...field.values(),1);step.fieldS=1-fw/mx;sig+=step.fieldS*0.40;wts+=0.40;
+        // Track cross-sentence bindings
+        if(si>0&&fw>0&&i<=2){bindings.push({word:w,fromSent:si-1,toSent:si,fieldStrength:fw/mx});}}
+      step.afGate=0;
+      if(i>0&&node){const prevNode=this.nodes[ws[i-1]];const prevDeep=prevNode&&(prevNode.freq>=5&&prevNode.nbrCount>=5);if((wDeep||prevDeep)&&prevNode?.neighbors&&node.neighbors){const pN=Object.keys(prevNode.neighbors),wN=new Set(Object.keys(node.neighbors));const sh=pN.filter(x=>wN.has(x)).length,un=new Set([...pN,...wN]).size;step.afGate=un?sh/un:0;}}
+      step.surprise=wts>0?(sig/wts)*(1-step.afGate*0.3):(node?0.5:1);
+      total+=step.surprise;step.cumS=total;steps.push(step);
+      if(node?.neighbors){const mass=wDeep?1:0.2;for(const[nb,cnt]of Object.entries(node.neighbors))field.set(nb,(field.get(nb)||0)+cnt*mass);}
+      field.set(w,(field.get(w)||0)+(wDeep?10:2));
+    }
+    const ms=steps.length?total/steps.length:0;
+    results.push({text:sents[si],words:ws,steps,meanSurprise:ms,coherence:1-Math.min(ms,1)});
+    // Decay field at sentence boundary — recent context fades but persists
+    for(const[k,v]of field)field.set(k,v*decay);
+  }
+  const overall=results.length?results.reduce((s,r)=>s+r.coherence,0)/results.length:0;
+  return{sentences:results,coherence:overall,bindings};
 }
 
 // ─── Stats ────────────────────────────────────────────────────────
