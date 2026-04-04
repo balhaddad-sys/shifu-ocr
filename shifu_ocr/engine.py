@@ -1,0 +1,1337 @@
+"""
+Shifu-OCR: Fluid Theory OCR Engine
+Core module — the landscape classifier with full pipeline.
+"""
+
+import numpy as np
+import json
+import os
+from PIL import Image, ImageDraw, ImageFont
+from scipy import ndimage
+from skimage import morphology, filters, measure
+from collections import defaultdict
+import warnings
+warnings.filterwarnings('ignore')
+
+
+# =============================================================================
+# MEDIUM DISPLACEMENT PIPELINE
+# =============================================================================
+
+def estimate_background(img, k=25):
+    return filters.gaussian(morphology.closing(img, morphology.disk(k)), sigma=k/2)
+
+def compute_displacement(img, bg):
+    d = bg.astype(float) - img.astype(float)
+    r = d.max() - d.min()
+    return (d - d.min()) / r if r > 0 else d * 0
+
+def detect_perturbation(disp, thresh=0.25):
+    return morphology.remove_small_objects(disp > thresh, min_size=8).astype(np.uint8)
+
+def extract_region(binary, pad=3):
+    coords = np.argwhere(binary > 0)
+    if len(coords) == 0:
+        return binary
+    r0, c0 = np.maximum(coords.min(axis=0) - pad, 0)
+    r1, c1 = np.minimum(coords.max(axis=0) + pad, np.array(binary.shape) - 1)
+    return binary[r0:r1+1, c0:c1+1]
+
+def normalize_region(region, size=(64, 64)):
+    """MACULA PRINCIPLE: preserve detail at the point of highest acuity.
+    Use LANCZOS (highest quality) instead of NEAREST (destroys edges).
+    The fine details that distinguish Q from O, g from 9 live in the edges."""
+    img = Image.fromarray((region * 255).astype(np.uint8)).resize(size, Image.LANCZOS)
+    return (np.array(img) > 127).astype(np.uint8)
+
+def image_to_binary(char_img, bg_kernel=15, disp_thresh=0.25):
+    bg = estimate_background(char_img, k=bg_kernel)
+    disp = compute_displacement(char_img, bg)
+    return detect_perturbation(disp, thresh=disp_thresh), disp
+
+
+# =============================================================================
+# FEATURE EXTRACTION
+# =============================================================================
+
+FEATURE_NAMES = (
+    ['components', 'holes', 'euler', 'displacement_ratio',
+     'v_symmetry', 'h_symmetry', 'v_center', 'h_center'] +
+    [f'quad_{q}' for q in ['TL', 'TR', 'BL', 'BR']] +
+    [f'hproj_{i}' for i in range(6)] +
+    [f'vproj_{i}' for i in range(6)] +
+    [f'hcross_{i}' for i in range(6)] +
+    [f'vcross_{i}' for i in range(6)] +
+    ['endpoints', 'junctions'] +
+    # v2: geometric/topological features — pure displacement geometry
+    # No heuristics. Landscapes learn what these mean from evidence.
+    ['aspect_ratio', 'ink_density',
+     'top_third_density', 'mid_third_density', 'bot_third_density',
+     'stroke_width_mean', 'stroke_width_var',
+     'top_disconnection', 'mid_horizontal_extent',
+     'ascender_ratio', 'descender_ratio',
+     'left_edge_straightness', 'right_edge_straightness',
+     'top_openness', 'bot_openness',
+    ]
+)
+
+def extract_features(br):
+    h, w = br.shape
+    feats = []
+
+    # Topology
+    padded = np.pad(br, 1, mode='constant', constant_values=0)
+    _, nfg = ndimage.label(padded)
+    _, nbg = ndimage.label(1 - padded)
+    holes = nbg - 1
+    feats.extend([float(nfg), float(holes), float(nfg - holes)])
+
+    # Displacement ratio
+    feats.append(float(np.mean(br)))
+
+    # Symmetry
+    feats.append(float(np.mean(br == np.fliplr(br))) if w >= 2 else 1.0)
+    feats.append(float(np.mean(br == np.flipud(br))) if h >= 2 else 1.0)
+
+    # Center of mass
+    total = br.sum()
+    if total > 0 and h > 0 and w > 0:
+        rows, cols = np.arange(h).reshape(-1, 1), np.arange(w).reshape(1, -1)
+        feats.append(float((br * rows).sum() / (total * h)))
+        feats.append(float((br * cols).sum() / (total * w)))
+    else:
+        feats.extend([0.5, 0.5])
+
+    # Quadrant density
+    mh, mw = h // 2, w // 2
+    quads = [
+        float(br[:mh, :mw].mean()) if mh > 0 and mw > 0 else 0,
+        float(br[:mh, mw:].mean()) if mh > 0 else 0,
+        float(br[mh:, :mw].mean()) if mw > 0 else 0,
+        float(br[mh:, mw:].mean()),
+    ]
+    qt = sum(quads)
+    feats.extend([q / qt if qt > 0 else 0.25 for q in quads])
+
+    # Projection profiles
+    for axis, length in [(1, h), (0, w)]:
+        raw = br.mean(axis=axis)
+        bins = 6
+        proj = np.zeros(bins)
+        bw = max(1, len(raw) // bins)
+        for i in range(bins):
+            s, e = i * bw, min((i + 1) * bw, len(raw))
+            if s < len(raw):
+                proj[i] = raw[s:e].mean()
+        pt = proj.sum()
+        if pt > 0:
+            proj /= pt
+        feats.extend(proj.tolist())
+
+    # Crossing counts
+    for axis in [0, 1]:
+        for i in range(6):
+            if axis == 0:
+                row = min(int((i + 0.5) * h / 6), h - 1)
+                line = br[row, :]
+            else:
+                col = min(int((i + 0.5) * w / 6), w - 1)
+                line = br[:, col]
+            feats.append(float(np.abs(np.diff(line.astype(int))).sum() / 2))
+
+    # Junctions and endpoints
+    if h >= 4 and w >= 4 and br.sum() >= 10:
+        try:
+            skel = morphology.skeletonize(br.astype(bool))
+            nc = ndimage.convolve(skel.astype(int), np.ones((3, 3), dtype=int),
+                                   mode='constant') - skel.astype(int)
+            _, n_ep = ndimage.label(skel & (nc == 1))
+            _, n_jp = ndimage.label(skel & (nc >= 3))
+            feats.extend([float(n_ep), float(n_jp)])
+        except Exception:
+            feats.extend([0.0, 0.0])
+    else:
+        feats.extend([0.0, 0.0])
+
+    # ── v2: Discriminative features for l/i/t and a/o confusion ──────
+
+    ink = br > 0
+    ink_pixels = ink.sum()
+
+    # Aspect ratio: tall narrow (l) vs square (o) vs wide (m)
+    ink_coords = np.argwhere(ink)
+    if len(ink_coords) >= 2:
+        ink_h = ink_coords[:, 0].max() - ink_coords[:, 0].min() + 1
+        ink_w = ink_coords[:, 1].max() - ink_coords[:, 1].min() + 1
+        feats.append(float(ink_h / max(ink_w, 1)))  # aspect_ratio
+    else:
+        feats.append(1.0)
+
+    # Ink density: total ink / bounding box area
+    feats.append(float(ink_pixels / max(h * w, 1)))
+
+    # Third densities: top/mid/bottom — separates i(dot on top) from l(uniform)
+    t3 = h // 3
+    top_d = float(br[:t3, :].mean()) if t3 > 0 else 0
+    mid_d = float(br[t3:2*t3, :].mean()) if t3 > 0 else 0
+    bot_d = float(br[2*t3:, :].mean()) if t3 > 0 else 0
+    feats.extend([top_d, mid_d, bot_d])
+
+    # Stroke width: mean and variance of horizontal run lengths (vectorized)
+    diffs = np.diff(np.pad(br, ((0, 0), (1, 1)), constant_values=0), axis=1)
+    starts = np.where(diffs == 1)
+    ends = np.where(diffs == -1)
+    if len(starts[0]) > 0 and len(starts[0]) == len(ends[0]):
+        run_lengths = ends[1] - starts[1]
+        feats.append(float(run_lengths.mean() / max(w, 1)))
+        feats.append(float(run_lengths.std() / max(w, 1)))
+    else:
+        feats.extend([0.0, 0.0])
+
+    # Top disconnection: gap between top ink cluster and rest
+    # Continuous — measures vertical gap in ink distribution.
+    # 'i' has a gap (dot then body), 'l' has continuous ink top to bottom.
+    # Uses projection gap instead of expensive ndimage.label()
+    v_proj = br.mean(axis=1)  # already have ink per row
+    gap_rows = (v_proj < 0.01).astype(int)
+    # Count largest gap in top half
+    top_half_gaps = gap_rows[:h // 2]
+    max_gap = 0
+    current_gap = 0
+    for g in top_half_gaps:
+        if g: current_gap += 1
+        else:
+            max_gap = max(max_gap, current_gap)
+            current_gap = 0
+    max_gap = max(max_gap, current_gap)
+    feats.append(float(max_gap / max(h // 2, 1)))  # top_disconnection
+
+    # Mid horizontal extent: how wide is the ink in the middle third relative to total width
+    # Continuous — 't' has wide middle extent (crossbar), 'l' has narrow.
+    mid_slice = br[t3:2*t3, :] if t3 > 0 else br
+    mid_col_ink = (mid_slice.sum(axis=0) > 0).sum()
+    feats.append(float(mid_col_ink / max(w, 1)))  # mid_horizontal_extent
+
+    # Ascender/descender ratio: how much ink is in top/bottom vs middle
+    # l has high ascender, a doesn't
+    if ink_pixels > 0:
+        feats.append(float(br[:t3, :].sum() / ink_pixels))   # ascender_ratio
+        feats.append(float(br[2*t3:, :].sum() / ink_pixels)) # descender_ratio
+    else:
+        feats.extend([0.33, 0.33])
+
+    # Edge straightness: vectorized contour geometry
+    row_has_ink = br.any(axis=1)
+    if row_has_ink.sum() >= 3:
+        ink_rows = np.where(row_has_ink)[0]
+        left_edge = np.array([np.where(br[r, :] > 0)[0][0] for r in ink_rows])
+        right_edge = np.array([np.where(br[r, :] > 0)[0][-1] for r in ink_rows])
+        feats.append(1.0 - float(np.std(left_edge) / max(w, 1)))
+        feats.append(1.0 - float(np.std(right_edge) / max(w, 1)))
+    else:
+        feats.extend([0.5, 0.5])
+
+    # Top/bottom openness: is the character open at top (u, c) or bottom (n)?
+    top_row_ink = float(br[0, :].mean()) if h > 0 else 0
+    bot_row_ink = float(br[-1, :].mean()) if h > 0 else 0
+    feats.append(1.0 - top_row_ink)  # top_openness (high = open top)
+    feats.append(1.0 - bot_row_ink)  # bot_openness (high = open bottom)
+
+    return np.array(feats, dtype=float)
+
+
+# =============================================================================
+# FLUID LANDSCAPE
+# =============================================================================
+
+class Landscape:
+    def __init__(self, label):
+        self.label = label
+        self.mean = None
+        self.variance = None
+        self._m2 = None
+        self.n = 0
+        self.expected_dim = None  # Mod 2: track expected feature vector length
+        self.n_correct = 0
+        self.n_errors = 0
+        self.confused_with = defaultdict(int)
+
+    def absorb(self, fv):
+        # Mod 2: Dimension validation
+        if self.expected_dim is None:
+            self.expected_dim = len(fv)
+        elif len(fv) != self.expected_dim:
+            raise ValueError(
+                f"Landscape '{self.label}': expected {self.expected_dim}-dim, "
+                f"got {len(fv)}-dim. Retrain from scratch.")
+        self.n += 1
+        if self.n == 1:
+            self.mean = fv.copy()
+            self._m2 = np.zeros_like(fv)
+            self.variance = np.ones_like(fv) * 2.0
+        else:
+            # Welford's online algorithm — O(1) per observation
+            delta = fv - self.mean
+            self.mean += delta / self.n
+            delta2 = fv - self.mean
+            self._m2 += delta * delta2
+            raw_var = self._m2 / self.n
+            self.variance = np.maximum(raw_var, 0.1 / np.sqrt(self.n))
+
+    def fit(self, fv, global_var=None):
+        if self.mean is None:
+            return -float('inf')
+        diff = fv - self.mean
+        # Use minimum of within-class and global variance for tighter discrimination
+        var = np.minimum(self.variance, global_var) if global_var is not None else self.variance
+        precision = 1.0 / (var + 1e-8)
+        score = -0.5 * np.sum(diff ** 2 * precision)
+        return score + np.log(self.n + 1) * 0.5
+
+    def to_dict(self):
+        return {
+            'label': self.label,
+            'n': self.n,
+            'expected_dim': self.expected_dim,  # Mod 6
+            'mean': self.mean.tolist() if self.mean is not None else None,
+            'variance': self.variance.tolist() if self.variance is not None else None,
+            'n_correct': self.n_correct,
+            'n_errors': self.n_errors,
+            'confused_with': dict(self.confused_with),
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        l = cls(d['label'])
+        l.n = d['n']
+        l.expected_dim = d.get('expected_dim', None)  # Mod 6
+        l.mean = np.array(d['mean']) if d['mean'] else None
+        l.variance = np.array(d['variance']) if d['variance'] else None
+        if l.variance is not None and l.n > 0:
+            l._m2 = l.variance * l.n
+        if l.expected_dim is None and l.mean is not None:
+            l.expected_dim = len(l.mean)
+        l.n_correct = d.get('n_correct', 0)
+        l.n_errors = d.get('n_errors', 0)
+        l.confused_with = defaultdict(int, d.get('confused_with', {}))
+        return l
+
+
+# =============================================================================
+# SHIFU-OCR ENGINE
+# =============================================================================
+
+class ShifuOCR:
+    """
+    Complete Fluid Theory OCR engine.
+    
+    Train on character images → builds landscapes.
+    Predict on new images → finds best-fit landscape.
+    Learn from corrections → reshapes landscapes.
+    Save/load → persist the trained model.
+    """
+
+    def __init__(self):
+        self.landscapes = {}
+        self.templates = {}       # {label: {'sum': np.array, 'n': int}}
+        self.total_predictions = 0
+        self.total_correct = 0
+        self.version = "1.0.0"
+
+    @staticmethod
+    def _fast_binarize(grayscale_image):
+        """Fast binarization for pre-segmented character images.
+        Uses Otsu threshold instead of full medium displacement pipeline.
+        The displacement pipeline (estimate_background + compute_displacement)
+        is designed for raw page scans where background varies. For individual
+        character crops, Otsu is faster and equally effective."""
+        from skimage.filters import threshold_otsu
+        try:
+            thresh = threshold_otsu(grayscale_image)
+        except ValueError:
+            thresh = 128
+        binary = (grayscale_image < thresh).astype(np.uint8)
+        return morphology.remove_small_objects(binary.astype(bool), min_size=5).astype(np.uint8)
+
+    # --- Template matching (independent ensemble branch) ---
+
+    _TEMPLATE_SIZE = (32, 32)
+
+    def _normalize_to_template(self, grayscale_image):
+        """Binarize and normalize a grayscale image to a 32x32 binary template.
+        This is deliberately independent from FLAIR: it operates purely on
+        binarized pixel patterns, not perturbation/displacement features."""
+        binary = self._fast_binarize(grayscale_image)
+        region = extract_region(binary)
+        img = Image.fromarray((region * 255).astype(np.uint8)).resize(
+            self._TEMPLATE_SIZE, Image.BILINEAR)
+        return (np.array(img, dtype=np.float64) / 255.0)
+
+    def _template_match_score(self, grayscale_image):
+        """Compute cosine similarity between the input image and each stored
+        class template (mean binary image).  Returns {label: similarity}."""
+        if not self.templates:
+            return {}
+        query = self._normalize_to_template(grayscale_image).ravel()
+        q_norm = np.linalg.norm(query)
+        if q_norm < 1e-12:
+            return {label: 0.0 for label in self.templates}
+
+        scores = {}
+        for label, tdata in self.templates.items():
+            if tdata['n'] == 0:
+                scores[label] = 0.0
+                continue
+            template = (tdata['sum'] / tdata['n']).ravel()
+            t_norm = np.linalg.norm(template)
+            if t_norm < 1e-12:
+                scores[label] = 0.0
+            else:
+                scores[label] = float(np.dot(query, template) / (q_norm * t_norm))
+        return scores
+
+    # --- Training ---
+
+    def _extract_unified_features(self, grayscale_image):
+        """Unified feature vector: static features + FLAIR perturbation signatures + shape.
+        Like MRI: T1 (static structure) + T2/FLAIR/DWI (perturbation response) + morphometry."""
+        from shifu_ocr.perturbation import extract_relaxation_signature
+        binary = self._fast_binarize(grayscale_image)
+        raw_region = extract_region(binary)
+        rh, rw = raw_region.shape if raw_region.size > 0 else (1, 1)
+        # Shape features: aspect ratio and relative size (case/thin char discrimination)
+        aspect = rw / max(rh, 1)
+        tallness = rh / max(rw, 1)
+        fill_ratio = float(raw_region.sum()) / max(rh * rw, 1)
+        shape_feats = np.array([aspect, tallness, fill_ratio, rh / max(grayscale_image.shape[0], 1)])
+        region = normalize_region(raw_region)
+        static = extract_features(region)        # 38-dim: structure
+        dynamic = extract_relaxation_signature(region)  # 64-dim: perturbation response
+        return np.concatenate([static, dynamic, shape_feats])  # 106-dim combined
+
+    def train_character(self, label, grayscale_image):
+        """Train on a single character image (grayscale numpy array)."""
+        fv = self._extract_unified_features(grayscale_image)
+        if label not in self.landscapes:
+            self.landscapes[label] = Landscape(label)
+        self.landscapes[label].absorb(fv)
+
+        # Accumulate template (running sum for mean binary image)
+        tpl = self._normalize_to_template(grayscale_image)
+        if label not in self.templates:
+            self.templates[label] = {'sum': np.zeros(self._TEMPLATE_SIZE, dtype=np.float64), 'n': 0}
+        self.templates[label]['sum'] += tpl
+        self.templates[label]['n'] += 1
+
+    def train_from_fonts(self, characters, font_paths, font_size=80, img_size=(100, 100)):
+        """Train on rendered characters across multiple fonts."""
+        for char in characters:
+            for font_path in font_paths:
+                img = self._render(char, font_path, font_size, img_size)
+                self.train_character(char, img)
+        return len(characters) * len(font_paths)
+
+    # --- Prediction ---
+
+    def predict_character(self, grayscale_image, top_k=5):
+        """Predict a single character from a grayscale image.
+
+        Ensemble: combines FLAIR landscape scores (rank-based) with
+        template cosine-similarity scores (rank-based).
+        final_score = 0.6 * flair_rank_score + 0.4 * template_rank_score
+        """
+        fv = self._extract_unified_features(grayscale_image)
+
+        # Compute global variance across all class means for discriminative scoring
+        if not hasattr(self, '_global_var') or self._global_var is None:
+            means = [l.mean for l in self.landscapes.values() if l.mean is not None]
+            if len(means) > 1:
+                mean_stack = np.array(means)
+                self._global_var = np.var(mean_stack, axis=0) + 1e-6
+            else:
+                self._global_var = None
+
+        # --- FLAIR landscape scores ---
+        flair_scores = [(label, land.fit(fv, self._global_var))
+                        for label, land in self.landscapes.items()]
+        flair_scores.sort(key=lambda x: x[1], reverse=True)
+
+        if len(flair_scores) < 2:
+            return {'predicted': flair_scores[0][0] if flair_scores else '?',
+                    'confidence': 0, 'candidates': flair_scores}
+
+        # --- Template matching scores (independent feature space) ---
+        template_sim = self._template_match_score(grayscale_image)
+
+        # --- WAVE INTERFERENCE FUSION ---
+        # Like L/M/S cones: each scorer is a different frequency response.
+        # The interference pattern (product, not sum) of responses gives identity.
+        # When both scorers agree (constructive interference): signal amplifies.
+        # When they disagree (destructive interference): signal cancels.
+        n_classes = len(flair_scores)
+
+        # Normalize FLAIR scores to [0, 1] range
+        flair_min = flair_scores[-1][1] if flair_scores else 0
+        flair_max = flair_scores[0][1] if flair_scores else 1
+        flair_range = max(flair_max - flair_min, 1e-8)
+        flair_norm = {label: (score - flair_min) / flair_range for label, score in flair_scores}
+
+        # Normalize template scores to [0, 1] range
+        tpl_norm = {}
+        if template_sim:
+            tpl_vals = list(template_sim.values())
+            tpl_min = min(tpl_vals) if tpl_vals else 0
+            tpl_max = max(tpl_vals) if tpl_vals else 1
+            tpl_range = max(tpl_max - tpl_min, 1e-8)
+            tpl_norm = {label: (score - tpl_min) / tpl_range for label, score in template_sim.items()}
+
+        # Interference: geometric mean (constructive when both high, destructive when one low)
+        # Plus additive component for cases where only one scorer has data
+        all_labels = set(flair_norm.keys()) | set(tpl_norm.keys())
+        combined = []
+        for label in all_labels:
+            f = flair_norm.get(label, 0.0)
+            t = tpl_norm.get(label, 0.0)
+            # Constructive interference: sqrt(f * t) — both must be high
+            interference = np.sqrt(f * t) if f > 0 and t > 0 else 0
+            # Additive baseline so single-scorer matches still work
+            baseline = 0.4 * f + 0.2 * t
+            combined.append((label, interference + baseline))
+        combined.sort(key=lambda x: x[1], reverse=True)
+
+        # --- Confidence from original FLAIR margin (unchanged logic) ---
+        best_flair = flair_scores[0][1]
+        second_flair = flair_scores[1][1]
+        margin = best_flair - second_flair
+        third_flair = flair_scores[2][1] if len(flair_scores) > 2 else second_flair - 1
+        local_range = max(abs(second_flair - third_flair), 0.01)
+        confidence = max(0, min(margin / (local_range + margin + 0.01), 1.0))
+
+        self.total_predictions += 1
+
+        return {
+            'predicted': combined[0][0],
+            'confidence': confidence,
+            'margin': margin,
+            'candidates': combined[:top_k],
+            'features': fv,
+        }
+
+    def correct(self, prediction, true_label):
+        """Learn from a correction."""
+        fv = prediction['features']
+        predicted = prediction['predicted']
+        correct = predicted == true_label
+
+        if correct:
+            self.total_correct += 1
+            if true_label in self.landscapes:
+                self.landscapes[true_label].n_correct += 1
+        else:
+            if predicted in self.landscapes:
+                self.landscapes[predicted].n_errors += 1
+                self.landscapes[predicted].confused_with[true_label] += 1
+
+        if true_label in self.landscapes:
+            self.landscapes[true_label].absorb(fv)
+
+        return correct
+
+    # --- Text Processing ---
+
+    def _segment_cc(self, grayscale_image, binary):
+        """Connected component segmentation — good for isolated, well-separated chars."""
+        from scipy import ndimage
+        labeled, n_components = ndimage.label(binary)
+        if n_components == 0:
+            return []
+        components = []
+        for i in range(1, n_components + 1):
+            coords = np.argwhere(labeled == i)
+            if len(coords) < 4:
+                continue
+            r0, c0 = coords.min(axis=0)
+            r1, c1 = coords.max(axis=0)
+            height = r1 - r0 + 1; width = c1 - c0 + 1
+            if height < 4 or width < 2:
+                continue
+            if width / max(height, 1) > 8 or height / max(width, 1) > 10:
+                continue
+            components.append({'r0': r0, 'c0': c0, 'r1': r1, 'c1': c1,
+                               'area': int((labeled == i).sum())})
+        components.sort(key=lambda x: x['c0'])
+        merged = []; used = set()
+        for i, comp in enumerate(components):
+            if i in used: continue
+            r0, c0, r1, c1, area = comp['r0'], comp['c0'], comp['r1'], comp['c1'], comp['area']
+            for j in range(i + 1, len(components)):
+                if j in used: continue
+                other = components[j]
+                if min(c1, other['c1']) - max(c0, other['c0']) < 0: continue
+                if other['area'] < area * 0.3 or area < other['area'] * 0.3:
+                    r0=min(r0,other['r0']);c0=min(c0,other['c0'])
+                    r1=max(r1,other['r1']);c1=max(c1,other['c1'])
+                    area+=other['area'];used.add(j)
+            merged.append({'r0':r0,'c0':c0,'r1':r1,'c1':c1})
+        merged.sort(key=lambda x: x['c0'])
+        chars = []
+        for comp in merged:
+            r0,c0,r1,c1=comp['r0'],comp['c0'],comp['r1'],comp['c1']
+            r0p=max(0,r0-2);r1p=min(grayscale_image.shape[0],r1+3)
+            c0p=max(0,c0-1);c1p=min(grayscale_image.shape[1],c1+2)
+            crop=grayscale_image[r0p:r1p,c0p:c1p]
+            ch,cw=crop.shape;size=max(ch,cw)+10
+            padded=np.full((size,size),255,dtype=np.uint8)
+            yo=(size-ch)//2;xo=(size-cw)//2
+            padded[yo:yo+ch,xo:xo+cw]=crop
+            chars.append({'image':padded,'bbox':(r0p,c0p,r1p,c1p)})
+        return chars
+
+    def _segment_vproj(self, grayscale_image, binary, min_char_width=3):
+        """Vertical projection segmentation — good for touching/close chars."""
+        v_proj = binary.sum(axis=0).astype(float)
+        is_ink = v_proj > 0
+        segments = []; in_char = False; start = 0
+        for i in range(len(is_ink)):
+            if is_ink[i] and not in_char: start=i;in_char=True
+            elif not is_ink[i] and in_char:
+                if i-start>=min_char_width: segments.append((start,i))
+                in_char=False
+        if in_char and len(is_ink)-start>=min_char_width:
+            segments.append((start,len(is_ink)))
+        chars = []
+        for c_start,c_end in segments:
+            col_slice=binary[:,c_start:c_end]
+            rows_ink=np.where(col_slice.sum(axis=1)>0)[0]
+            if len(rows_ink)==0:continue
+            r_start=max(0,rows_ink[0]-2);r_end=min(binary.shape[0],rows_ink[-1]+3)
+            crop=grayscale_image[r_start:r_end,c_start:c_end]
+            ch,cw=crop.shape;size=max(ch,cw)+10
+            padded=np.full((size,size),255,dtype=np.uint8)
+            yo=(size-ch)//2;xo=(size-cw)//2
+            padded[yo:yo+ch,xo:xo+cw]=crop
+            chars.append({'image':padded,'bbox':(r_start,c_start,r_end,c_end)})
+        return chars
+
+    def segment_characters(self, grayscale_image, min_char_width=3):
+        """
+        ADAPTIVE SEGMENTATION — the eye accommodates.
+
+        Try BOTH VP and CC, predict a SAMPLE from each, keep the one
+        with higher average confidence. Confidence IS the sharpness signal.
+        The model tells you which method produces crops it recognizes.
+
+        Over time, as the model trains on CC crops via document adaptation,
+        CC confidence rises and the system naturally transitions.
+        """
+        from skimage.filters import threshold_otsu
+
+        try:
+            thresh = threshold_otsu(grayscale_image)
+        except Exception:
+            thresh = 128
+
+        binary = (grayscale_image < thresh).astype(np.uint8)
+        binary = morphology.remove_small_objects(binary.astype(bool), min_size=5).astype(np.uint8)
+
+        vp_chars = self._segment_vproj(grayscale_image, binary, min_char_width)
+        cc_chars = self._segment_cc(grayscale_image, binary)
+
+        if not vp_chars and not cc_chars:
+            return []
+        if not vp_chars:
+            return cc_chars
+        if not cc_chars:
+            return vp_chars
+
+        # ACCOMMODATION: sample predictions from both, compare confidence
+        sample_size = min(5, len(vp_chars), len(cc_chars))
+
+        def sample_confidence(chars, n):
+            if len(chars) <= n:
+                indices = range(len(chars))
+            else:
+                start = max(0, (len(chars) - n) // 2)
+                indices = range(start, start + n)
+            total_conf = 0; count = 0
+            for idx in indices:
+                pred = self.predict_character(chars[idx]['image'])
+                total_conf += pred['confidence']; count += 1
+            return total_conf / max(count, 1)
+
+        vp_conf = sample_confidence(vp_chars, sample_size)
+        cc_conf = sample_confidence(cc_chars, sample_size)
+
+        # Pick higher confidence. Tie goes to VP (established training match)
+        if cc_conf > vp_conf + 0.05:
+            return cc_chars
+        return vp_chars
+
+    def read_line(self, grayscale_image, space_threshold=None, page_offset=(0, 0)):
+        """
+        Read a line of text from a grayscale image.
+        MRI SPATIAL ENCODING: every character carries absolute (x,y) coordinates
+        in the original page space, like voxel coordinates in MRI k-space.
+        page_offset = (y_offset, x_offset) to convert line-relative → page-absolute.
+        """
+        char_segments = self.segment_characters(grayscale_image)
+        
+        if not char_segments:
+            return {'text': '', 'characters': [], 'confidence': 0}
+        
+        # Detect spaces by looking at gaps between segments
+        if space_threshold is None:
+            gaps = []
+            for i in range(1, len(char_segments)):
+                prev_end = char_segments[i-1]['bbox'][3]
+                curr_start = char_segments[i]['bbox'][1]
+                gaps.append(curr_start - prev_end)
+            
+            if gaps:
+                median_gap = np.median(gaps)
+                space_threshold = median_gap * 2.0
+            else:
+                space_threshold = 20
+        
+        results = []
+        text_parts = []
+        
+        # Compute baseline metrics for case disambiguation
+        # Uppercase chars sit higher (smaller top y), lowercase descenders go lower
+        all_tops = [seg['bbox'][0] for seg in char_segments]
+        all_bottoms = [seg['bbox'][2] for seg in char_segments]
+        all_heights = [seg['bbox'][2] - seg['bbox'][0] for seg in char_segments]
+        median_height = np.median(all_heights) if all_heights else 20
+        median_top = np.median(all_tops) if all_tops else 0
+
+        # SOMATOTOPIC PROCESSING: first pass gets raw predictions,
+        # second pass uses neighbor context (like V1 lateral connections)
+        raw_preds = []
+        for seg in char_segments:
+            pred = self.predict_character(seg['image'])
+            raw_preds.append(pred)
+
+        for i, seg in enumerate(char_segments):
+            pred = raw_preds[i]
+            char = pred['predicted']
+
+            # NEURAL CALCULATOR: position-aware refinement.
+            # Each character's identity is influenced by its neighbors
+            # (somatotopy: adjacent neurons share information).
+            # If prediction is uncertain, look at neighbors for context.
+            if pred['confidence'] < 0.5 and len(pred['candidates']) >= 2:
+                # Get neighbor predictions (lateral connections)
+                prev_char = raw_preds[i-1]['predicted'] if i > 0 else None
+                next_char = raw_preds[i+1]['predicted'] if i < len(raw_preds)-1 else None
+
+                # Digit/letter consistency: if neighbors are digits, prefer digit prediction.
+                # If neighbors are letters, prefer letter prediction.
+                # Like V1 neurons that align with their neighbors' orientation preference.
+                neighbors_are_digits = (
+                    (prev_char and prev_char.isdigit()) or
+                    (next_char and next_char.isdigit())
+                )
+                neighbors_are_letters = (
+                    (prev_char and prev_char.isalpha()) or
+                    (next_char and next_char.isalpha())
+                )
+
+                # Check if the top candidates have a digit/letter split
+                top = pred['candidates'][:3]
+                digit_cands = [(c, s) for c, s in top if c.isdigit()]
+                letter_cands = [(c, s) for c, s in top if c.isalpha()]
+
+                if neighbors_are_letters and not neighbors_are_digits and digit_cands and letter_cands:
+                    # Neighbors are letters → prefer letter candidate
+                    char = letter_cands[0][0]
+                elif neighbors_are_digits and not neighbors_are_letters and digit_cands and letter_cands:
+                    # Neighbors are digits → prefer digit candidate
+                    char = digit_cands[0][0]
+
+            # Case disambiguation
+            if pred['confidence'] < 0.1 and char.isalpha():
+                char_height = seg['bbox'][2] - seg['bbox'][0]
+                char_top = seg['bbox'][0]
+                is_tall = char_height > median_height * 0.85
+                is_high = char_top <= median_top + median_height * 0.15
+                cands = pred['candidates'][:2]
+                if len(cands) >= 2:
+                    c1, c2 = cands[0][0], cands[1][0]
+                    if c1.lower() == c2.lower():
+                        char = c1.upper() if (is_tall and is_high) else c1.lower()
+
+            # MRI SPATIAL ENCODING: absolute page coordinates
+            abs_bbox = (
+                seg['bbox'][0] + page_offset[0],  # y_start (absolute)
+                seg['bbox'][1] + page_offset[1],  # x_start (absolute)
+                seg['bbox'][2] + page_offset[0],  # y_end (absolute)
+                seg['bbox'][3] + page_offset[1],  # x_end (absolute)
+            )
+            results.append({
+                'char': char,
+                'confidence': pred['confidence'],
+                'bbox': abs_bbox,
+                'candidates': pred['candidates'][:3],
+            })
+
+            # Check for space before this character
+            if i > 0:
+                prev_end = char_segments[i-1]['bbox'][3]
+                curr_start = seg['bbox'][1]
+                if curr_start - prev_end > space_threshold:
+                    text_parts.append(' ')
+
+            text_parts.append(char)
+
+        text = ''.join(text_parts)
+        avg_conf = np.mean([r['confidence'] for r in results]) if results else 0
+        
+        return {
+            'text': text,
+            'characters': results,
+            'confidence': avg_conf,
+        }
+
+    # --- Page-level OCR ---
+
+    def segment_lines(self, grayscale_image, min_line_height=8, min_gap=3):
+        """
+        Segment a full page image into individual text line images.
+
+        NEURAL SYSTEM: trusts the upstream 4D MRI-RF preprocessing
+        to have already stripped backgrounds and grid lines.
+        This layer just finds text rows via horizontal projection.
+        Each layer does ONE thing and trusts the others.
+        """
+        from skimage.filters import threshold_otsu
+
+        try:
+            thresh = threshold_otsu(grayscale_image)
+        except Exception:
+            thresh = 128
+
+        binary = (grayscale_image < thresh).astype(np.uint8)
+        binary = morphology.remove_small_objects(binary.astype(bool), min_size=10).astype(np.uint8)
+
+        # Horizontal projection — sum ink in each row
+        h_proj = binary.sum(axis=1).astype(float)
+
+        # Find line boundaries by detecting gaps
+        is_ink = h_proj > 0
+        lines = []
+        in_line = False
+        start = 0
+
+        for i in range(len(is_ink)):
+            if is_ink[i] and not in_line:
+                start = i
+                in_line = True
+            elif not is_ink[i] and in_line:
+                if i - start >= min_line_height:
+                    lines.append((start, i))
+                in_line = False
+
+        if in_line and len(is_ink) - start >= min_line_height:
+            lines.append((start, len(is_ink)))
+
+        # Merge lines that are very close (broken by thin gaps)
+        merged = []
+        for s, e in lines:
+            if merged and s - merged[-1][1] < min_gap:
+                merged[-1] = (merged[-1][0], e)
+            else:
+                merged.append((s, e))
+
+        # Extract line images with some vertical padding
+        line_images = []
+        for s, e in merged:
+            pad = max(2, (e - s) // 8)
+            rs = max(0, s - pad)
+            re = min(grayscale_image.shape[0], e + pad)
+            line_img = grayscale_image[rs:re, :]
+            line_images.append({
+                'image': line_img,
+                'bbox': (rs, 0, re, grayscale_image.shape[1]),
+                'row_index': len(line_images),
+            })
+
+        return line_images
+
+    def read_page(self, grayscale_image, space_threshold=None):
+        """
+        Read a full page using document-level adaptation.
+
+        Principle: a document has RULES OF PRESENTATION.
+        Same font, same spacing, same rendering throughout.
+        High-confidence predictions teach the model about THIS document's
+        specific rendering, bridging the gap for low-confidence chars.
+
+        Pass 1: OCR everything, collect high-confidence character samples.
+        Adapt:  Train a document-local model from confident predictions.
+        Pass 2: Re-OCR using the adapted model.
+        """
+        line_segments = self.segment_lines(grayscale_image)
+
+        if not line_segments:
+            return {'text': '', 'lines': [], 'confidence': 0}
+
+        # --- Pass 1: Initial OCR, collect confident character samples ---
+        pass1_results = []
+        confident_samples = []  # (label, image) pairs from high-confidence predictions
+
+        for seg in line_segments:
+            char_segments = self.segment_characters(seg['image'])
+            line_chars = []
+            for cseg in char_segments:
+                pred = self.predict_character(cseg['image'])
+                line_chars.append({
+                    'pred': pred,
+                    'image': cseg['image'],
+                    'bbox': cseg['bbox'],
+                })
+                # Collect high-confidence samples: these are the document's own truth
+                if pred['confidence'] > 0.5 and pred['predicted'].isalnum():
+                    confident_samples.append((pred['predicted'], cseg['image']))
+            pass1_results.append({'seg': seg, 'chars': line_chars})
+
+        # --- Adapt: Build document-local model from confident samples ---
+        # Clone current landscapes and reinforce with document-specific evidence
+        adapted = None
+        if len(confident_samples) > 10:
+            from copy import deepcopy
+            adapted = deepcopy(self)
+            # Each confident sample reinforces the landscape for THIS document's rendering
+            for label, img in confident_samples:
+                adapted.train_character(label, img)
+
+        ocr_engine = adapted if adapted else self
+
+        # --- Pass 2: Re-OCR everything with adapted model ---
+        lines = []
+        all_text = []
+
+        for p1 in pass1_results:
+            seg = p1['seg']
+            if adapted:
+                # Full re-read with adapted model
+                # Pass page offset so characters get absolute coordinates
+                line_y_offset = seg['bbox'][0]
+                result = ocr_engine.read_line(seg['image'], space_threshold=space_threshold,
+                                              page_offset=(line_y_offset, 0))
+            else:
+                # No adaptation possible, reconstruct from pass 1
+                text_parts = []
+                for c in p1['chars']:
+                    text_parts.append(c['pred']['predicted'])
+                result = {
+                    'text': ''.join(text_parts),
+                    'characters': [{'char': c['pred']['predicted'], 'confidence': c['pred']['confidence'], 'bbox': c['bbox']} for c in p1['chars']],
+                    'confidence': np.mean([c['pred']['confidence'] for c in p1['chars']]) if p1['chars'] else 0,
+                }
+
+            text = result['text'].strip()
+            if text:
+                # Filter noise lines: mostly non-alphanumeric = grid remnants
+                alnum = sum(1 for c in text if c.isalnum())
+                if alnum >= max(len(text) * 0.15, 1):
+                    result['bbox'] = seg['bbox']
+                    result['row_index'] = seg['row_index']
+                    lines.append(result)
+                    all_text.append(text)
+
+        avg_conf = np.mean([l['confidence'] for l in lines]) if lines else 0
+
+        # SPATIAL RECONSTRUCTION: extract word coordinates from character bboxes.
+        # Detect word boundaries from GAPS between characters (not space chars).
+        # Like somatotopic receptive fields: neighboring chars with small gaps = same word,
+        # large gaps = word boundary (different somatotopic region).
+        words_with_coords = []
+        for line_result in lines:
+            line_bbox = line_result.get('bbox', (0, 0, 0, 0))
+            line_y = (line_bbox[0] + line_bbox[2]) / 2
+
+            chars = line_result.get('characters', [])
+            if not chars:
+                continue
+
+            # Compute median gap to determine space threshold
+            gaps = []
+            for ci in range(1, len(chars)):
+                gap = chars[ci]['bbox'][1] - chars[ci-1]['bbox'][3]
+                gaps.append(gap)
+            space_thresh = np.median(gaps) * 2.0 if gaps else 20
+
+            # Split into words at large gaps
+            current_word = [chars[0]]
+            for ci in range(1, len(chars)):
+                gap = chars[ci]['bbox'][1] - chars[ci-1]['bbox'][3]
+                if gap > space_thresh:
+                    # Word boundary — save current word
+                    word_text = ''.join(c['char'] for c in current_word)
+                    x_start = current_word[0]['bbox'][1]
+                    x_end = current_word[-1]['bbox'][3]
+                    words_with_coords.append({
+                        'text': word_text,
+                        'x': (x_start + x_end) / 2,
+                        'y': line_y,
+                        'x_start': x_start,
+                        'x_end': x_end,
+                        'line_index': line_result.get('row_index', 0),
+                    })
+                    current_word = [chars[ci]]
+                else:
+                    current_word.append(chars[ci])
+
+            if current_word:
+                word_text = ''.join(c['char'] for c in current_word)
+                x_start = current_word[0]['bbox'][1]
+                x_end = current_word[-1]['bbox'][3]
+                words_with_coords.append({
+                    'text': word_text,
+                    'x': (x_start + x_end) / 2,
+                    'y': line_y,
+                    'x_start': x_start,
+                    'x_end': x_end,
+                    'line_index': line_result.get('row_index', 0),
+                })
+
+        # RECONSTRUCT TABLE: find columns from word X positions across ALL lines.
+        # Somatotopic principle: positions that consistently have words across
+        # many lines = column positions. The pattern emerges from repetition.
+        table = None
+        if words_with_coords:
+            page_w = grayscale_image.shape[1]
+
+            # Collect ALL word x_start positions across all lines
+            all_x = sorted([w['x_start'] for w in words_with_coords])
+
+            # Find clusters of X positions (columns) using gap detection
+            # Words in the same column start at similar X across different rows
+            clusters = []
+            if all_x:
+                cluster = [all_x[0]]
+                for x in all_x[1:]:
+                    if x - cluster[-1] < 25:  # within 25px = same cluster
+                        cluster.append(x)
+                    else:
+                        clusters.append((min(cluster), max(cluster), len(cluster)))
+                        cluster = [x]
+                clusters.append((min(cluster), max(cluster), len(cluster)))
+
+            # Keep clusters with 3+ words (real columns have multiple entries)
+            # and find natural breakpoints between clusters
+            strong_clusters = [c for c in clusters if c[2] >= 3]
+            if len(strong_clusters) < 3:
+                strong_clusters = clusters  # fallback: use all
+
+            # Build column boundaries from cluster gaps
+            columns = []
+            for i, (cmin, cmax, cnt) in enumerate(strong_clusters):
+                if i == 0:
+                    col_start = 0
+                else:
+                    prev_max = strong_clusters[i-1][1]
+                    col_start = (prev_max + cmin) // 2  # midpoint of gap
+                if i == len(strong_clusters) - 1:
+                    col_end = page_w
+                else:
+                    next_min = strong_clusters[i+1][0]
+                    col_end = (cmax + next_min) // 2
+                columns.append((col_start, col_end))
+
+            if len(columns) >= 2:
+                # Assign each word to the column containing its x_start
+                rows_dict = {}
+                for w in words_with_coords:
+                    col_idx = 0
+                    for ci, (cs, ce) in enumerate(columns):
+                        if cs <= w['x_start'] < ce:
+                            col_idx = ci
+                            break
+                    row_idx = w['line_index']
+                    if row_idx not in rows_dict:
+                        rows_dict[row_idx] = {}
+                    if col_idx not in rows_dict[row_idx]:
+                        rows_dict[row_idx][col_idx] = []
+                    rows_dict[row_idx][col_idx].append(w['text'])
+
+                # Build initial table
+                raw_rows = []
+                for row_idx in sorted(rows_dict.keys()):
+                    row = []
+                    for col_idx in range(len(columns)):
+                        cell_words = rows_dict.get(row_idx, {}).get(col_idx, [])
+                        row.append(' '.join(cell_words))
+                    raw_rows.append(row)
+
+                # RELATIONAL MEMORY: information is never stored in isolation.
+                # Each cell exists in RELATION to all other cells in the same column.
+                # Repeated words in the same column reinforce each other.
+                # "Bazzah" at col 4 row 5 confirms "3azzah" at col 4 row 8 = "Bazzah".
+                from difflib import SequenceMatcher
+                col_vocab = {}  # {col_idx: {word: count}}
+                for row in raw_rows:
+                    for ci, cell in enumerate(row):
+                        if ci not in col_vocab:
+                            col_vocab[ci] = {}
+                        for w in cell.split():
+                            if len(w) > 2:
+                                col_vocab[ci][w] = col_vocab[ci].get(w, 0) + 1
+
+                # Find confident words per column (appear 2+ times)
+                col_anchors = {}
+                for ci, vocab in col_vocab.items():
+                    col_anchors[ci] = {w for w, c in vocab.items() if c >= 2}
+
+                # Correct uncertain words using column anchors
+                corrected_rows = []
+                for row in raw_rows:
+                    corrected_row = []
+                    for ci, cell in enumerate(row):
+                        words = cell.split()
+                        fixed_words = []
+                        for w in words:
+                            if len(w) > 2 and ci in col_anchors:
+                                # Check if this word is similar to any column anchor
+                                best_match = None
+                                best_ratio = 0
+                                for anchor in col_anchors[ci]:
+                                    if anchor == w:
+                                        best_match = None  # already matches
+                                        break
+                                    ratio = SequenceMatcher(None, w.lower(), anchor.lower()).ratio()
+                                    if ratio > best_ratio and ratio > 0.6:
+                                        best_ratio = ratio
+                                        best_match = anchor
+                                if best_match:
+                                    fixed_words.append(best_match)
+                                else:
+                                    fixed_words.append(w)
+                            else:
+                                fixed_words.append(w)
+                        corrected_row.append(' '.join(fixed_words))
+                    corrected_rows.append(corrected_row)
+
+                table = {
+                    'columns': len(columns),
+                    'rows': corrected_rows,
+                }
+
+        return {
+            'text': '\n'.join(all_text),
+            'lines': [l['text'] for l in lines],
+            'line_details': lines,
+            'words': words_with_coords,
+            'table': table,
+            'confidence': avg_conf,
+            'adapted': adapted is not None,
+            'confident_samples': len(confident_samples),
+        }
+
+    def detect_columns(self, grayscale_image):
+        """
+        Detect column boundaries from vertical gaps in the image.
+        Principle: columns are separated by continuous vertical whitespace.
+        """
+        from skimage.filters import threshold_otsu
+        try:
+            thresh = threshold_otsu(grayscale_image)
+        except Exception:
+            thresh = 128
+        binary = (grayscale_image < thresh).astype(np.uint8)
+
+        # Vertical projection: sum ink per column across all rows
+        v_proj = binary.sum(axis=0).astype(float)
+
+        # Find wide gaps (column separators): runs of near-zero ink
+        gap_thresh = binary.shape[0] * 0.02  # <2% of height = empty column
+        in_gap = False
+        gaps = []
+        gap_start = 0
+
+        for i in range(len(v_proj)):
+            if v_proj[i] <= gap_thresh and not in_gap:
+                gap_start = i
+                in_gap = True
+            elif v_proj[i] > gap_thresh and in_gap:
+                if i - gap_start > 15:  # gaps must be >15px wide
+                    gaps.append((gap_start, i))
+                in_gap = False
+
+        if not gaps:
+            return None  # Not a columnar document
+
+        # Build column boundaries from gaps
+        columns = []
+        prev_end = 0
+        for gs, ge in gaps:
+            if gs > prev_end + 20:  # column must be >20px wide
+                columns.append((prev_end, gs))
+            prev_end = ge
+        if prev_end < len(v_proj) - 20:
+            columns.append((prev_end, len(v_proj)))
+
+        return columns if len(columns) >= 2 else None
+
+    def read_structured_page(self, grayscale_image, space_threshold=None):
+        """
+        Read a structured document (spreadsheet, table) using layout understanding.
+
+        START WITHIN, THEN WITHOUT:
+        1. Detect structure (columns, rows) — the organization
+        2. OCR each cell within its column context
+        3. Use patterns: repeated words, column-consistent vocabulary
+        4. The bigger picture emerges from understanding the parts
+        """
+        # Try to detect columnar structure
+        columns = self.detect_columns(grayscale_image)
+
+        if columns is None:
+            # Not a structured document — fall back to standard page read
+            return self.read_page(grayscale_image, space_threshold)
+
+        # Segment rows
+        line_segments = self.segment_lines(grayscale_image)
+        if not line_segments:
+            return {'text': '', 'lines': [], 'confidence': 0, 'structured': False}
+
+        # For each row, extract text per column
+        rows = []
+        all_text = []
+
+        # Pass 1: OCR all cells, collect confident predictions per column
+        col_vocab = {i: {} for i in range(len(columns))}  # word frequencies per column
+
+        for seg in line_segments:
+            row_cells = []
+            for ci, (col_start, col_end) in enumerate(columns):
+                # Extract this cell's image
+                cell_img = seg['image'][:, max(0,col_start):min(col_end, seg['image'].shape[1])]
+                if cell_img.size == 0 or cell_img.shape[1] < 5:
+                    row_cells.append('')
+                    continue
+
+                result = self.read_line(cell_img, space_threshold=space_threshold)
+                text = result['text'].strip()
+                row_cells.append(text)
+
+                # Track word frequencies per column
+                if text and result.get('confidence', 0) > 0:
+                    for word in text.split():
+                        if word.isalpha() and len(word) > 1:
+                            col_vocab[ci][word] = col_vocab[ci].get(word, 0) + 1
+
+            row_text = '\t'.join(row_cells)
+            rows.append(row_cells)
+            all_text.append(row_text)
+
+        # Pass 2: Use column vocabulary to correct uncertain words
+        # Words that appear multiple times in the same column are likely correct
+        confident_words = {}
+        for ci, vocab in col_vocab.items():
+            for word, count in vocab.items():
+                if count >= 2:  # seen 2+ times in same column = trusted
+                    confident_words[word.lower()] = word
+
+        avg_conf = 0
+        return {
+            'text': '\n'.join(all_text),
+            'lines': ['\t'.join(r) for r in rows],
+            'rows': rows,
+            'columns': len(columns),
+            'column_boundaries': columns,
+            'column_vocab': {i: dict(sorted(v.items(), key=lambda x: -x[1])[:5]) for i, v in col_vocab.items()},
+            'confident_words': confident_words,
+            'confidence': avg_conf,
+            'structured': True,
+        }
+
+    # --- Rendering utility ---
+
+    def _render(self, char, font_path, font_size=80, img_size=(100, 100)):
+        img = Image.new('L', img_size, color=255)
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.truetype(font_path, font_size)
+        except Exception:
+            font = ImageFont.load_default()
+        bbox = draw.textbbox((0, 0), char, font=font)
+        x = (img_size[0] - (bbox[2] - bbox[0])) // 2 - bbox[0]
+        y = (img_size[1] - (bbox[3] - bbox[1])) // 2 - bbox[1]
+        draw.text((x, y), char, fill=0, font=font)
+        return np.array(img)
+
+    @staticmethod
+    def render_text_line(text, font_path, font_size=40, padding=10):
+        """Render a line of text as a grayscale image."""
+        try:
+            font = ImageFont.truetype(font_path, font_size)
+        except Exception:
+            font = ImageFont.load_default()
+        
+        # Measure text
+        dummy = Image.new('L', (1, 1))
+        draw = ImageDraw.Draw(dummy)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        
+        img = Image.new('L', (tw + padding * 2, th + padding * 2), color=255)
+        draw = ImageDraw.Draw(img)
+        draw.text((padding - bbox[0], padding - bbox[1]), text, fill=0, font=font)
+        return np.array(img)
+
+    # --- Save / Load ---
+
+    def save(self, path):
+        """Save trained model to JSON."""
+        # Serialise templates: store sum as nested list and count
+        tpl_data = {}
+        for label, td in self.templates.items():
+            tpl_data[label] = {
+                'sum': td['sum'].tolist(),
+                'n': td['n'],
+            }
+        data = {
+            'version': self.version,
+            'total_predictions': self.total_predictions,
+            'total_correct': self.total_correct,
+            'landscapes': {k: v.to_dict() for k, v in self.landscapes.items()},
+            'templates': tpl_data,
+        }
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2)
+
+    @classmethod
+    def load(cls, path):
+        """Load trained model from JSON."""
+        with open(path) as f:
+            data = json.load(f)
+        engine = cls()
+        engine.version = data.get('version', '1.0.0')
+        engine.total_predictions = data.get('total_predictions', 0)
+        engine.total_correct = data.get('total_correct', 0)
+        for label, ld in data.get('landscapes', {}).items():
+            engine.landscapes[label] = Landscape.from_dict(ld)
+        # Restore templates
+        for label, td in data.get('templates', {}).items():
+            engine.templates[label] = {
+                'sum': np.array(td['sum'], dtype=np.float64),
+                'n': td['n'],
+            }
+        return engine
+
+    # --- Stats ---
+
+    def get_stats(self):
+        n_chars = len(self.landscapes)
+        depths = [l.n for l in self.landscapes.values()]
+        acc = self.total_correct / self.total_predictions * 100 if self.total_predictions > 0 else 0
+        return {
+            'characters': n_chars,
+            'min_depth': min(depths) if depths else 0,
+            'max_depth': max(depths) if depths else 0,
+            'avg_depth': np.mean(depths) if depths else 0,
+            'total_predictions': self.total_predictions,
+            'total_correct': self.total_correct,
+            'accuracy': acc,
+        }

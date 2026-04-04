@@ -51,7 +51,7 @@ bridges(k=10){return this.pressure().filter(p=>p.closure<.3&&p.freq>=3).slice(0,
 // Filters out high-frequency function words that connect everything.
 tensions(k=10){const results=[];for(const[w,nd]of Object.entries(this.nodes)){if(nd.freq<3)continue;
   // Only consider content neighbors (not top-30% frequency words)
-  const freqThresh=Math.max(...Object.values(this.nodes).map(n=>n.freq))*0.3;
+  let maxFreq=0;for(const n of Object.values(this.nodes))if(n.freq>maxFreq)maxFreq=n.freq;const freqThresh=maxFreq*0.3;
   const nbrs=Object.keys(nd.neighbors).filter(n=>this.nodes[n]&&this.nodes[n].freq<freqThresh);
   if(nbrs.length<4)continue;
   const adj={};for(const n of nbrs)adj[n]=[];
@@ -67,7 +67,7 @@ tensions(k=10){const results=[];for(const[w,nd]of Object.entries(this.nodes)){if
 // ─── Collapse: force resolution of ambiguous word ─────────────────
 // Keeps the dominant cluster, prunes the minority.
 collapse(w){w=w.toLowerCase();const nd=this.nodes[w];if(!nd)return{ok:false,reason:"unknown"};
-  const freqThresh=Math.max(...Object.values(this.nodes).map(n=>n.freq))*0.3;
+  let maxFreq=0;for(const n of Object.values(this.nodes))if(n.freq>maxFreq)maxFreq=n.freq;const freqThresh=maxFreq*0.3;
   const nbrs=Object.keys(nd.neighbors).filter(n=>this.nodes[n]&&this.nodes[n].freq<freqThresh);
   if(nbrs.length<4)return{ok:false,reason:"not enough content neighbors"};
   const adj={};for(const n of nbrs)adj[n]=[];
@@ -118,6 +118,57 @@ decay(threshold=1){let removed=0;
 correct(garbled,k=5){const g=garbled.toLowerCase(),cands=new Set();for(let d=-2;d<=2;d++){const ws=this._idxLen[g.length+d];if(ws)for(const w of ws)cands.add(w);}for(let i=0;i<g.length-1;i++){const ws=this._idxBg[g.slice(i,i+2)];if(ws)for(const w of ws)cands.add(w);}const scored=[...cands].map(w=>{const o=1-ocrDistance(g,w)/Math.max(g.length,w.length,1),b=sharedBigrams(g,w);return{word:w,score:o*.7+b*.3};});scored.sort((a,b)=>b.score-a.score||(this.nodes[b.word]?.freq||0)-(this.nodes[a.word]?.freq||0));const top=scored.slice(0,k),conf=top.length>=2?top[0].score-top[1].score:top.length?1:0;return{candidates:top,confidence:conf};}
 // ─── Similar: 2-hop neighborhood, not universe scan. O(nbrs²) not O(V). ──
 similar(w,k=8){const wl=w.toLowerCase(),node=this.nodes[wl];if(!node)return[];const cands=new Set();for(const nb of Object.keys(node.neighbors)){cands.add(nb);const nbNode=this.nodes[nb];if(nbNode)for(const nb2 of Object.keys(nbNode.neighbors))cands.add(nb2);}for(const nb of Object.keys(node.next||{}))cands.add(nb);for(const nb of Object.keys(node.prev||{}))cands.add(nb);cands.delete(wl);const out=[];for(const c of cands){if(!this.nodes[c])continue;out.push({word:c,...this.compare(wl,c)});}return out.sort((a,b)=>b.similarity-a.similarity).slice(0,k);}
+// ─── Path: least-action sentence generation (Dijkstra) ───────────
+// Cost of edge A→B = -log(P(B|A)) where P(B|A) = nx[B] / sum(nx).
+// High next count = low cost = syntactic highway.
+// Low next count = high cost = brick wall.
+// The path of least surprise IS the sentence.
+path(start,goal,maxLen=15){
+  const sl=start.toLowerCase(),gl=goal.toLowerCase();
+  if(!this.nodes[sl]||!this.nodes[gl])return{ok:false,reason:"unknown word"};
+  // Dijkstra: cost = surprise = -log(P(next))
+  const dist={},prev={},visited=new Set();
+  dist[sl]=0;prev[sl]=null;
+  // Priority queue (simple: sort each iteration — fine for path lengths <20)
+  const pq=[sl];
+  while(pq.length){
+    pq.sort((a,b)=>(dist[a]||Infinity)-(dist[b]||Infinity));
+    const u=pq.shift();
+    if(visited.has(u))continue;visited.add(u);
+    if(u===gl)break; // found it
+    const nd=this.nodes[u];if(!nd||!nd.next)continue;
+    const total=Object.values(nd.next).reduce((s,v)=>s+v,0);
+    // Reconstruct path length so far
+    let pathLen=0;let trace=u;while(prev[trace]){pathLen++;trace=prev[trace];}
+    if(pathLen>=maxLen)continue;
+    for(const[nb,cnt]of Object.entries(nd.next)){
+      if(visited.has(nb))continue;
+      const prob=cnt/total;
+      const cost=-Math.log(prob+1e-10); // surprise
+      const newDist=dist[u]+cost;
+      if(newDist<(dist[nb]??Infinity)){dist[nb]=newDist;prev[nb]=u;pq.push(nb);}
+    }
+  }
+  // Reconstruct path
+  if(dist[gl]===undefined)return{ok:false,reason:`no path from "${start}" to "${goal}"`};
+  const words=[];let cur=gl;
+  while(cur!==null){words.unshift(cur);cur=prev[cur];}
+  const text=words.join(' ');
+  const score=this.scoreSentence(text);
+  return{ok:true,words,text,energy:dist[gl],coherence:score.coherence,steps:score.steps};}
+// ─── Generate: open-ended walk (weighted random, prefers rare) ────
+generate(startWord,maxLen=12){
+  let w=startWord?startWord.toLowerCase():null;
+  if(!w||!this.nodes[w]){const cs=Object.entries(this.nodes).filter(([,n])=>n.freq>=3&&n.freq<=50&&Object.keys(n.next).length>=2);if(!cs.length)return{words:[],text:"(not enough data)"};w=cs[Math.floor(Math.random()*cs.length)][0];}
+  const words=[w],used=new Set([w]);
+  for(let i=0;i<maxLen-1;i++){const nd=this.nodes[w];if(!nd||!Object.keys(nd.next).length)break;
+    const entries=Object.entries(nd.next).filter(([nw])=>!used.has(nw)||words.length>6);if(!entries.length)break;
+    const weighted=entries.map(([nw,cnt])=>({w:nw,wt:cnt*(1/Math.max(Math.log2((this.nodes[nw]?.freq||1)+1),0.5))}));
+    const totalWt=weighted.reduce((s,x)=>s+x.wt,0);let r=Math.random()*totalWt,pick=weighted[0].w;
+    for(const x of weighted){r-=x.wt;if(r<=0){pick=x.w;break;}}
+    words.push(pick);used.add(pick);w=pick;}
+  const text=words.join(' ');const score=this.scoreSentence(text);
+  return{words,text,coherence:score.coherence};}
 stats(){const v=Object.keys(this.nodes).length,depths={unborn:0,surface:0,shallow:0,forming:0,structured:0,deep:0};for(const w of Object.keys(this.nodes))depths[this.depth(w).level]++;return{version:VERSION,vocab:v,sentences:this.sentenceCount,tokens:this.tokenCount,depths};}
 serialize(){return JSON.stringify({version:VERSION,nodes:Object.fromEntries(Object.entries(this.nodes).map(([w,n])=>[w,{chars:n.chars,freq:n.freq,firstSeen:n.firstSeen,lastSeen:n.lastSeen,positions:n.positions.slice(-200),gaps:n.gaps.slice(-100),sentLengths:n.sentLengths.slice(-100),neighbors:n.neighbors,next:n.next,prev:n.prev,next2:n.next2}])),sentenceCount:this.sentenceCount,tokenCount:this.tokenCount});}
 static deserialize(json){const d=JSON.parse(json),e=new ShifuEmbryo();e.sentenceCount=d.sentenceCount||0;e.tokenCount=d.tokenCount||0;for(const[w,n]of Object.entries(d.nodes||{})){e.nodes[w]={chars:n.chars||w,freq:n.freq||0,firstSeen:n.firstSeen,lastSeen:n.lastSeen,positions:n.positions||[],gaps:n.gaps||[],sentLengths:n.sentLengths||[],neighbors:n.neighbors||{},next:n.next||{},prev:n.prev||{},next2:n.next2||{}};e._idx(w);}return e;}}
