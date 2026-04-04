@@ -42,6 +42,14 @@ canvas{display:block}
 .dc-count{width:50px;color:#2a3a4a}
 
 #hint{position:fixed;bottom:22px;right:28px;color:#1a2a3a;font-size:0.65em;text-align:right;z-index:10;line-height:1.6}
+#feed-bar{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:10;display:flex;gap:8px;align-items:center}
+#feed-input{background:rgba(6,10,16,0.85);border:1px solid rgba(26,33,48,0.5);color:#a8b4c4;padding:12px 18px;border-radius:24px;font-family:inherit;font-size:0.85em;width:400px;outline:none;backdrop-filter:blur(8px);transition:all 0.3s}
+#feed-input:focus{border-color:#48b89a;box-shadow:0 0 25px rgba(72,184,154,0.15);width:500px}
+#feed-btn{background:rgba(72,184,154,0.15);border:1px solid rgba(72,184,154,0.3);color:#48b89a;padding:12px 20px;border-radius:24px;font-family:inherit;font-weight:600;font-size:0.82em;cursor:pointer;transition:all 0.2s;backdrop-filter:blur(8px)}
+#feed-btn:hover{background:rgba(72,184,154,0.25);border-color:#48b89a}
+#feed-status{color:#2a3a4a;font-size:0.7em;position:fixed;bottom:60px;left:50%;transform:translateX(-50%);z-index:10;transition:opacity 0.5s}
+.burst{position:absolute;width:6px;height:6px;border-radius:50%;pointer-events:none;z-index:20}
+@keyframes burstAnim{0%{transform:scale(0);opacity:1}100%{transform:scale(8);opacity:0}}
 </style>
 </head>
 <body>
@@ -61,7 +69,14 @@ canvas{display:block}
 </div>
 
 <div id="depth-chart"></div>
-<div id="hint">drag to rotate &middot; scroll to zoom &middot; click a neuron</div>
+
+<form id="feed-bar" onsubmit="return false">
+  <input type="text" id="feed-input" placeholder="type a sentence to feed the brain...">
+  <button id="feed-btn" type="submit">Feed</button>
+</form>
+<div id="feed-status"></div>
+
+<div id="hint">drag to rotate &middot; scroll to zoom &middot; click a neuron &middot; type below to feed</div>
 
 <script type="importmap">{"imports":{
   "three":"https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
@@ -282,8 +297,137 @@ window.addEventListener('resize', () => {
 });
 
 document.getElementById('search').addEventListener('input', e => {
-  searched = e.target.value.length >= 2 ? e.target.value.toLowerCase() : null;
+  const v = e.target.value.toLowerCase();
+  searched = v.length >= 2 ? v : null;
+  // Find and fly to matched word
+  if (searched) {
+    const match = nodes.find(n => n.id === searched) || nodes.find(n => n.id.startsWith(searched));
+    if (match) {
+      selected = match.idx;
+      showPanel(match);
+      controls.autoRotate = false;
+    }
+  }
 });
+
+// Live feed — type text, watch it enter the brain
+const newNodeBursts = []; // {x,y,z,time,color} for burst animation
+document.getElementById('feed-btn').addEventListener('click', feedBrain);
+document.getElementById('feed-input').addEventListener('keydown', e => { if (e.key === 'Enter') feedBrain(); });
+
+function feedBrain() {
+  const input = document.getElementById('feed-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+
+  // Tokenize same as engine
+  const words = (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(w => w.length > 1);
+  if (words.length < 2) return;
+
+  // Find which words are NEW (not in current visualization)
+  const existingSet = new Set(nodes.map(n => n.id));
+  const newWords = words.filter(w => !existingSet.has(w));
+  const existingWords = words.filter(w => existingSet.has(w));
+
+  // Highlight existing words that were mentioned
+  searched = null;
+  const mentioned = new Set(words);
+
+  // Add new nodes to the visualization
+  for (const w of newWords) {
+    const angle = Math.random() * Math.PI * 2;
+    const elev = (Math.random() - 0.5) * Math.PI;
+    const r = 130 + Math.random() * 40; // surface layer — new words start shallow
+    const x = r * Math.cos(elev) * Math.cos(angle);
+    const y = r * Math.cos(elev) * Math.sin(angle);
+    const z = r * Math.sin(elev);
+
+    const newNode = {
+      id: w, freq: 1, depth: 'surface', ev: 0.1, nb: words.length - 1,
+      nx: 0, topNb: words.filter(ww => ww !== w).slice(0, 5), topNx: [],
+      pos: 0.5, x, y, z, idx: nodes.length,
+      color: DC.surface, radius: 2, pulse: Math.random() * Math.PI * 2,
+      isNew: true, birthTime: clock.getElapsedTime()
+    };
+    nodes.push(newNode);
+    nodeMap[w] = newNode.idx;
+    existingSet.add(w);
+
+    // Create burst effect
+    newNodeBursts.push({ x, y, z, time: clock.getElapsedTime(), color: DC.surface });
+  }
+
+  // Add connections between all words in the sentence
+  for (let i = 0; i < words.length; i++) {
+    for (let j = i + 1; j < Math.min(words.length, i + 4); j++) {
+      const si = nodeMap[words[i]], ti = nodeMap[words[j]];
+      if (si !== undefined && ti !== undefined) {
+        links.push({ si, ti, w: 1, isNew: true, birthTime: clock.getElapsedTime() });
+      }
+    }
+  }
+
+  // Rebuild instanced mesh with new nodes
+  rebuildNodeMesh();
+
+  // Status message
+  const status = document.getElementById('feed-status');
+  status.textContent = newWords.length > 0
+    ? `+${newWords.length} new neurons: ${newWords.slice(0, 5).join(', ')}${newWords.length > 5 ? '...' : ''}`
+    : `reinforced: ${existingWords.slice(0, 5).join(', ')}`;
+  status.style.opacity = 1;
+  setTimeout(() => { status.style.opacity = 0; }, 3000);
+
+  // Temporarily highlight all fed words
+  feedHighlight = { words: mentioned, time: clock.getElapsedTime() };
+  controls.autoRotate = false;
+}
+
+let feedHighlight = null;
+
+function rebuildNodeMesh() {
+  // Remove old mesh
+  scene.remove(nodeMesh);
+
+  const newN = nodes.length;
+  const newSphereGeo = new THREE.SphereGeometry(1, 12, 8);
+  const newSphereMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  nodeMesh = new THREE.InstancedMesh(newSphereGeo, newSphereMat, newN);
+
+  for (let i = 0; i < newN; i++) {
+    const n = nodes[i];
+    const sz = n.radius || Math.max(1.5, Math.min(6, Math.pow(n.freq, 0.28) * 0.8));
+    sizes[i] = sz;
+    dummy.position.set(n.x, n.y, n.z);
+    dummy.scale.set(sz, sz, sz);
+    dummy.updateMatrix();
+    nodeMesh.setMatrixAt(i, dummy.matrix);
+    const c = DC[n.depth] || DC.surface;
+    nodeMesh.setColorAt(i, c);
+  }
+  nodeMesh.instanceMatrix.needsUpdate = true;
+  nodeMesh.instanceColor.needsUpdate = true;
+  scene.add(nodeMesh);
+
+  // Rebuild edge geometry
+  scene.remove(edgeLines);
+  const ep = [], ec = [];
+  for (const l of links) {
+    const a = nodes[l.si], b = nodes[l.ti];
+    if (!a || !b) continue;
+    ep.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    const bright = l.isNew ? 0.4 : 0.08;
+    ec.push(bright * 0.7, bright, bright * 0.8, bright * 0.7, bright, bright * 0.8);
+  }
+  const eg = new THREE.BufferGeometry();
+  eg.setAttribute('position', new THREE.Float32BufferAttribute(ep, 3));
+  eg.setAttribute('color', new THREE.Float32BufferAttribute(ec, 3));
+  edgeLines = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, linewidth: 1
+  }));
+  scene.add(edgeLines);
+}
 
 function showPanel(n) {
   const [r,g,b] = DCA[n.depth] || [58,58,58];
@@ -316,30 +460,39 @@ function animate() {
   hovered = intersects.length > 0 ? intersects[0].instanceId : -1;
   renderer.domElement.style.cursor = hovered >= 0 ? 'pointer' : '';
 
-  // Update node appearance based on hover/search/select
-  for (let i = 0; i < N; i++) {
+  // Update node appearance
+  const curN = nodes.length;
+  for (let i = 0; i < curN; i++) {
+    if (i >= nodeMesh.count) break;
     const n = nodes[i];
     const isH = i === hovered;
     const isS = i === selected;
     const isSr = searched && n.id.includes(searched);
+    const isFed = feedHighlight && feedHighlight.words.has(n.id) && (t - feedHighlight.time) < 3;
+    const isNew = n.isNew && (t - n.birthTime) < 4;
 
     // Organic breathing
     const breathe = 1 + Math.sin(t * 0.8 + i * 0.7) * 0.04;
     const pulse = n.depth === 'deep' ? 1 + Math.sin(t * 1.5 + i) * 0.1 : 1;
-    const highlight = isH ? 2.5 : isS ? 2.2 : isSr ? 1.8 : 1;
-    const sz = sizes[i] * breathe * pulse * highlight;
+    // New nodes burst in with expanding scale
+    const birthScale = isNew ? Math.min((t - n.birthTime) * 2, 1) * (1 + Math.sin((t - n.birthTime) * 6) * 0.3) : 1;
+    const highlight = isH ? 2.5 : isS ? 2.2 : isFed ? 2.0 : isSr ? 1.8 : 1;
+    const sz = (sizes[i] || 2) * breathe * pulse * highlight * birthScale;
 
     dummy.position.set(n.x, n.y, n.z);
-    // Subtle drift
     dummy.position.y += Math.sin(t * 0.3 + i * 1.1) * 0.5;
     dummy.scale.set(sz, sz, sz);
     dummy.updateMatrix();
     nodeMesh.setMatrixAt(i, dummy.matrix);
 
-    // Color boost for highlighted
+    // Color
     const c = DC[n.depth] || DC.surface;
     if (isH || isS) {
       nodeMesh.setColorAt(i, new THREE.Color(1, 1, 1));
+    } else if (isFed || isNew) {
+      // Gold flash for newly fed words
+      const flash = Math.sin((t - (n.birthTime || feedHighlight?.time || 0)) * 4) * 0.5 + 0.5;
+      nodeMesh.setColorAt(i, new THREE.Color(0.9, 0.7 + flash * 0.3, 0.2 + flash * 0.4));
     } else if (isSr) {
       nodeMesh.setColorAt(i, c.clone().multiplyScalar(1.5));
     } else {
@@ -349,25 +502,32 @@ function animate() {
   nodeMesh.instanceMatrix.needsUpdate = true;
   if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
 
-  // Edge highlighting
+  // Edge highlighting — all connections visible, highlighted ones glow
   const eColors = edgeLines.geometry.attributes.color.array;
   let ei = 0;
   for (const l of links) {
+    if (ei >= eColors.length) break;
     const isHl = (hovered >= 0 && (l.si === hovered || l.ti === hovered)) ||
                  (selected >= 0 && (l.si === selected || l.ti === selected));
-    const isSr = searched && (nodes[l.si].id.includes(searched) || nodes[l.ti].id.includes(searched));
-    if (isHl) {
-      eColors[ei] = 0.28; eColors[ei+1] = 0.72; eColors[ei+2] = 0.6;
-      eColors[ei+3] = 0.28; eColors[ei+4] = 0.72; eColors[ei+5] = 0.6;
+    const isSr = searched && (nodes[l.si]?.id.includes(searched) || nodes[l.ti]?.id.includes(searched));
+    const isFed = l.isNew && (t - l.birthTime) < 3;
+    if (isFed) {
+      // New connections flash gold
+      const flash = Math.sin((t - l.birthTime) * 5) * 0.3 + 0.7;
+      eColors[ei] = 0.9*flash; eColors[ei+1] = 0.7*flash; eColors[ei+2] = 0.2;
+      eColors[ei+3] = 0.9*flash; eColors[ei+4] = 0.7*flash; eColors[ei+5] = 0.2;
+    } else if (isHl) {
+      eColors[ei] = 0.3; eColors[ei+1] = 0.75; eColors[ei+2] = 0.6;
+      eColors[ei+3] = 0.3; eColors[ei+4] = 0.75; eColors[ei+5] = 0.6;
     } else if (isSr) {
-      eColors[ei] = 0.18; eColors[ei+1] = 0.4; eColors[ei+2] = 0.5;
-      eColors[ei+3] = 0.18; eColors[ei+4] = 0.4; eColors[ei+5] = 0.5;
+      eColors[ei] = 0.2; eColors[ei+1] = 0.45; eColors[ei+2] = 0.55;
+      eColors[ei+3] = 0.2; eColors[ei+4] = 0.45; eColors[ei+5] = 0.55;
     } else {
-      eColors[ei] = 0.06; eColors[ei+1] = 0.08; eColors[ei+2] = 0.1;
-      eColors[ei+3] = 0.06; eColors[ei+4] = 0.08; eColors[ei+5] = 0.1;
+      // Base connections — dim but visible
+      eColors[ei] = 0.08; eColors[ei+1] = 0.1; eColors[ei+2] = 0.14;
+      eColors[ei+3] = 0.08; eColors[ei+4] = 0.1; eColors[ei+5] = 0.14;
     }
     ei += 6;
-    if (ei >= eColors.length) break;
   }
   edgeLines.geometry.attributes.color.needsUpdate = true;
 
