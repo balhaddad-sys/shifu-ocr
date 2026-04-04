@@ -197,10 +197,17 @@ scoreSentence(raw){
     if(i>0){const prev=this.nodes[ws[i-1]];if(prev?.next){const tot=Object.values(prev.next).reduce((a,b)=>a+b,0);step.seqS=1-((prev.next[w]||0)/Math.max(tot,1));sig+=step.seqS*0.35;wts+=0.35;}}
     if(i>=2){const pp=this.nodes[ws[i-2]],nx2=pp?.next2?.[ws[i-1]];if(nx2){const tot=Object.values(nx2).reduce((a,b)=>a+b,0);step.trajS=1-((nx2[w]||0)/Math.max(tot,1));sig+=step.trajS*0.30;wts+=0.30;}}
     if(i>0&&field.size>0){const fw=field.get(w)||0,mx=Math.max(...field.values(),1);step.fieldS=1-fw/mx;sig+=step.fieldS*0.35;wts+=0.35;}
-    step.afGate=0;if(i>0&&node){const pn=this.nodes[ws[i-1]];if(pn?.neighbors&&node.neighbors){const pN=Object.keys(pn.neighbors),wN=new Set(Object.keys(node.neighbors)),sh=pN.filter(x=>wN.has(x)).length,un=new Set([...pN,...wN]).size;step.afGate=un?sh/un:0;}}
+    // Depth gate: only compute expensive affinity for words with mass (structured+).
+    // Dust pairs (surface/shallow + surface/shallow) skip — just use sequential surprise.
+    step.afGate=0;
+    if(i>0&&node){const pn=this.nodes[ws[i-1]];
+      const prevHasMass=pn&&pn.freq>=5;const currHasMass=node.freq>=5;
+      if((prevHasMass||currHasMass)&&pn?.neighbors&&node.neighbors){
+        const pN=Object.keys(pn.neighbors),wN=new Set(Object.keys(node.neighbors)),sh=pN.filter(x=>wN.has(x)).length,un=new Set([...pN,...wN]).size;step.afGate=un?sh/un:0;}}
     step.surprise=wts>0?(sig/wts)*(1-step.afGate*0.3):(node?0.5:1);
     total+=step.surprise;step.cumS=total;steps.push(step);
-    if(node?.neighbors)for(const[nb,cnt]of Object.entries(node.neighbors))field.set(nb,(field.get(nb)||0)+cnt);
+    // Field accumulation weighted by depth: deep words activate the field more, surface barely registers
+    if(node?.neighbors){const mass=node.freq>=5?Math.min(node.freq/20,5):0.2;for(const[nb,cnt]of Object.entries(node.neighbors))field.set(nb,(field.get(nb)||0)+cnt*mass);}
     field.set(w,(field.get(w)||0)+10);
   }
   const ms=steps.length?total/steps.length:0;
@@ -209,7 +216,8 @@ scoreSentence(raw){
 
 // ─── Pressure ─────────────────────────────────────────────────────
 pressureOf(w){const node=this.nodes[w];if(!node)return null;const inbound=Object.values(node.prev||{}).reduce((s,v)=>s+v,0);const actual=Object.keys(node.neighbors).length+Object.keys(node.next).length+Object.keys(node.prev).length;const p=actual-inbound;const nbrs=Object.keys(node.neighbors);let internal=0,pairs=0;for(let i=0;i<Math.min(nbrs.length,15);i++)for(let j=i+1;j<Math.min(nbrs.length,15);j++){pairs++;if(this.nodes[nbrs[i]]?.neighbors[nbrs[j]])internal++;}const closure=pairs>0?internal/pairs:1;return{word:w,pressure:p,inbound,actual,closure,freq:node.freq,depth:this.depth(w).level};}
-pressure(minFreq=2){const map=[];for(const[w,n]of Object.entries(this.nodes)){if(n.freq<minFreq)continue;map.push(this.pressureOf(w));}return map.sort((a,b)=>a.pressure-b.pressure);}
+// Pressure: only compute for planets (structured+). Dust connects to everything equally — no meaningful pressure.
+pressure(minFreq=5){const map=[];for(const[w,n]of Object.entries(this.nodes)){if(n.freq<minFreq||n.nbrCount<3)continue;map.push(this.pressureOf(w));}return map.sort((a,b)=>a.pressure-b.pressure);}
 vacuums(k=10){return this.pressure().filter(p=>p.pressure<0).slice(0,k);}
 surpluses(k=10){return this.pressure().filter(p=>p.pressure>0).sort((a,b)=>b.pressure-a.pressure).slice(0,k);}
 bridges(k=10){return this.pressure().filter(p=>p.closure<0.3&&p.freq>=3).slice(0,k);}
@@ -247,7 +255,8 @@ similar(w,k=8){const wl=w.toLowerCase(),node=this.nodes[wl];if(!node)return[];co
 path(start,goal,maxLen=15){const sl=start.toLowerCase(),gl=goal.toLowerCase();if(!this.nodes[sl]||!this.nodes[gl])return{ok:false,reason:"unknown word"};const dist={},prev={},visited=new Set();dist[sl]=0;prev[sl]=null;const pq=[sl];while(pq.length){pq.sort((a,b)=>(dist[a]||Infinity)-(dist[b]||Infinity));const u=pq.shift();if(visited.has(u))continue;visited.add(u);if(u===gl)break;const nd=this.nodes[u];if(!nd||!nd.next)continue;const total=Object.values(nd.next).reduce((s,v)=>s+v,0);let pathLen=0,trace=u;while(prev[trace]){pathLen++;trace=prev[trace];}if(pathLen>=maxLen)continue;for(const[nb,cnt]of Object.entries(nd.next)){if(visited.has(nb))continue;const prob=cnt/total;const cost=-Math.log(prob+1e-10);const newDist=dist[u]+cost;if(newDist<(dist[nb]??Infinity)){dist[nb]=newDist;prev[nb]=u;pq.push(nb);}}}if(dist[gl]===undefined)return{ok:false,reason:'no path'};const words=[];let cur=gl;while(cur!==null){words.unshift(cur);cur=prev[cur];}const text=words.join(' ');const score=this.scoreSentence(text);return{ok:true,words,text,energy:dist[gl],coherence:score.coherence,steps:score.steps};}
 
 // ─── Generate ─────────────────────────────────────────────────────
-generate(startWord,maxLen=12){let w=startWord?startWord.toLowerCase():null;if(!w||!this.nodes[w]){const cs=Object.entries(this.nodes).filter(([,n])=>n.freq>=3&&n.freq<=50&&Object.keys(n.next).length>=2);if(!cs.length)return{words:[],text:"",coherence:0};w=cs[Math.floor(Math.random()*cs.length)][0];}const words=[w],used=new Set([w]);for(let i=0;i<maxLen-1;i++){const nd=this.nodes[w];if(!nd||!Object.keys(nd.next).length)break;const entries=Object.entries(nd.next).filter(([nw])=>!used.has(nw)||words.length>6);if(!entries.length)break;const weighted=entries.map(([nw,cnt])=>({w:nw,wt:cnt*(1/Math.max(Math.log2((this.nodes[nw]?.freq||1)+1),0.5))}));const totalWt=weighted.reduce((s,x)=>s+x.wt,0);let r=Math.random()*totalWt,pick=weighted[0].w;for(const x of weighted){r-=x.wt;if(r<=0){pick=x.w;break;}}words.push(pick);used.add(pick);w=pick;}const text=words.join(' ');const sc=this.scoreSentence(text);return{words,text,coherence:sc.coherence};}
+generate(startWord,maxLen=12){let w=startWord?startWord.toLowerCase():null;if(!w||!this.nodes[w]){const cs=Object.entries(this.nodes).filter(([,n])=>n.freq>=3&&n.freq<=50&&Object.keys(n.next).length>=2);if(!cs.length)return{words:[],text:"",coherence:0};w=cs[Math.floor(Math.random()*cs.length)][0];}const words=[w],used=new Set([w]);for(let i=0;i<maxLen-1;i++){const nd=this.nodes[w];if(!nd||!Object.keys(nd.next).length)break;const entries=Object.entries(nd.next).filter(([nw])=>!used.has(nw)||words.length>6);if(!entries.length)break;// Depth as mass: deep words pull harder, surface words drift. Planets attract the generator.
+const weighted=entries.map(([nw,cnt])=>{const nd2=this.nodes[nw];const mass=nd2&&nd2.freq>=5?1+Math.min(nd2.nbrCount/10,2):0.3;return{w:nw,wt:cnt*mass*(1/Math.max(Math.log2((nd2?.freq||1)+1),0.5))};});const totalWt=weighted.reduce((s,x)=>s+x.wt,0);let r=Math.random()*totalWt,pick=weighted[0].w;for(const x of weighted){r-=x.wt;if(r<=0){pick=x.w;break;}}words.push(pick);used.add(pick);w=pick;}const text=words.join(' ');const sc=this.scoreSentence(text);return{words,text,coherence:sc.coherence};}
 speak(topic,count=5,maxLen=12){const res=[];const starts=[];const tn=this.nodes[topic?.toLowerCase()];if(tn){starts.push(topic.toLowerCase());const nbrs=Object.entries(tn.neighbors).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([w])=>w);for(const nb of nbrs)if(this.nodes[nb]?.next&&Object.keys(this.nodes[nb].next).length>=2)starts.push(nb);}for(let i=0;i<count;i++)res.push(this.generate(starts.length?starts[i%starts.length]:null,maxLen));return res;}
 
 // ─── Query + Ask ──────────────────────────────────────────────────
