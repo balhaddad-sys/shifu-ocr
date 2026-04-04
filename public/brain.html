@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shifu — Neural Topology</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;600&family=Instrument+Serif&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;overflow:hidden;font-family:'IBM Plex Mono',monospace;color:#a8b4c4}
+canvas{display:block;cursor:grab}
+canvas:active{cursor:grabbing}
+
+#header{position:fixed;top:0;left:0;right:0;padding:20px 30px;display:flex;justify-content:space-between;align-items:flex-start;z-index:10;pointer-events:none;background:linear-gradient(to bottom,rgba(0,0,0,0.8) 0%,transparent 100%)}
+#header>*{pointer-events:auto}
+.title{font-family:'Instrument Serif',serif;font-size:2.2em;color:#48b89a;letter-spacing:1px}
+.subtitle{color:#3a4a5a;font-size:0.75em;font-weight:300;margin-top:2px}
+.stats-row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.chip{background:rgba(14,18,25,0.85);border:1px solid #1a2130;padding:3px 10px;border-radius:12px;font-size:0.7em}
+.chip b{color:#48b89a}
+
+#search-box{position:fixed;top:20px;right:30px;z-index:10}
+#search{background:rgba(14,18,25,0.85);border:1px solid #1a2130;color:#a8b4c4;padding:10px 14px;border-radius:20px;font-family:inherit;font-size:0.85em;width:220px;outline:none;transition:border-color 0.2s}
+#search:focus{border-color:#48b89a}
+
+#panel{position:fixed;right:0;top:0;bottom:0;width:320px;background:rgba(10,14,20,0.95);border-left:1px solid #1a2130;padding:80px 20px 20px;overflow-y:auto;transform:translateX(100%);transition:transform 0.3s ease;z-index:9}
+#panel.open{transform:translateX(0)}
+#panel .word-title{font-family:'Instrument Serif',serif;font-size:1.8em;color:#48b89a;margin-bottom:4px}
+#panel .depth-badge{display:inline-block;padding:3px 12px;border-radius:4px;font-size:0.75em;font-weight:600;margin-bottom:12px}
+#panel .metric{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #0e1219;font-size:0.85em}
+#panel .metric .val{color:#48b89a;font-weight:600}
+#panel .section{margin-top:16px;margin-bottom:6px;color:#3a4a5a;font-size:0.7em;text-transform:uppercase;letter-spacing:2px}
+#panel .tag{display:inline-block;background:#0e1219;border:1px solid #1a2130;padding:2px 8px;border-radius:3px;margin:2px;font-size:0.8em;cursor:pointer;transition:border-color 0.2s}
+#panel .tag:hover{border-color:#48b89a;color:#48b89a}
+#panel .close{position:absolute;top:24px;right:16px;background:none;border:none;color:#3a4a5a;font-size:1.2em;cursor:pointer}
+
+#depth-chart{position:fixed;bottom:20px;left:30px;background:rgba(14,18,25,0.85);border:1px solid #1a2130;border-radius:8px;padding:14px 18px;z-index:10}
+#depth-chart .bar-row{display:flex;align-items:center;gap:8px;margin:3px 0;font-size:0.7em}
+#depth-chart .bar-label{width:70px;text-align:right;color:#5a6a7a}
+#depth-chart .bar-track{width:120px;height:6px;background:#0e1219;border-radius:3px}
+#depth-chart .bar-fill{height:100%;border-radius:3px;transition:width 0.3s}
+#depth-chart .bar-count{width:50px;color:#3a4a5a}
+
+#instructions{position:fixed;bottom:20px;right:30px;color:#2a3a4a;font-size:0.7em;text-align:right;z-index:10}
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div>
+    <div class="title">Shifu</div>
+    <div class="subtitle">neural topology &mdash; embryo v2.0</div>
+    <div class="stats-row" id="stats"></div>
+  </div>
+</div>
+
+<div id="search-box"><input type="text" id="search" placeholder="search the brain..."></div>
+
+<div id="panel">
+  <button class="close" onclick="closePanel()">&times;</button>
+  <div id="panel-content"></div>
+</div>
+
+<div id="depth-chart"></div>
+
+<div id="instructions">
+  drag to rotate &middot; scroll to zoom &middot; click a node
+</div>
+
+<canvas id="c"></canvas>
+
+<script>
+const DC = {
+  unborn:[58,58,58],surface:[75,85,99],shallow:[74,138,183],
+  forming:[212,168,67],structured:[72,184,154],deep:[46,255,138]
+};
+
+let DATA, nodes=[], links=[], nodeMap={};
+let canvas, ctx, W, H, dpr;
+let camZ=500, rotX=-0.3, rotY=0, targetRotY=0, autoRot=true;
+let dragging=false, lastMX=0, lastMY=0;
+let hovered=null, selected=null, searched=null;
+let frame=0;
+
+async function init() {
+  const r = await fetch('/brain_data.json');
+  DATA = await r.json();
+
+  // Stats
+  const s = DATA.stats;
+  document.getElementById('stats').innerHTML =
+    `<span class="chip">vocab <b>${(s.vocab/1000).toFixed(0)}K</b></span>`+
+    `<span class="chip">tokens <b>${(s.tokens/1e6).toFixed(1)}M</b></span>`+
+    `<span class="chip">sentences <b>${(s.sentences/1e6).toFixed(1)}M</b></span>`+
+    `<span class="chip">deep <b>${s.depths.deep.toLocaleString()}</b></span>`;
+
+  // Depth chart
+  const maxD = Math.max(...Object.values(s.depths));
+  document.getElementById('depth-chart').innerHTML = '<div style="color:#3a4a5a;font-size:0.7em;margin-bottom:8px;text-transform:uppercase;letter-spacing:2px">Depth Distribution</div>' +
+    Object.entries(s.depths).filter(([,v])=>v>0).map(([k,v])=>{
+      const [r,g,b]=DC[k]||DC.surface;
+      return `<div class="bar-row"><span class="bar-label">${k}</span><div class="bar-track"><div class="bar-fill" style="width:${v/maxD*100}%;background:rgb(${r},${g},${b})"></div></div><span class="bar-count">${v.toLocaleString()}</span></div>`;
+    }).join('');
+
+  // Position nodes — golden spiral on sphere, radius by depth
+  const N = DATA.nodes.length;
+  const depthR = {surface:120,shallow:150,forming:180,structured:220,deep:260};
+  nodes = DATA.nodes.map((n,i) => {
+    const phi = Math.acos(1 - 2*(i+0.5)/N);
+    const theta = Math.PI*(1+Math.sqrt(5))*i;
+    const baseR = depthR[n.depth] || 150;
+    const r = baseR + (Math.random()-0.5)*30;
+    return {
+      ...n, ox: r*Math.sin(phi)*Math.cos(theta), oy: r*Math.sin(phi)*Math.sin(theta), oz: r*Math.cos(phi),
+      x:0,y:0,z:0, sz:0, sx:0, sy:0, sc:0,
+      radius: Math.max(1.5, Math.min(7, Math.pow(n.freq,0.3)*0.7)),
+      color: DC[n.depth]||DC.surface,
+      pulse: Math.random()*Math.PI*2
+    };
+  });
+  nodes.forEach((n,i) => nodeMap[n.id]=i);
+
+  links = DATA.links.map(l=>({si:nodeMap[l.source],ti:nodeMap[l.target],w:l.w})).filter(l=>l.si!==undefined&&l.ti!==undefined);
+  // Keep only top links per node to avoid visual noise
+  const linkCounts={};
+  links.sort((a,b)=>b.w-a.w);
+  const filteredLinks=[];
+  for(const l of links){
+    const ca=linkCounts[l.si]||0, cb=linkCounts[l.ti]||0;
+    if(ca<8&&cb<8){filteredLinks.push(l);linkCounts[l.si]=(ca||0)+1;linkCounts[l.ti]=(cb||0)+1;}
+  }
+  links=filteredLinks;
+
+  canvas=document.getElementById('c');
+  ctx=canvas.getContext('2d');
+  dpr=devicePixelRatio;
+  resize();
+  window.addEventListener('resize',resize);
+
+  canvas.addEventListener('mousedown',e=>{dragging=true;autoRot=false;lastMX=e.clientX;lastMY=e.clientY});
+  canvas.addEventListener('mouseup',()=>dragging=false);
+  canvas.addEventListener('mouseleave',()=>dragging=false);
+  canvas.addEventListener('mousemove',onMove);
+  canvas.addEventListener('click',onClick);
+  canvas.addEventListener('wheel',e=>{camZ=Math.max(150,Math.min(1500,camZ+e.deltaY*0.4));e.preventDefault()},{passive:false});
+  canvas.addEventListener('touchstart',e=>{if(e.touches.length===1){dragging=true;autoRot=false;lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY}},{passive:true});
+  canvas.addEventListener('touchmove',e=>{if(dragging&&e.touches.length===1){const t=e.touches[0];rotY+=(t.clientX-lastMX)*0.005;rotX+=(t.clientY-lastMY)*0.005;rotX=Math.max(-1.2,Math.min(1.2,rotX));lastMX=t.clientX;lastMY=t.clientY}},{passive:true});
+  canvas.addEventListener('touchend',()=>dragging=false);
+
+  document.getElementById('search').addEventListener('input',e=>{
+    const v=e.target.value.toLowerCase();
+    searched=v.length>=2?v:null;
+  });
+
+  requestAnimationFrame(draw);
+}
+
+function resize(){W=innerWidth;H=innerHeight;canvas.width=W*dpr;canvas.height=H*dpr;canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0)}
+
+function rot3(x,y,z){
+  let x1=x*Math.cos(rotY)-z*Math.sin(rotY),z1=x*Math.sin(rotY)+z*Math.cos(rotY);
+  let y1=y*Math.cos(rotX)-z1*Math.sin(rotX),z2=y*Math.sin(rotX)+z1*Math.cos(rotX);
+  return[x1,y1,z2];
+}
+function proj(x,y,z){const[rx,ry,rz]=rot3(x,y,z);const s=camZ/(camZ+rz+300);return[W/2+rx*s,H/2+ry*s,rz,s]}
+
+function onMove(e){
+  if(dragging){rotY+=(e.clientX-lastMX)*0.004;rotX+=(e.clientY-lastMY)*0.004;rotX=Math.max(-1.2,Math.min(1.2,rotX));lastMX=e.clientX;lastMY=e.clientY;return}
+  const mx=e.clientX,my=e.clientY;
+  hovered=null;
+  let bestD=Infinity;
+  for(const n of nodes){const dx=mx-n.sx,dy=my-n.sy,d=dx*dx+dy*dy;if(d<(n.radius*n.sc+6)**2&&d<bestD){bestD=d;hovered=n}}
+  canvas.style.cursor=hovered?'pointer':'grab';
+}
+
+function onClick(e){
+  if(hovered){selected=hovered;showPanel(selected)}
+  else{selected=null;closePanel()}
+}
+
+function showPanel(n){
+  const p=document.getElementById('panel');
+  const [r,g,b]=n.color;
+  let html=`<div class="word-title">${n.id}</div>`;
+  html+=`<div class="depth-badge" style="background:rgba(${r},${g},${b},0.2);color:rgb(${r},${g},${b})">${n.depth} &middot; evidence ${n.ev}</div>`;
+  html+=`<div class="metric"><span>frequency</span><span class="val">${n.freq.toLocaleString()}</span></div>`;
+  html+=`<div class="metric"><span>neighbors</span><span class="val">${n.nb}</span></div>`;
+  html+=`<div class="metric"><span>next-words</span><span class="val">${n.nx}</span></div>`;
+  html+=`<div class="metric"><span>mean position</span><span class="val">${n.pos}</span></div>`;
+  if(n.topNb.length){html+=`<div class="section">Top Neighbors</div><div>${n.topNb.map(w=>`<span class="tag" onclick="searchWord('${w}')">${w}</span>`).join('')}</div>`}
+  if(n.topNx.length){html+=`<div class="section">Predicts Next</div><div>${n.topNx.map(w=>`<span class="tag" onclick="searchWord('${w}')">${w}</span>`).join('')}</div>`}
+  document.getElementById('panel-content').innerHTML=html;
+  p.classList.add('open');
+}
+
+function closePanel(){document.getElementById('panel').classList.remove('open');selected=null}
+function searchWord(w){document.getElementById('search').value=w;searched=w.toLowerCase()}
+
+function draw(){
+  frame++;
+  if(autoRot)rotY+=0.0008;
+
+  // Update projected positions
+  for(const n of nodes){
+    const[sx,sy,sz,sc]=proj(n.ox,n.oy,n.oz);
+    n.sx=sx;n.sy=sy;n.sz=sz;n.sc=sc;
+  }
+
+  // Clear with subtle gradient
+  const bg=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,W*0.7);
+  bg.addColorStop(0,'#060a10');bg.addColorStop(1,'#000');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  // Draw links (sorted back to front)
+  ctx.lineWidth=0.5;
+  for(const l of links){
+    const a=nodes[l.si],b=nodes[l.ti];
+    if(!a||!b)continue;
+    const isHl=(hovered&&(a.id===hovered.id||b.id===hovered.id))||(selected&&(a.id===selected.id||b.id===selected.id));
+    const isSr=searched&&(a.id.includes(searched)||b.id.includes(searched));
+    if(!isHl&&!isSr){ctx.globalAlpha=0.015;ctx.strokeStyle='#1a2130'}
+    else if(isHl){ctx.globalAlpha=0.4;ctx.strokeStyle='#48b89a';ctx.lineWidth=1}
+    else{ctx.globalAlpha=0.15;ctx.strokeStyle='#4a8ab5';ctx.lineWidth=0.8}
+    ctx.beginPath();ctx.moveTo(a.sx,a.sy);ctx.lineTo(b.sx,b.sy);ctx.stroke();
+    ctx.lineWidth=0.5;
+  }
+
+  // Sort and draw nodes
+  const sorted=[...nodes].sort((a,b)=>a.sz-b.sz);
+  for(const n of sorted){
+    const isH=hovered&&n.id===hovered.id;
+    const isS=selected&&n.id===selected.id;
+    const isSr=searched&&n.id.includes(searched);
+    const[r,g,b]=n.color;
+    const rad=n.radius*n.sc*(isH||isS?2.5:isSr?1.8:1);
+    const alpha=isH||isS?1:isSr?0.9:Math.max(0.15,n.sc*0.7);
+
+    // Glow for highlighted
+    if(isH||isS||isSr){
+      ctx.globalAlpha=alpha*0.15;
+      const grd=ctx.createRadialGradient(n.sx,n.sy,0,n.sx,n.sy,rad*4);
+      grd.addColorStop(0,`rgba(${r},${g},${b},0.4)`);grd.addColorStop(1,`rgba(${r},${g},${b},0)`);
+      ctx.fillStyle=grd;ctx.beginPath();ctx.arc(n.sx,n.sy,rad*4,0,Math.PI*2);ctx.fill();
+    }
+
+    // Subtle pulse for deep nodes
+    let pulseR=rad;
+    if(n.depth==='deep'){
+      pulseR=rad*(1+Math.sin(frame*0.02+n.pulse)*0.08);
+    }
+
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle=`rgb(${r},${g},${b})`;
+    ctx.beginPath();ctx.arc(n.sx,n.sy,pulseR,0,Math.PI*2);ctx.fill();
+
+    // Labels
+    const showLabel=isH||isS||isSr||(n.freq>2000&&n.sc>0.5)||(n.depth==='deep'&&n.sc>0.65&&n.freq>200);
+    if(showLabel){
+      ctx.globalAlpha=isH||isS?1:isSr?0.7:0.35;
+      ctx.fillStyle='#a8b4c4';
+      ctx.font=`${Math.max(8,Math.round(11*n.sc))}px 'IBM Plex Mono'`;
+      ctx.fillText(n.id,n.sx+pulseR+4,n.sy+3);
+    }
+  }
+
+  ctx.globalAlpha=1;
+  requestAnimationFrame(draw);
+}
+
+init();
+</script>
+</body>
+</html>
