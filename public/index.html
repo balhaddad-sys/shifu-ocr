@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shifu v2.0 — Embryo</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&family=Instrument+Serif&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0a0e14;color:#a8b4c4;font-family:'IBM Plex Mono',monospace;padding:20px;max-width:800px;margin:0 auto}
+  h1{font-family:'Instrument Serif',serif;color:#48b89a;font-size:1.5em;margin-bottom:2px}
+  .sub{color:#5a6a7a;font-size:0.8em;margin-bottom:20px}
+  .section{background:#0e1219;border:1px solid #1a2030;border-radius:6px;padding:16px;margin-bottom:16px}
+  .section h2{color:#48b89a;font-size:1em;margin-bottom:10px}
+  textarea,input[type=text]{width:100%;background:#0a0e14;border:1px solid #1a2030;color:#a8b4c4;padding:8px;font-family:inherit;font-size:0.9em;border-radius:4px;resize:vertical}
+  textarea{height:60px}
+  button{background:#48b89a;color:#0a0e14;border:none;padding:8px 16px;font-family:inherit;font-weight:bold;cursor:pointer;border-radius:4px;margin-top:8px;margin-right:8px}
+  button:hover{background:#5ccaac}
+  .result{margin-top:10px;padding:10px;background:#0a0e14;border:1px solid #1a2030;border-radius:4px;font-size:0.85em;white-space:pre-wrap;max-height:400px;overflow-y:auto}
+  .metric{display:inline-block;background:#1a2030;padding:4px 10px;border-radius:3px;margin:2px 4px 2px 0;font-size:0.85em}
+  .metric .val{color:#48b89a;font-weight:bold}
+  .bar{height:8px;background:#1a2030;border-radius:4px;margin:2px 0;display:inline-block;width:120px;vertical-align:middle}
+  .bar-fill{height:100%;border-radius:4px}
+  .depth{display:inline-block;padding:2px 8px;border-radius:3px;font-size:0.75em;font-weight:bold;color:#0a0e14}
+  .stats-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+</style>
+</head>
+<body>
+
+<h1>Shifu v2.0</h1>
+<div class="sub">embryo | pressure-driven | structure emerges from exposure</div>
+
+<div id="stats-bar" class="stats-row"></div>
+
+<div class="section">
+  <h2>Feed</h2>
+  <textarea id="feed-input" placeholder="Paste text to feed the stone..."></textarea>
+  <button onclick="doFeed()">Feed</button>
+  <div id="feed-result" class="result" style="display:none"></div>
+</div>
+
+<div class="section">
+  <h2>Score</h2>
+  <input type="text" id="score-input" placeholder="Enter a sentence to score...">
+  <button onclick="doScore()">Score</button>
+  <div id="score-result" class="result" style="display:none"></div>
+</div>
+
+<div class="section">
+  <h2>Explore</h2>
+  <input type="text" id="explore-input" placeholder="Enter a word...">
+  <button onclick="doExplore()">Explore</button>
+  <div id="explore-result" class="result" style="display:none"></div>
+</div>
+
+<div class="section">
+  <h2>Compare</h2>
+  <input type="text" id="cmp-a" placeholder="Word A" style="width:48%;display:inline-block">
+  <input type="text" id="cmp-b" placeholder="Word B" style="width:48%;display:inline-block">
+  <button onclick="doCompare()">Compare</button>
+  <div id="cmp-result" class="result" style="display:none"></div>
+</div>
+
+<div class="section">
+  <h2>Affinity</h2>
+  <input type="text" id="aff-a" placeholder="Word A" style="width:48%;display:inline-block">
+  <input type="text" id="aff-b" placeholder="Word B" style="width:48%;display:inline-block">
+  <button onclick="doAffinity()">Affinity</button>
+  <div id="aff-result" class="result" style="display:none"></div>
+</div>
+
+<div class="section">
+  <h2>Pressure</h2>
+  <button onclick="doPressure('pressure')">All</button>
+  <button onclick="doPressure('vacuums')">Vacuums</button>
+  <button onclick="doPressure('surpluses')">Surpluses</button>
+  <button onclick="doPressure('bridges')">Bridges</button>
+  <div id="pressure-result" class="result" style="display:none"></div>
+</div>
+
+<div class="section">
+  <h2>Correct</h2>
+  <input type="text" id="correct-input" placeholder="Enter garbled text...">
+  <button onclick="doCorrect()">Correct</button>
+  <div id="correct-result" class="result" style="display:none"></div>
+</div>
+
+<script>
+const DC={unborn:'#3a3a3a',surface:'#5a6a7a',shallow:'#4a8ab5',forming:'#c4a035',structured:'#48b89a',deep:'#2eff8a'};
+
+async function api(path, body) {
+  const opts = body ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)} : {};
+  const r = await fetch(path, opts);
+  return r.json();
+}
+
+function depthBadge(level) {
+  return '<span class="depth" style="background:' + (DC[level]||'#3a3a3a') + '">' + level + '</span>';
+}
+
+function bar(value, color) {
+  color = color || '#48b89a';
+  const pct = Math.min(Math.abs(value), 1) * 100;
+  return '<span class="bar"><span class="bar-fill" style="width:' + pct + '%;background:' + color + '"></span></span> ' + value.toFixed(3);
+}
+
+async function refreshStats() {
+  const s = await api('/stats');
+  const el = document.getElementById('stats-bar');
+  el.innerHTML = '<div class="metric">vocab: <span class="val">' + (s.vocab||0) + '</span></div>' +
+    '<div class="metric">sentences: <span class="val">' + (s.sentences||0) + '</span></div>' +
+    '<div class="metric">tokens: <span class="val">' + (s.tokens||0) + '</span></div>';
+  if (s.depths) {
+    for (const [level, count] of Object.entries(s.depths)) {
+      if (count > 0) el.innerHTML += '<div class="metric">' + depthBadge(level) + ' ' + count + '</div>';
+    }
+  }
+}
+
+async function doFeed() {
+  const text = document.getElementById('feed-input').value.trim();
+  if (!text) return;
+  const r = await api('/feed', {text});
+  const el = document.getElementById('feed-result');
+  el.style.display = 'block';
+  el.innerHTML = '<div class="metric">sentences: <span class="val">' + (r.sentences||0) + '</span></div>' +
+    '<div class="metric">tokens: <span class="val">' + (r.tokens||0) + '</span></div>' +
+    '<div class="metric">new words: <span class="val">' + (r.newWords||0) + '</span></div>' +
+    '<div class="metric">new connections: <span class="val">' + (r.newConnections||0) + '</span></div>' +
+    '<div class="metric">novelty: <span class="val">' + ((r.novelty||0).toFixed(3)) + '</span></div>';
+  document.getElementById('feed-input').value = '';
+  refreshStats();
+}
+
+async function doScore() {
+  const text = document.getElementById('score-input').value.trim();
+  if (!text) return;
+  const r = await api('/score', {text});
+  const el = document.getElementById('score-result');
+  el.style.display = 'block';
+  const cc = (r.coherence||0) > .6 ? '#48b89a' : (r.coherence||0) > .3 ? '#c4a035' : '#c44035';
+  let html = '<div class="metric">coherence: <span class="val" style="color:' + cc + '">' + (r.coherence||0).toFixed(4) + '</span></div>' +
+    '<div class="metric">mean surprise: <span class="val">' + (r.meanSurprise||0).toFixed(4) + '</span></div>\n\n';
+  if (r.steps) {
+    for (const s of r.steps) {
+      const sc = s.surprise < .3 ? '#48b89a' : s.surprise < .7 ? '#c4a035' : '#c44035';
+      html += (s.afGate > .2 ? '\u26A1' : '  ') + s.word.padEnd(15) + ' ' + bar(s.surprise, sc) + '\n';
+    }
+  }
+  el.innerHTML = html;
+}
+
+async function doExplore() {
+  const word = document.getElementById('explore-input').value.trim();
+  if (!word) return;
+  const r = await api('/explore', {word});
+  const el = document.getElementById('explore-result');
+  el.style.display = 'block';
+  let html = depthBadge(r.depth?.level || 'unborn') + ' <b>' + r.word + '</b> freq:' + (r.frequency||0);
+  if (r.node) html += ' | neighbors:' + r.node.neighbors + ' next:' + r.node.next + ' prev:' + r.node.prev;
+  if (r.similar && r.similar.length) {
+    html += '\n\nsimilar:\n';
+    for (const s of r.similar) html += '  ' + s.word + ' (' + s.similarity.toFixed(3) + ' ' + depthBadge(s.depth) + ')\n';
+  }
+  el.innerHTML = html;
+}
+
+async function doCompare() {
+  const a = document.getElementById('cmp-a').value.trim();
+  const b = document.getElementById('cmp-b').value.trim();
+  if (!a || !b) return;
+  const r = await api('/compare', {a, b});
+  const el = document.getElementById('cmp-result');
+  el.style.display = 'block';
+  const s = r.signals || {};
+  let html = 'similarity: <b style="color:#48b89a">' + (r.similarity||0).toFixed(4) + '</b> depth:' + (r.depth||'?') + ' weight:' + (r.totalWeight||0).toFixed(2) + '\n\n';
+  if (s.neighborOverlap != null) html += 'neighbors   ' + bar(s.neighborOverlap) + '\n';
+  if (s.expectsAB != null) html += a + '\u2192' + b + '       ' + bar(s.expectsAB, '#4a8ab5') + '\n';
+  if (s.expectsBA != null) html += b + '\u2192' + a + '       ' + bar(s.expectsBA, '#c4a035') + '\n';
+  if (s.trajectoryAB != null) html += 'traj ' + a + '\u2192    ' + bar(s.trajectoryAB, '#4a8ab5') + '\n';
+  if (s.trajectoryBA != null) html += 'traj ' + b + '\u2192    ' + bar(s.trajectoryBA, '#c4a035') + '\n';
+  if (s.indirectAB != null) html += 'indirect    ' + bar(s.indirectAB, '#7a5ab5') + '\n';
+  if (s.posSim != null) html += 'position    ' + bar(s.posSim, '#5a6a7a') + '\n';
+  html += 'edit        ' + bar(s.editSim||0, '#3a3a3a') + '\n';
+  html += 'bigram      ' + bar(s.bigramSim||0, '#3a3a3a') + '\n';
+  el.innerHTML = html;
+}
+
+async function doAffinity() {
+  const a = document.getElementById('aff-a').value.trim();
+  const b = document.getElementById('aff-b').value.trim();
+  if (!a || !b) return;
+  const r = await api('/affinity', {a, b});
+  const el = document.getElementById('aff-result');
+  el.style.display = 'block';
+  if (!r.known) { el.innerHTML = '<span style="color:#5a6a7a">one or both words unknown</span>'; return; }
+  let html = 'mutual: <b style="color:#48b89a">' + r.mutual.toFixed(4) + '</b> asym:' + r.asym.toFixed(4) + '\n\n';
+  html += 'orbit       ' + bar(r.orbit) + '\n';
+  html += 'pull ' + r.a + '\u2192   ' + bar(r.pullAB, '#4a8ab5') + '\n';
+  html += 'pull ' + r.b + '\u2192   ' + bar(r.pullBA, '#c4a035') + '\n';
+  html += 'ind ' + r.a + '\u2192    ' + bar(r.indAB, '#7a5ab5') + '\n';
+  html += 'ind ' + r.b + '\u2192    ' + bar(r.indBA, '#7a5ab5') + '\n';
+  html += 'charSim     ' + bar(r.charSim, '#3a3a3a') + '\n';
+  html += 'expOvlp     ' + bar(r.expOvlp, '#5a6a7a') + '\n';
+  html += 'posAlign    ' + bar(r.posAlign, '#5a6a7a') + '\n';
+  el.innerHTML = html;
+}
+
+async function doPressure(type) {
+  let r;
+  if (type === 'pressure') r = await api('/stats'); // use pressure endpoint when available
+  // Fall back to stats for now; pressure needs its own endpoint
+  // For now show stats
+  const el = document.getElementById('pressure-result');
+  el.style.display = 'block';
+  el.innerHTML = '<span style="color:#5a6a7a">pressure endpoint loading...</span>';
+
+  // Try the pressure data via a custom call
+  try {
+    const resp = await fetch('/' + type, {method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'});
+    if (resp.ok) {
+      const data = await resp.json();
+      let html = '';
+      const items = data.items || data || [];
+      if (Array.isArray(items)) {
+        for (const p of items.slice(0, 15)) {
+          const color = p.pressure < 0 ? '#c44035' : '#48b89a';
+          html += depthBadge(p.depth) + ' ' + (p.word||'').padEnd(12) + ' ' + bar(Math.abs(p.pressure)/10, color) + ' p:' + p.pressure + ' cl:' + (p.closure||0).toFixed(2) + '\n';
+        }
+      }
+      el.innerHTML = html || '<span style="color:#5a6a7a">no data</span>';
+    }
+  } catch { el.innerHTML = '<span style="color:#5a6a7a">feed some text first</span>'; }
+}
+
+async function doCorrect() {
+  const text = document.getElementById('correct-input').value.trim();
+  if (!text) return;
+  const r = await api('/correct', {text});
+  const el = document.getElementById('correct-result');
+  el.style.display = 'block';
+  if (r.results) {
+    el.innerHTML = r.results.map(w => {
+      if (w.known) return w.original;
+      if (!w.correction) return '<span style="color:#c44035">' + w.original + '?</span>';
+      return '<span style="text-decoration:line-through;color:#5a6a7a">' + w.original + '</span> <span style="color:#48b89a">' + w.correction + '</span>';
+    }).join(' ');
+  } else {
+    el.textContent = JSON.stringify(r, null, 2);
+  }
+}
+
+refreshStats();
+</script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+{
+  "name": "shifu-ocr",
+  "version": "2.1.0",
+  "private": true,
+  "description": "Compositional Language Engine. Form distinguishes. Context relates. History remembers. Influence reshapes. Contrast identifies. Expectation directs. Understanding arises between them.",
+  "main": "core/engine.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/suite.js && python test/test_engines.py",
+    "test:js": "node test/suite.js",
+    "test:py": "python test/test_engines.py",
+    "test:v2": "node v2/smokeTest.js",
+    "demo": "node test/demo.js",
+    "seed": "python training/bulk_seed.py",
+    "train:prepare": "python training/prepare.py",
+    "train:finetune": "python training/finetune.py",
+    "teach:seed:builtin": "python -m teaching.seeds.seed_registry --all --builtin-only --output seeds_out",
+    "teach:seed:kaggle": "python -m teaching.seeds.kaggle --all --output seeds_out",
+    "teach:seed:huggingface": "python -m teaching.seeds.huggingface --all --output seeds_out",
+    "teach:seed:all": "python -m teaching.seeds.seed_registry --all --output seeds_out",
+    "teach:seed:stats": "python -m teaching.seeds.seed_registry --stats seeds_out",
+    "teach:emit": "python -m teaching.seeds.seed_registry --ingest seeds_out --emit teaching_data.json",
+    "teach:demo": "node teaching/demo.js"
+  },
+  "keywords": [
+    "ocr",
+    "medical",
+    "clinical",
+    "nlp",
+    "learning",
+    "fluid-theory",
+    "displacement",
+    "cross-domain",
+    "teaching",
+    "calibration"
+  ],
+  "license": "MIT",
+  "author": "Bader & Claude",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^6.0.1",
+    "express": "^5.2.1",
+    "pdfjs-dist": "^5.6.205",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "vite": "^8.0.3"
+  }
+}
