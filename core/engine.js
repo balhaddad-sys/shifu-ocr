@@ -143,13 +143,13 @@ affinity(a,b){
 // ─── Score sentence — depth-gated ─────────────────────────────────
 scoreSentence(raw){
   const ws=tokenize(raw);if(ws.length<2)return{words:ws,steps:[],meanSurprise:0,coherence:0};
-  const steps=[];let total=0;const field=new Map();
+  const steps=[];let total=0;const field=new Map();let fieldMax=1;
   for(let i=0;i<ws.length;i++){
     const w=ws[i],node=this.nodes[w],step={word:w,pos:i,known:!!node};let sig=0,wts=0;
     const wDeep=node&&(node.freq>=5&&node.nbrCount>=5);
     if(i>0){const prev=this.nodes[ws[i-1]];if(prev?.next){const tot=Object.values(prev.next).reduce((a,b)=>a+b,0);step.seqS=1-((prev.next[w]||0)/Math.max(tot,1));sig+=step.seqS*0.35;wts+=0.35;}}
     if(i>=2){const pp=this.nodes[ws[i-2]],nx2=pp?.next2?.[ws[i-1]];if(nx2){const tot=Object.values(nx2).reduce((a,b)=>a+b,0);step.trajS=1-((nx2[w]||0)/Math.max(tot,1));sig+=step.trajS*0.30;wts+=0.30;}}
-    if(i>0&&field.size>0){const fw=field.get(w)||0,mx=Math.max(...field.values(),1);step.fieldS=1-fw/mx;sig+=step.fieldS*0.35;wts+=0.35;}
+    if(i>0&&field.size>0){const fw=field.get(w)||0;step.fieldS=1-fw/fieldMax;sig+=step.fieldS*0.35;wts+=0.35;}
     step.afGate=0;
     if(i>0&&node){
       const prevNode=this.nodes[ws[i-1]];
@@ -164,43 +164,12 @@ scoreSentence(raw){
     total+=step.surprise;step.cumS=total;steps.push(step);
     if(node?.neighbors){
       const mass=wDeep?1:0.2;
-      for(const[nb,cnt]of Object.entries(node.neighbors))field.set(nb,(field.get(nb)||0)+cnt*mass);
+      for(const[nb,cnt]of Object.entries(node.neighbors)){const nv=(field.get(nb)||0)+cnt*mass;field.set(nb,nv);if(nv>fieldMax)fieldMax=nv;}
     }
-    field.set(w,(field.get(w)||0)+(wDeep?10:2));
+    {const wv=(field.get(w)||0)+(wDeep?10:2);field.set(w,wv);if(wv>fieldMax)fieldMax=wv;}
   }
   const ms=steps.length?total/steps.length:0;
   return{words:ws,steps,meanSurprise:ms,coherence:1-Math.min(ms,1)};
-}
-
-// ─── Score document — binding across sentences ───────────────────
-// Field carries over between sentences (decayed). Words seen in sentence 1
-// reduce surprise in sentence 2. That carry-over IS the binding.
-scoreDocument(raw, decay=0.5){
-  const sents=raw.split(/[.!?\n]+/).map(s=>s.trim()).filter(s=>s.length>5);
-  if(!sents.length)return{sentences:[],coherence:0,bindings:[]};
-  const field=new Map();const results=[];const bindings=[];let totalCoh=0;
-  for(let si=0;si<sents.length;si++){
-    const ws=tokenize(sents[si]);if(ws.length<2)continue;
-    // Score this sentence with the carried field
-    const steps=[];let total=0;
-    for(let i=0;i<ws.length;i++){
-      const w=ws[i],node=this.nodes[w],step={word:w,pos:i,known:!!node};let sig=0,wts=0;
-      if(i>0){const prev=this.nodes[ws[i-1]];if(prev?.next){const tot=Object.values(prev.next).reduce((a,b)=>a+b,0);step.seqS=1-((prev.next[w]||0)/Math.max(tot,1));sig+=step.seqS*0.35;wts+=0.35;}}
-      if(i>=2){const pp=this.nodes[ws[i-2]],nx2=pp?.next2?.[ws[i-1]];if(nx2){const tot=Object.values(nx2).reduce((a,b)=>a+b,0);step.trajS=1-((nx2[w]||0)/Math.max(tot,1));sig+=step.trajS*0.30;wts+=0.30;}}
-      if(field.size>0){const fw=field.get(w)||0,mx=Math.max(...field.values(),1);step.fieldS=1-fw/mx;sig+=step.fieldS*0.35;wts+=0.35;
-        if(fw>0&&si>0)bindings.push({word:w,sentence:si,fieldStrength:fw/mx});}
-      step.surprise=wts>0?sig/wts:(node?0.5:1);total+=step.surprise;steps.push(step);
-      // Add to field
-      if(node?.neighbors){const mass=node.freq>=5&&node.nbrCount>=5?1:0.2;for(const[nb,cnt]of Object.entries(node.neighbors))field.set(nb,(field.get(nb)||0)+cnt*mass);}
-      field.set(w,(field.get(w)||0)+10);
-    }
-    const ms=steps.length?total/steps.length:0;
-    results.push({text:sents[si],words:ws,steps,meanSurprise:ms,coherence:1-Math.min(ms,1)});
-    totalCoh+=1-Math.min(ms,1);
-    // Decay field between sentences — recent words fade but don't vanish
-    for(const[k,v]of field)field.set(k,v*decay);
-  }
-  return{sentences:results,coherence:results.length?totalCoh/results.length:0,bindings};
 }
 
 // ─── Pressure ─────────────────────────────────────────────────────
@@ -346,26 +315,24 @@ converse(input){
 scoreDocument(text, decay=0.5){
   const sents=text.split(/[.!?\n]+/).map(s=>s.trim()).filter(s=>s.length>5);
   if(!sents.length)return{sentences:[],coherence:0,bindings:[]};
-  const field=new Map();const results=[];const bindings=[];
+  const field=new Map();let fMax=1;const results=[];const bindings=[];
   for(let si=0;si<sents.length;si++){
     const ws=tokenize(sents[si]);if(ws.length<2)continue;
     const steps=[];let total=0;
     for(let i=0;i<ws.length;i++){
-      const w=ws[i],node=this.nodes[w],step={word:w,pos:i,known:!!node,sentIdx:si};
+      const w=ws[i],node=this.nodes[w],step={word:w,pos:i,known:!!node,sentence:si};
       let sig=0,wts=0;
       const wDeep=node&&(node.freq>=5&&node.nbrCount>=5);
       if(i>0){const prev=this.nodes[ws[i-1]];if(prev?.next){const tot=Object.values(prev.next).reduce((a,b)=>a+b,0);step.seqS=1-((prev.next[w]||0)/Math.max(tot,1));sig+=step.seqS*0.35;wts+=0.35;}}
       if(i>=2){const pp=this.nodes[ws[i-2]],nx2=pp?.next2?.[ws[i-1]];if(nx2){const tot=Object.values(nx2).reduce((a,b)=>a+b,0);step.trajS=1-((nx2[w]||0)/Math.max(tot,1));sig+=step.trajS*0.25;wts+=0.25;}}
-      // Binding: field includes carry-over from previous sentences
-      if(field.size>0){const fw=field.get(w)||0;const mx=Math.max(...field.values(),1);step.fieldS=1-fw/mx;sig+=step.fieldS*0.40;wts+=0.40;
-        // Track cross-sentence bindings
-        if(si>0&&fw>0&&i<=2){bindings.push({word:w,fromSent:si-1,toSent:si,fieldStrength:fw/mx});}}
+      if(field.size>0){const fw=field.get(w)||0;step.fieldS=1-fw/fMax;sig+=step.fieldS*0.40;wts+=0.40;
+        if(si>0&&fw>0)bindings.push({word:w,sentence:si,fieldStrength:fw/fMax});}
       step.afGate=0;
       if(i>0&&node){const prevNode=this.nodes[ws[i-1]];const prevDeep=prevNode&&(prevNode.freq>=5&&prevNode.nbrCount>=5);if((wDeep||prevDeep)&&prevNode?.neighbors&&node.neighbors){const pN=Object.keys(prevNode.neighbors),wN=new Set(Object.keys(node.neighbors));const sh=pN.filter(x=>wN.has(x)).length,un=new Set([...pN,...wN]).size;step.afGate=un?sh/un:0;}}
       step.surprise=wts>0?(sig/wts)*(1-step.afGate*0.3):(node?0.5:1);
       total+=step.surprise;step.cumS=total;steps.push(step);
-      if(node?.neighbors){const mass=wDeep?1:0.2;for(const[nb,cnt]of Object.entries(node.neighbors))field.set(nb,(field.get(nb)||0)+cnt*mass);}
-      field.set(w,(field.get(w)||0)+(wDeep?10:2));
+      if(node?.neighbors){const mass=wDeep?1:0.2;for(const[nb,cnt]of Object.entries(node.neighbors)){const nv=(field.get(nb)||0)+cnt*mass;field.set(nb,nv);if(nv>fMax)fMax=nv;}}
+      {const wv=(field.get(w)||0)+(wDeep?10:2);field.set(w,wv);if(wv>fMax)fMax=wv;}
     }
     const ms=steps.length?total/steps.length:0;
     results.push({text:sents[si],words:ws,steps,meanSurprise:ms,coherence:1-Math.min(ms,1)});
@@ -374,6 +341,43 @@ scoreDocument(text, decay=0.5){
   }
   const overall=results.length?results.reduce((s,r)=>s+r.coherence,0)/results.length:0;
   return{sentences:results,coherence:overall,bindings};
+}
+
+// ─── Self-Teach: the engine does its own homework ─────────────────
+selfTeach(){
+  const st=this.stats();if(st.vocab<20)return{action:"waiting",detail:"need more data"};
+  const report={resolved:[],strengthened:[],collapsed:[],decayed:0,action:"studied"};
+  const planets=Object.keys(this.nodes).filter(w=>{
+    const d=this.depth(w);return(d.level==="structured"||d.level==="deep")&&this.nodes[w].freq>=5;
+  });
+  if(!planets.length)return{action:"resting",detail:"no planets yet"};
+  const topic=planets[Math.floor(Math.random()*planets.length)];
+  const nd=this.nodes[topic];if(!nd)return{action:"resting"};
+  const id=this.identity(topic,10);
+  for(const planet of id.slice(0,5)){
+    if(planet.specificity<0.05)continue;
+    const p=this.path(topic,planet.word,10);
+    if(p.ok&&p.words.length>=3){this.feed(p.text);report.resolved.push({from:topic,to:planet.word,via:p.text});}
+    else{const bridge=Object.keys(nd.next).find(w=>{const wn=this.nodes[w];return wn&&(wn.next[planet.word]||wn.neighbors[planet.word]);});
+      if(bridge){const gen=this.generate(topic,planet.word,bridge,10);if(gen.text&&gen.words.length>=3){this.feed(gen.text);report.strengthened.push({from:topic,to:planet.word,bridge,text:gen.text});}}}
+  }
+  const shallow=Object.keys(nd.neighbors).filter(w=>{const d=this.depth(w);return d.level==="shallow"||d.level==="surface";}).slice(0,3);
+  for(const sw of shallow){const gen=this.generate(topic,sw,null,8);if(gen.text&&gen.words.length>=3){this.feed(gen.text);report.strengthened.push({from:topic,to:sw,text:gen.text});}}
+  const tens=this.tensions(2);
+  for(const t of tens){const c=this.collapse(t.word);if(c.ok)report.collapsed.push({word:t.word,kept:c.kept,pruned:c.pruned});}
+  if(Math.random()<0.3){const dc=this.decay(1);report.decayed=dc.edgesRemoved;}
+  return report;
+}
+
+// ─── Study: run N rounds of self-teaching ─────────────────────────
+study(rounds=10,onRound){
+  const results=[];
+  for(let i=0;i<rounds;i++){
+    const r=this.selfTeach();r.round=i+1;results.push(r);
+    if(onRound)onRound(r);
+    if(r.action==="waiting"||r.action==="resting")break;
+  }
+  return results;
 }
 
 // ─── Stats ────────────────────────────────────────────────────────
