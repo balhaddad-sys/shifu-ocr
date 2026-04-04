@@ -17,7 +17,7 @@ constructor(){this.nodes={};this.sentenceCount=0;this.tokenCount=0;this._idxLen=
 // posV: variance — how much pos still moves. Shrinks with exposure.
 // lastGap: most recent gap between encounters.
 // plasticity: 1/freq. First exposure = 1.0. 100th = 0.01.
-_nn(w){return{chars:w,freq:0,firstSeen:null,lastSeen:null,pos:0.5,posV:1.0,lastGap:0,neighbors:{},next:{},prev:{},next2:{}};}
+_nn(w){return{chars:w,freq:0,firstSeen:null,lastSeen:null,pos:0.5,posV:1.0,lastGap:0,frozen:false,nbrCount:0,neighbors:{},next:{},prev:{},next2:{}};}
 
 _idx(w){const l=w.length;(this._idxLen[l]??=[]);if(!this._idxLen[l].includes(w))this._idxLen[l].push(w);for(let i=0;i<w.length-1;i++){const bg=w.slice(i,i+2);(this._idxBg[bg]??=[]);if(!this._idxBg[bg].includes(w))this._idxBg[bg].push(w);}}
 
@@ -57,39 +57,37 @@ feed(raw){
     // Variable window: rare words reach deeper
     const win=Math.min(Math.max(Math.ceil(4/Math.max(Math.log2(nd.freq+1),1)),2),6);
 
-    // Deep rigid words: skip neighbor accumulation entirely.
-    // "the" doesn't need to know it neighbors everything. Only next/prev matters.
-    // Threshold: freq > 30 AND posV < 0.05 AND neighbors > 20 → frozen neighbors.
-    const frozen=nd.freq>30&&nd.posV<0.05&&Object.keys(nd.neighbors).length>20;
+    // Frozen: cached flag, updated only when state changes. No O(n) key count per feed.
+    if(!nd.frozen&&nd.freq>30&&nd.posV<0.05&&nd.nbrCount>20)nd.frozen=true;
 
-    if(!frozen){
-      const myNbrs=Object.keys(nd.neighbors);const hasStructure=myNbrs.length>=5;
+    if(!nd.frozen){
+      const hasStructure=nd.nbrCount>=5;
+      // Contact points: prev and next word in THIS sentence. 2 lookups, not N.
+      const prevW=i>0?ws[i-1]:null;
+      const nextW=i<len-1?ws[i+1]:null;
       for(let j=Math.max(0,i-win);j<Math.min(len,i+win+1);j++){
         if(j===i)continue;const nb=ws[j];
-        const existing=nd.neighbors[nb];
-        if(existing){
-          // Existing: reinforce but cap at freq/3 (prevents unbounded growth)
-          nd.neighbors[nb]=Math.min(existing+1,nd.freq/3);
+        if(nd.neighbors[nb]){
+          nd.neighbors[nb]=Math.min(nd.neighbors[nb]+1,nd.freq/3);
         }else{
           if(hasStructure&&this.nodes[nb]){
-            const theirNbrs=new Set(Object.keys(this.nodes[nb].neighbors||{}));
-            const overlap=myNbrs.filter(x=>theirNbrs.has(x)).length;
-            const phase=myNbrs.length>0?overlap/myNbrs.length:1;
-            if(phase<0.05){
-              nd.neighbors[nb]=plasticity*0.5;
-              const weakest=Object.entries(nd.neighbors).filter(([k])=>k!==nb).sort((a,b)=>a[1]-b[1]).slice(0,2);
-              for(const[k]of weakest){nd.neighbors[k]*=0.95;if(nd.neighbors[k]<0.5)delete nd.neighbors[k];}
+            // Phase check: does the new neighbor know my shoulders? 2 hash lookups.
+            const nbNb=this.nodes[nb].neighbors||{};
+            const inPhase=(prevW&&nbNb[prevW])||(nextW&&nbNb[nextW]);
+            if(!inPhase){
+              nd.neighbors[nb]=plasticity*0.5;nd.nbrCount++;
             }else{
-              nd.neighbors[nb]=Math.max(plasticity,0.5);
+              nd.neighbors[nb]=Math.max(plasticity,0.5);nd.nbrCount++;
             }
           }else{
-            nd.neighbors[nb]=nd.freq<=5?1:Math.max(plasticity*2,0.5);
+            nd.neighbors[nb]=nd.freq<=5?1:Math.max(plasticity*2,0.5);nd.nbrCount++;
           }
         }
       }
     }
 
     // Sequential: always full strength (word order is rigid)
+    nd.next??={};nd.prev??={};nd.next2??={};
     if(i<len-1)nd.next[ws[i+1]]=(nd.next[ws[i+1]]||0)+1;
     if(i>0)nd.prev[ws[i-1]]=(nd.prev[ws[i-1]]||0)+1;
     if(i<len-2){const b=ws[i+1],c=ws[i+2];nd.next2[b]??={};nd.next2[b][c]=(nd.next2[b][c]||0)+1;}
