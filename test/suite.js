@@ -142,7 +142,7 @@ S("STATS");
 const st=e.stats();
 console.log(`  ${JSON.stringify(st)}`);
 assert("stats has depths",st.depths!==undefined);
-assert("stats has version",st.version==="2.0.0");
+assert("stats has version",st.version==="2.1.0");
 
 console.log(`\n╔═══════════════════════════════════════╗`);
 console.log(`║  ${pass}/${pass+fail} passed${fail?`, ${fail} FAILED`:""}${"".padEnd(25-(pass+fail).toString().length*2)}║`);
