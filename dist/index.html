@@ -536,58 +536,95 @@ stats · plan · diagnose · history · reset`);
       setInput("");return;
     }
 
-    // ── Single token → explore it ──
+    // ── Single token → explore (utensil shapes depth) ──
     if(tokens.length===1){
       showExplore(tokens[0],ap);
       setInput("");return;
     }
 
-    // ── Two content words → compare them ──
-    if(content.length===2 && tokens.length<=6){
-      showCompare(content[0],content[1],ap);
-      setInput("");return;
-    }
+    // ── Question detection ──
+    const isQuestion = /^(tell|what|who|how|why|where|when|explain|describe|talk|speak|say|about)\b/i.test(raw) || raw.endsWith('?');
 
-    // ── Question detection: route to speak/path/identity ──
-    const isQuestion = /^(tell|what|who|how|why|where|when|explain|describe|talk|speak|say)\b/i.test(raw) || raw.endsWith('?');
-    if(isQuestion && content.length>=1){
-      const topic = content[0]; // main topic word
-      const topic2 = content.length>=2 ? content[1] : null;
-
-      // Try path between two content words first
-      if(topic2 && engine.nodes[topic] && engine.nodes[topic2]){
-        const p = engine.path(topic, topic2);
-        if(p.ok && p.words.length>=3){
-          addMsg('shifu', p.text, <div className="mt-2 text-[10px] space-y-1">
-            <div className="text-gray-500">path coherence: {p.coherence.toFixed(3)} | energy: {p.energy.toFixed(1)}</div>
-            {p.steps?.slice(0,8).map((st,i)=><div key={i} className="flex items-center gap-1">
-              <span className="w-20 truncate text-gray-400">{st.word}</span>
-              <div className="flex-1 bar-bg h-2 rounded-full"><div className={`h-full rounded-full ${st.surprise<0.3?'bar-green':st.surprise<0.7?'bar-yellow':'bar-red'}`} style={{width:Math.max(2,st.surprise*100)+"%"}}></div></div>
-            </div>)}
+    // ── Two content words → utensil determines response ──
+    if(content.length===2 && (tokens.length<=6 || isQuestion)){
+      const w1=content[0],w2=content[1];
+      if(ap==='knife'){
+        // KNIFE: cuts — explain the relationship structure
+        if(typeof engine.explain==='function'){
+          const r=engine.explain(w1,w2);
+          addMsg('shifu',r.explanation,<div className="mt-2 space-y-2 text-[10px]">
+            {r.paths?.length>0&&<div className="bg-[#0d1117] p-2 rounded"><span className="text-[#48b89a] block mb-1">Paths</span>{r.paths.map((p,i)=><div key={i} className="text-gray-300">{p.text} <span className="text-gray-600">({p.coherence.toFixed(3)})</span></div>)}</div>}
+            {r.shared?.length>0&&<div className="bg-[#0d1117] p-2 rounded"><span className="text-blue-400 block mb-1">Shared Identity</span><div className="flex flex-wrap gap-1">{r.shared.slice(0,6).map(s=><span key={s.word} className="px-1 bg-[#1a2130] rounded">{s.word}</span>)}</div></div>}
+            {r.chains?.length>0&&<div className="bg-[#0d1117] p-2 rounded"><span className="text-yellow-400 block mb-1">Sequences</span>{r.chains.slice(0,3).map((c,i)=><div key={i} className="text-gray-400">{c.words.join(' → ')}</div>)}</div>}
           </div>);
-          setInput("");return;
-        }
+        }else{showCompare(w1,w2,ap);}
+        setInput("");return;
       }
-
-      // Speak on the topic — multiple sentences from paths
-      if(engine.nodes[topic]){
-        const sentences = engine.speak(topic, 4, 12);
-        const id = typeof engine.identity === 'function' ? engine.identity(topic, 5) : [];
-        addMsg('shifu', null, <div className="space-y-2">
-          {sentences.map((s,i)=><div key={i} className="text-gray-300 text-sm">{s.text} <span className="text-gray-600 text-[10px]">({s.coherence.toFixed(3)})</span></div>)}
-          {id.length>0 && <div className="mt-2 pt-2 border-t border-gray-800 text-[10px]">
-            <span className="text-gray-500">identity: </span>
-            {id.map(x=><span key={x.word} className="mr-2">{x.word}<span className="text-gray-600">({x.heat.toFixed(2)})</span></span>)}
+      if(ap==='fork'){
+        // FORK: precise extraction — path between them + identity
+        const p=engine.path(w1,w2,10);
+        const id1=typeof engine.identity==='function'?engine.identity(w1,3):[];
+        const id2=typeof engine.identity==='function'?engine.identity(w2,3):[];
+        addMsg('shifu',p.ok?p.text:'no direct path',<div className="mt-2 text-[10px] space-y-1">
+          {p.ok&&<div className="text-gray-500">coherence: {p.coherence.toFixed(3)}</div>}
+          {(id1.length>0||id2.length>0)&&<div className="flex gap-4 mt-1">
+            {id1.length>0&&<div><span className="text-gray-500">{w1}:</span> {id1.map(x=><span key={x.word} className="text-gray-400 mr-1">{x.word}</span>)}</div>}
+            {id2.length>0&&<div><span className="text-gray-500">{w2}:</span> {id2.map(x=><span key={x.word} className="text-gray-400 mr-1">{x.word}</span>)}</div>}
           </div>}
         </div>);
         setInput("");return;
       }
+      // SPOON: generous context — compare + speak + similar
+      showCompare(w1,w2,ap);
+      setInput("");return;
     }
 
-    // ── 3+ tokens: the coherence tells us what they want ──
+    // ── Question with 1+ content words → speak/path ──
+    if(isQuestion && content.length>=1){
+      const topic=content[0];
+      if(engine.nodes[topic]){
+        if(ap==='fork'){
+          // Fork: 2 precise sentences + identity
+          const sentences=engine.speak(topic,2,10);
+          const id=typeof engine.identity==='function'?engine.identity(topic,3):[];
+          addMsg('shifu',sentences[0]?.text||topic,<div className="space-y-1">
+            {sentences.slice(1).map((s,i)=><div key={i} className="text-gray-400 text-sm">{s.text}</div>)}
+            {id.length>0&&<div className="mt-1 text-[10px] text-gray-500">{id.map(x=>x.word).join(', ')}</div>}
+          </div>);
+        }else if(ap==='knife'){
+          // Knife: dissect — tensions, pressure, structure
+          const pr=engine.pressureOf(topic);
+          const id=typeof engine.identity==='function'?engine.identity(topic,8):[];
+          const sim=engine.similar(topic,5);
+          addMsg('shifu',null,<div className="space-y-2 text-[10px]">
+            {pr&&<div className="bg-[#0d1117] p-2 rounded">
+              <span className="text-[#48b89a]">{topic}</span> pressure:{pr.pressure} closure:{pr.closure.toFixed(2)} depth:{pr.depth}
+            </div>}
+            {id.length>0&&<div className="bg-[#0d1117] p-2 rounded"><span className="text-blue-400 block mb-1">Identity (bolus words)</span>{id.map(x=><div key={x.word} className="flex justify-between"><span>{x.word}</span><span className="text-gray-600">heat:{x.heat.toFixed(2)} spec:{x.specificity.toFixed(2)}</span></div>)}</div>}
+            {sim.length>0&&<div className="bg-[#0d1117] p-2 rounded"><span className="text-gray-500 block mb-1">Similar</span>{sim.map(s=><span key={s.word} className="mr-2 text-gray-400">{s.word}({s.similarity.toFixed(3)})</span>)}</div>}
+          </div>);
+        }else{
+          // Spoon: generous — speak 5 sentences + identity + similar
+          const sentences=engine.speak(topic,5,12);
+          const id=typeof engine.identity==='function'?engine.identity(topic,5):[];
+          const sim=engine.similar(topic,5);
+          addMsg('shifu',null,<div className="space-y-2">
+            {sentences.map((s,i)=><div key={i} className="text-gray-300 text-sm">{s.text} <span className="text-gray-600 text-[10px]">({s.coherence.toFixed(3)})</span></div>)}
+            {id.length>0&&<div className="mt-2 pt-2 border-t border-gray-800 text-[10px]">
+              <span className="text-gray-500">identity: </span>{id.map(x=><span key={x.word} className="mr-2">{x.word}<span className="text-gray-600">({x.heat.toFixed(2)})</span></span>)}
+            </div>}
+            {sim.length>0&&<div className="text-[10px]">
+              <span className="text-gray-500">similar: </span>{sim.map(s=><span key={s.word} className="mr-2 text-gray-400">{s.word}</span>)}
+            </div>}
+          </div>);
+        }
+        setInput("");return;
+      }
+    }
 
-    // High coherence → this fits the graph. They speak the domain.
-    // Feed as lesson (directed teaching with decay + scoring).
+    // ── 3+ tokens: coherence determines action ──
+
+    // High coherence → fork territory. Feed as lesson.
     if(tokens.length>=5 && co>0.3){
       const r=teacher.lesson(raw);save();
       addMsg('system',`Lesson #${r.lesson}`,<div className="mt-1 text-[10px] text-gray-400">
