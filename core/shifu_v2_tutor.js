@@ -1,3 +1,4 @@
+
 // SHIFU v2 — Autonomous Teaching Loop
 // Connects an LLM (Claude, Gemma, any OpenAI-compatible API) to the Teacher.
 // The LLM reads Shifu's pressure map and generates exactly what it needs.

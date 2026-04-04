@@ -34,7 +34,7 @@
 
   <script>
 // ═══════════════════════════════════════════════════════════════
-// SHIFU v2.0 — THE EMBRYO ENGINE (complete, from core/engine.js)
+// SHIFU v2.0 — THE EMBRYO ENGINE (JS fallback, WASM preferred)
 // ═══════════════════════════════════════════════════════════════
 const VERSION="2.0.0";
 const OCR={"0,o":.1,"1,l":.2,"1,i":.2,"5,s":.3,"8,b":.3,"6,g":.4,"l,i":.2,"m,n":.4,"u,v":.5,"c,e":.5,"r,n":.3,"d,o":.3,"f,t":.4,"h,b":.4,"a,e":.4,"a,o":.4,"u,n":.4,"e,i":.4,"f,l":.4,"s,e":.5,"b,d":.4};
@@ -155,10 +155,17 @@ deserialize(json){const d=JSON.parse(json);this.sentenceCount=d.sentenceCount||0
 // ═══════════════════════════════════════════════════════════════
 class Teacher {
   constructor(engine){this.engine=engine;this.log=[];this.corrections=0;this.lessons=0;}
+  // Helper: get word list (works with both JS nodes and WASM wordList)
+  _words(){return this.engine.wordList?this.engine.wordList():Object.keys(this.engine.nodes||{});}
+  _freq(w){return this.engine.nodeFreq?this.engine.nodeFreq(w):(this.engine.nodes?.[w]?.freq||0);}
+  _hasNode(w){return this.engine.hasNode?this.engine.hasNode(w):!!(this.engine.nodes?.[w]);}
+  _vocabSize(){return this.engine.vocabSize?this.engine.vocabSize():(this.engine.nodes?Object.keys(this.engine.nodes).length:0);}
+  _next(w){return this.engine.nodeNext?this.engine.nodeNext(w):(this.engine.nodes?.[w]?.next||null);}
+  _nbrKeys(w){return this.engine.nodeNeighborKeys?this.engine.nodeNeighborKeys(w):Object.keys(this.engine.nodes?.[w]?.neighbors||{});}
   diagnose(){
     const vacs=this.engine.vacuums(10),surps=this.engine.surpluses(10),brs=this.engine.bridges(10),st=this.engine.stats();
-    const underexposed=[];for(const[w,n]of Object.entries(this.engine.nodes)){const d=this.engine.depth(w);if(n.freq>=3&&d.level==="shallow")underexposed.push({word:w,freq:n.freq,evidence:d.evidence});}underexposed.sort((a,b)=>b.freq-a.freq);
-    const starved=[];for(const[w,n]of Object.entries(this.engine.nodes)){if(n.freq<2)continue;const p=this.engine.pressureOf(w);if(p&&p.pressure<0&&p.inbound>=3)starved.push({word:w,inbound:p.inbound,actual:p.actual,deficit:p.inbound-p.actual});}starved.sort((a,b)=>b.deficit-a.deficit);
+    const underexposed=[];for(const w of this._words()){const f=this._freq(w);const d=this.engine.depth(w);if(f>=3&&d.level==="shallow")underexposed.push({word:w,freq:f,evidence:d.evidence});}underexposed.sort((a,b)=>b.freq-a.freq);
+    const starved=[];for(const w of this._words()){if(this._freq(w)<2)continue;const p=this.engine.pressureOf(w);if(p&&p.pressure<0&&p.inbound>=3)starved.push({word:w,inbound:p.inbound,actual:p.actual,deficit:p.inbound-p.actual});}starved.sort((a,b)=>b.deficit-a.deficit);
     return{vocab:st.vocab,depths:st.depths,vacuums:vacs,surpluses:surps,bridges:brs,underexposed:underexposed.slice(0,10),starved:starved.slice(0,10),needs:this._prescribe(vacs,underexposed,starved,brs,st)};}
   _prescribe(vacs,underexposed,starved,bridges,st){
     const needs=[];if(st.vocab===0){needs.push("Empty engine. Feed any text to begin.");return needs;}
@@ -174,27 +181,27 @@ class Teacher {
     if(diag.starved.length>0){const t=diag.starved.slice(0,3).map(s=>s.word);steps.push({priority:1,action:"feed_targeted",targets:t,instruction:"Feed sentences with: "+t.join(", ")});}
     if(diag.underexposed.length>0){const t=diag.underexposed.slice(0,5).map(u=>u.word);steps.push({priority:2,action:"reinforce",targets:t,instruction:"Reinforce shallow words: "+t.join(", ")});}
     if(diag.bridges.length>0){const t=diag.bridges.slice(0,3).map(b=>b.word);steps.push({priority:3,action:"investigate_bridges",targets:t,instruction:"Check bridges for contamination: "+t.join(", ")});}
-    const structured=Object.entries(this.engine.nodes).filter(([w])=>{const d=this.engine.depth(w);return d.level==="structured"||d.level==="deep";}).map(([w])=>w).slice(0,5);
+    const structured=this._words().filter(w=>{const d=this.engine.depth(w);return d.level==="structured"||d.level==="deep";}).slice(0,5);
     if(structured.length>=2)steps.push({priority:4,action:"drill",targets:structured,instruction:"Contrastive drills on: "+structured.slice(0,3).join(", ")});
     if(diag.vocab>100)steps.push({priority:5,action:"decay",instruction:"Run decay(1) to prune noise."});
     return{diagnosis:diag,steps};}
   cycle(text,domain="general"){const before=this.diagnose();const lessonResult=this.lesson(text,domain);const sents=text.split(/[.!?\n]+/).map(s=>s.trim()).filter(s=>s.length>10);let drillResult=null;if(sents.length>0)drillResult=this.drill(sents[0]);const after=this.diagnose();return{before:{vocab:before.vocab,depths:before.depths,needs:before.needs},lesson:lessonResult,drill:drillResult,after:{vocab:after.vocab,depths:after.depths,needs:after.needs}};}
   spontaneous(){
-    const eng=this.engine;if(Object.keys(eng.nodes).length<10)return{action:"wait",reason:"too few words"};
+    const eng=this.engine;if(this._vocabSize()<10)return{action:"wait",reason:"too few words"};
     const diag=this.diagnose();const actions=[];
     for(const s of diag.starved.slice(0,3)){const g=this._walkFrom(s.word,8);if(g){eng.feed(g);actions.push({type:"reinforce",word:s.word,sentence:g});}}
     for(const u of diag.underexposed.slice(0,3)){const g=this._walkFrom(u.word,8);if(g){eng.feed(g);actions.push({type:"reinforce",word:u.word,sentence:g});}}
     if(diag.surpluses.length>0&&diag.vacuums.length>0){const src=diag.surpluses[0].word,dst=diag.vacuums[0].word;const b=this._walkBetween(src,dst,10);if(b){eng.feed(b);actions.push({type:"bridge",from:src,to:dst,sentence:b});}}
-    const structured=Object.keys(eng.nodes).filter(w=>{const d=eng.depth(w);return d.level==="structured"||d.level==="deep";});
+    const structured=this._words().filter(w=>{const d=eng.depth(w);return d.level==="structured"||d.level==="deep";});
     let drillResult=null;if(structured.length>=2){const a=structured[Math.floor(Math.random()*structured.length)];const s=this._walkFrom(a,6);if(s)drillResult=this.drill(s);}
     const decayed=eng.decay(1);this.lessons++;
-    const result={action:"spontaneous",lesson:this.lessons,generated:actions,drill:drillResult,decayed:decayed.edgesRemoved,vocab:Object.keys(eng.nodes).length};
+    const result={action:"spontaneous",lesson:this.lessons,generated:actions,drill:drillResult,decayed:decayed.edgesRemoved,vocab:this._vocabSize()};
     this.log.push(result);return result;}
-  _walkFrom(start,maxLen){const eng=this.engine,node=eng.nodes[start];if(!node)return null;const words=[start];let current=start;
-    for(let i=0;i<maxLen-1;i++){const nd=eng.nodes[current];if(!nd||!nd.next||!Object.keys(nd.next).length)break;const entries=Object.entries(nd.next);const total=entries.reduce((s,[,w])=>s+w,0);let r=Math.random()*total,picked=entries[0][0];for(const[word,weight]of entries){r-=weight;if(r<=0){picked=word;break;}}if(words.includes(picked)&&words.length>2)break;words.push(picked);current=picked;}
+  _walkFrom(start,maxLen){const eng=this.engine;if(!this._hasNode(start))return null;const words=[start];let current=start;
+    for(let i=0;i<maxLen-1;i++){const nx=this._next(current);if(!nx||!Object.keys(nx).length)break;const entries=Object.entries(nx);const total=entries.reduce((s,[,w])=>s+w,0);let r=Math.random()*total,picked=entries[0][0];for(const[word,weight]of entries){r-=weight;if(r<=0){picked=word;break;}}if(words.includes(picked)&&words.length>2)break;words.push(picked);current=picked;}
     return words.length>=3?words.join(" "):null;}
-  _walkBetween(src,dst,maxLen){const eng=this.engine;if(!eng.nodes[src]||!eng.nodes[dst])return null;const words=[src];let current=src;
-    for(let i=0;i<maxLen-1;i++){const nd=eng.nodes[current];if(!nd?.next)break;if(nd.next[dst]){words.push(dst);break;}const dstNb=new Set(Object.keys(eng.nodes[dst]?.neighbors||{}));let bestWord=null,bestScore=-1;for(const[c,weight]of Object.entries(nd.next)){if(words.includes(c))continue;const cNb=Object.keys(eng.nodes[c]?.neighbors||{});const overlap=cNb.filter(w=>dstNb.has(w)).length;const score=overlap+weight*0.1;if(score>bestScore){bestScore=score;bestWord=c;}}if(!bestWord)break;words.push(bestWord);current=bestWord;}
+  _walkBetween(src,dst,maxLen){const eng=this.engine;if(!this._hasNode(src)||!this._hasNode(dst))return null;const words=[src];let current=src;
+    for(let i=0;i<maxLen-1;i++){const nx=this._next(current);if(!nx)break;if(nx[dst]){words.push(dst);break;}const dstNb=new Set(this._nbrKeys(dst));let bestWord=null,bestScore=-1;for(const[c,weight]of Object.entries(nx)){if(words.includes(c))continue;const cNb=this._nbrKeys(c);const overlap=cNb.filter(w=>dstNb.has(w)).length;const score=overlap+weight*0.1;if(score>bestScore){bestScore=score;bestWord=c;}}if(!bestWord)break;words.push(bestWord);current=bestWord;}
     return words.length>=3?words.join(" "):null;}
   history(){return{lessons:this.lessons,corrections:this.corrections,log:this.log.slice(-20)};}
 }
@@ -234,7 +241,7 @@ function DepthBadge({word}) {
 }
 
 function App() {
-  const [messages, setMessages] = useState([{id:'s0',sender:'system',text:"Shifu v2 Embryo Engine ready. Type 'help' or start feeding text."}]);
+  const [messages, setMessages] = useState([{id:'s0',sender:'system',text:"Shifu v2 ready. Type a word, paste text, or ask me anything."}]);
   const [input, setInput] = useState("");
   const [stats, setStats] = useState({vocab:0,tokens:0,sentences:0});
   const [autoTeach, setAutoTeach] = useState(false);
@@ -263,387 +270,305 @@ function App() {
     setMessages(m=>[...m, {id:Date.now()+'-'+Math.random(), sender, text, content}]);
   };
 
-  // ─── Auto-teach loop ────────────────────────────────────
+  const autoStatsRef = useRef({rounds:0,generated:0,decayed:0,drills:0,vocabStart:0});
+  // ─── Auto-teach loop (silent background) ───────────────
   useEffect(()=>{
     if(autoTeach){
+      const st=autoStatsRef.current;st.rounds=0;st.generated=0;st.decayed=0;st.drills=0;st.vocabStart=engine.stats().vocab;
+      addMsg('system','Auto-teach started. Teaching silently in the background...');
       autoRef.current = setInterval(()=>{
         const r = teacher.spontaneous();
-        if(r.action==="wait"){addMsg('auto',"Waiting... "+r.reason);return;}
-        save();
-        setAutoCount(c=>c+1);
-        const genText = r.generated.map(g=>`${g.type}: "${g.sentence}"`).join('\n');
-        addMsg('auto', `Spontaneous #${r.lesson}`, <div className="mt-1 text-[10px] space-y-1">
-          <div className="text-gray-500">Generated {r.generated.length} sentences, decayed {r.decayed} edges</div>
-          {r.generated.map((g,i)=><div key={i} className="text-gray-400"><span className="text-[#48b89a]">{g.type}</span> [{g.word||g.from}]: {g.sentence}</div>)}
-          {r.drill && <div className="text-gray-400">Drill asymmetry: {r.drill.asymmetry.toFixed(3)} {r.drill.learned?'(learned)':'(not yet)'}</div>}
-          <div className="text-gray-500">Vocab: {r.vocab}</div>
-        </div>);
+        if(r.action==="wait")return;
+        st.rounds++;st.generated+=r.generated.length;st.decayed+=r.decayed;if(r.drill)st.drills++;
+        setAutoCount(st.rounds);
+        if(st.rounds%10===0)save(); else refresh();
       }, 2000);
-    } else { if(autoRef.current)clearInterval(autoRef.current); }
+    } else {
+      if(autoRef.current){clearInterval(autoRef.current);
+        const st=autoStatsRef.current;if(st.rounds>0){save();
+          const vocabNow=engine.stats().vocab;
+          addMsg('system',`Auto-teach stopped.`,<div className="mt-1 text-[10px] text-gray-400">
+            {st.rounds} rounds | {st.generated} sentences generated | {st.drills} drills | {st.decayed} edges decayed<br/>
+            Vocab: {st.vocabStart} -> {vocabNow} (+{vocabNow-st.vocabStart})
+          </div>);
+        }
+      }
+    }
     return ()=>{if(autoRef.current)clearInterval(autoRef.current);};
   },[autoTeach]);
 
-  // ─── Command router ─────────────────────────────────────
+  // ─── Stop words — function words the graph knows but aren't content ───
+  const STOP = new Set(['the','a','an','is','are','was','were','be','been','and','or','but','in','on','at','to','for','of','it','its','do','does','did','what','how','why','who','where','when','this','that','can','could','would','should','will','shall','may','might','about','into','with','from','by','up','out','if','then','than','so','no','not','my','your','his','her','me','you','we','they','them','us','has','have','had','get','got','just','all','some','any','each','every','much','many','more','most','very','too','also','like','such','between','through','i','am','as','these','those','been','being','here','there','own','other']);
+
+  // ─── Render helpers (aperture-scaled) ────────────────────
+  const showExplore = (w, ap) => {
+    const node=engine.nodeData?engine.nodeData(w):(engine.nodes?.[w]||null);
+    if(!node){addMsg('system',`"${w}" — unborn. I haven't seen this word yet.`);return;}
+    const p=engine.pressureOf(w);
+    // Fork: compact. Spoon: full context. Knife: structural.
+    const nbrN = ap==='fork'?5:10, nxtN = ap==='fork'?3:8;
+    const topNbr=Object.entries(node.neighbors||{}).sort((a,b)=>b[1]-a[1]).slice(0,nbrN);
+    const topNext=Object.entries(node.next||{}).sort((a,b)=>b[1]-a[1]).slice(0,nxtN);
+    const topPrev=ap!=='fork'?Object.entries(node.prev||{}).sort((a,b)=>b[1]-a[1]).slice(0,5):[];
+    const sim=ap!=='fork'?engine.similar(w,5):[];
+    addMsg('system',w,<div className="mt-2 space-y-2 text-[10px]">
+      <div className="flex items-center gap-2"><DepthBadge word={w}/><span className="text-gray-500">freq:{node.freq} | pressure:{p?.pressure}</span></div>
+      <div className="bg-[#0d1117] p-2 rounded">
+        <div className="text-[#48b89a] mb-1">Neighbors ({Object.keys(node.neighbors||{}).length})</div>
+        <div className="flex flex-wrap gap-1">{topNbr.map(([n,c])=><span key={n} className="px-1 bg-[#1a2130] rounded">{n}<span className="text-gray-600">:{c}</span></span>)}</div>
+      </div>
+      <div className="bg-[#0d1117] p-2 rounded">
+        <div className="text-[#4a8db7] mb-1">Next words</div>
+        <div className="flex flex-wrap gap-1">{topNext.map(([n,c])=><span key={n} className="px-1 bg-[#1a2130] rounded">{n}<span className="text-gray-600">:{c}</span></span>)}</div>
+      </div>
+      {topPrev.length>0&&<div className="bg-[#0d1117] p-2 rounded">
+        <div className="text-[#d4a843] mb-1">Prev words</div>
+        <div className="flex flex-wrap gap-1">{topPrev.map(([n,c])=><span key={n} className="px-1 bg-[#1a2130] rounded">{n}<span className="text-gray-600">:{c}</span></span>)}</div>
+      </div>}
+      {sim.length>0&&<div className="bg-[#0d1117] p-2 rounded">
+        <div className="text-gray-400 mb-1">Similar</div>
+        {sim.map(s=><div key={s.word} className="flex items-center gap-1"><DepthBadge word={s.word}/><span>{s.word}</span><span className="text-gray-600">{(s.similarity*100).toFixed(1)}%</span></div>)}
+      </div>}
+      {ap==='knife'&&<div className="bg-[#0d1117] p-2 rounded">
+        <div className="text-[#e05252] mb-1">Structure</div>
+        <div className="text-gray-400">closure: {p?.closure?.toFixed(2)} | depth: {engine.depth(w).level} ({engine.depth(w).evidence.toFixed(2)})</div>
+        {(()=>{const t=engine.tensions?.(1);const tw=t?.find(x=>x.word===w);return tw?<div className="text-[#d4a843] mt-1">{tw.components} clusters: {tw.clusters.map(c=>'['+c.join(',')+']').join(' ')}</div>:null;})()}
+      </div>}
+    </div>);
+  };
+
+  const showCompare = (a,b,ap) => {
+    const r=engine.compare(a,b);
+    // Fork: just the number + key signals. Spoon: all + affinity. Knife: full bars.
+    const aff = ap==='spoon' ? engine.affinity(a,b) : null;
+    addMsg('system',`${a} ${ap==='knife'?'⚔':'↔'} ${b}`,<div className="mt-2 space-y-1 text-[10px]">
+      <div className="flex gap-2 mb-2"><DepthBadge word={a}/><span className="text-gray-500">vs</span><DepthBadge word={b}/><span className="text-[#48b89a] ml-auto">{(r.similarity*100).toFixed(1)}% ({r.depth})</span></div>
+      {r.signals.neighborOverlap!==undefined&&<Bar label="neighbors" value={r.signals.neighborOverlap} color="bar-green"/>}
+      {r.signals.expectsAB!==undefined&&<Bar label={a+"→"+b} value={r.signals.expectsAB} color="bar-blue"/>}
+      {r.signals.expectsBA!==undefined&&<Bar label={b+"→"+a} value={r.signals.expectsBA} color="bar-yellow"/>}
+      {(ap!=='fork'&&r.signals.trajectoryAB!==undefined)&&<Bar label="traj A→B" value={r.signals.trajectoryAB} color="bar-blue"/>}
+      {(ap!=='fork'&&r.signals.trajectoryBA!==undefined)&&<Bar label="traj B→A" value={r.signals.trajectoryBA} color="bar-yellow"/>}
+      {(ap!=='fork'&&r.signals.indirectAB!==undefined)&&<Bar label="indirect" value={r.signals.indirectAB} color="bar-green"/>}
+      {(ap!=='fork'&&r.signals.posSim!==undefined)&&<Bar label="position" value={r.signals.posSim} color="bar-green"/>}
+      {ap!=='fork'&&<Bar label="edit" value={r.signals.editSim} color="bar-green"/>}
+      {ap!=='fork'&&<Bar label="ocr" value={r.signals.ocrSim} color="bar-green"/>}
+      {aff&&aff.known&&<div className="mt-2 pt-2 border-t border-[#1a2130]">
+        <div className="text-gray-400 mb-1">Affinity: mutual {(aff.mutual*100).toFixed(1)}%</div>
+        <Bar label="orbit" value={aff.orbit} color="bar-green"/>
+        <Bar label={"pull "+a+"→"} value={aff.pullAB} color="bar-blue"/>
+        <Bar label={"pull "+b+"→"} value={aff.pullBA} color="bar-yellow"/>
+      </div>}
+    </div>);
+  };
+
+  const showPressure = (type) => {
+    let items;
+    if(type==='pressure') items=engine.pressure().slice(0,15);
+    else if(type==='vacuums') items=engine.vacuums(10);
+    else if(type==='surpluses') items=engine.surpluses(10);
+    else if(type==='bridges') items=engine.bridges(10);
+    else items=engine.tensions(10);
+    if(type==='tensions'){
+      addMsg('system',`${items.length} split words:`,<div className="mt-1 text-[10px] space-y-1">
+        {items.map(t=><div key={t.word} className="bg-[#0d1117] p-2 rounded">
+          <span className="text-[#e05252]">{t.word}</span> <span className="text-gray-500">({t.components} clusters, tension:{t.tension.toFixed(2)})</span>
+          <div className="flex gap-2 mt-1">{t.clusters.map((c,i)=><span key={i} className="text-gray-400">[{c.join(', ')}]</span>)}</div>
+        </div>)}
+        {!items.length&&<span className="text-gray-500">No tensions detected.</span>}
+      </div>);
+    } else {
+      const maxP=Math.max(...items.map(p=>Math.abs(p.pressure||0)),1);
+      addMsg('system',type.charAt(0).toUpperCase()+type.slice(1)+':',<div className="mt-1 text-[10px] space-y-1">
+        {items.map(p=><div key={p.word} className="flex items-center gap-1">
+          <DepthBadge word={p.word}/>
+          <span className="w-20 truncate">{p.word}</span>
+          <div className="flex-1 bar-bg h-2 rounded-full"><div className={`h-full rounded-full ${p.pressure<0?'bar-red':'bar-green'}`} style={{width:Math.max(2,Math.abs(p.pressure)/maxP*100)+"%"}}></div></div>
+          <span className="w-10 text-gray-500">{p.pressure}</span>
+          <span className="w-14 text-gray-600">cl:{p.closure?.toFixed(2)}</span>
+        </div>)}
+        {!items.length&&<span className="text-gray-500">None found.</span>}
+      </div>);
+    }
+  };
+
+  // ─── The perturbation handler ────────────────────────────
+  // Score the input. The score tells you the utensil.
+  // High coherence = fork (user speaks the domain, give the fact)
+  // Low coherence = spoon (user is exploring, give context)
+  // Structural words = knife (user wants dissection)
   const exec = useCallback((txt)=>{
     if(!txt.trim())return;
     setMessages(m=>[...m,{id:Date.now(),sender:'user',text:txt}]);
-    const low = txt.trim().toLowerCase();
+    const raw=txt.trim(), low=raw.toLowerCase();
+    const tokens=tokenize(raw);
+    const content=tokens.filter(w=>!STOP.has(w));
 
-    // HELP
-    if(low==='help'){
+    // ── Operational commands (meta, not content) ──
+    if(/^(help|what can you do)\??$/i.test(low)){
       addMsg('system',
-`Commands:
-  feed: [text]         — learn text
-  explore [word]       — depth, neighbors, next words, similar
-  similar [word]       — most related words
-  compare [a] and [b]  — asymmetric comparison
-  affinity [a] and [b] — pre-contact attraction
-  query: [... _ ...]   — fill the blank
-  path [a] to [b]      — least-action route
-  generate [word]      — random walk from word
-  score: [sentence]    — word-by-word surprise
-  correct [text]       — OCR correction
+`Type a word — I'll show you what I know.
+Two words — I'll compare them.
+Paste text — I'll learn from it.
+Use _ for a blank — I'll fill it.
 
-Pressure:
-  pressure / vacuums / surpluses / bridges / tensions
+The more I know your words, the more I show.
 
-Teaching:
-  diagnose / plan / lesson: [text] / drill: [sentence]
-  cycle: [text] / teach correct [a] and [b]
-  history / spontaneous
-
-Forgetting:
-  unlearn [a] and [b] / forget [word] / decay [N]
-  collapse [word]
-
-  stats / reset`);
-    }
-
-    // STATS
-    else if(low==='stats'){
+forget [word] · disconnect [a] from [b] · decay · collapse [word]
+stats · plan · diagnose · history · reset`);
+      setInput("");return;}
+    if(/^(reset|start over|clear)$/i.test(low)){IDB.del('engine').then(()=>location.reload());return;}
+    if(/^(stats|status|vocab)\??$/i.test(low)){
       const s=engine.stats();
-      addMsg('system', `Vocab: ${s.vocab} | Tokens: ${s.tokens} | Sentences: ${s.sentences}`, <div className="mt-2 grid grid-cols-6 gap-1 text-[10px]">
+      addMsg('system',`${s.vocab} words | ${s.tokens} tokens | ${s.sentences} sentences`,<div className="mt-2 grid grid-cols-6 gap-1 text-[10px]">
         {Object.entries(s.depths).map(([k,v])=><div key={k} className={`text-center py-1 rounded ${DC[k]}`}>{k}<br/>{v}</div>)}
-      </div>);
-    }
+      </div>);setInput("");return;}
+    if(/^(diagnose|needs|health|what do you need)\??$/i.test(low)){
+      const d=teacher.diagnose();
+      addMsg('system','Diagnosis:',<div className="mt-2 text-[10px] space-y-2">
+        <div className="bg-[#0d1117] p-2 rounded"><span className="text-[#48b89a] block mb-1">Needs</span>{d.needs.map((n,i)=><div key={i} className="text-gray-400">- {n}</div>)}</div>
+        {d.starved.length>0&&<div className="bg-[#0d1117] p-2 rounded"><span className="text-red-400 block mb-1">Starved</span><div className="flex flex-wrap gap-1">{d.starved.map(s=><span key={s.word} className="px-1 bg-[#1a2130] rounded">{s.word}<span className="text-gray-600"> deficit:{s.deficit}</span></span>)}</div></div>}
+        {d.underexposed.length>0&&<div className="bg-[#0d1117] p-2 rounded"><span className="text-blue-400 block mb-1">Underexposed</span><div className="flex flex-wrap gap-1">{d.underexposed.map(s=><span key={s.word} className="px-1 bg-[#1a2130] rounded">{s.word}<span className="text-gray-600"> f:{s.freq}</span></span>)}</div></div>}
+      </div>);setInput("");return;}
+    if(/^(plan|what.?s next)\??$/i.test(low)){
+      const p=teacher.plan();
+      addMsg('system','Teaching Plan:',<div className="mt-2 space-y-1 text-[10px]">
+        {p.steps.map((s,i)=><div key={i} className="bg-[#0d1117] p-2 border-l-2 border-[#48b89a] rounded-r">
+          <span className="text-[#48b89a]">P{s.priority}</span> <span className="text-gray-300">{s.action}</span>
+          <div className="text-gray-500 mt-0.5">{s.instruction}</div>
+        </div>)}
+        {!p.steps.length&&<span className="text-gray-500">Engine balanced.</span>}
+      </div>);setInput("");return;}
+    if(/^(history|log)\??$/i.test(low)){
+      const h=teacher.history();
+      addMsg('system',`${h.lessons} lessons | ${h.corrections} corrections`,<div className="mt-1 text-[10px] text-gray-500 max-h-40 overflow-y-auto whitespace-pre-wrap">{JSON.stringify(h.log.slice(-5),null,1)}</div>);
+      setInput("");return;}
+    if(/^(spontaneous|self.?teach|think)$/i.test(low)){
+      const r=teacher.spontaneous();save();
+      addMsg('system',`Self-taught #${r.lesson}`,<div className="mt-1 text-[10px] space-y-1">
+        {r.generated.map((g,i)=><div key={i} className="text-gray-400"><span className="text-[#48b89a]">{g.type}</span> [{g.word||g.from}]: {g.sentence}</div>)}
+        {r.drill&&<div className="text-gray-400">Drill asym: {r.drill.asymmetry.toFixed(3)}</div>}
+        <div className="text-gray-500">Decayed: {r.decayed} | Vocab: {r.vocab}</div>
+      </div>);setInput("");return;}
+    if(/^pressure$/i.test(low)){showPressure('pressure');setInput("");return;}
+    if(/^(vacuums?|gaps?|what.?s missing)\??$/i.test(low)){showPressure('vacuums');setInput("");return;}
+    if(/^(surpluses?|hubs?|what.?s strong)\??$/i.test(low)){showPressure('surpluses');setInput("");return;}
+    if(/^(bridges?)\??$/i.test(low)){showPressure('bridges');setInput("");return;}
+    if(/^(tensions?|splits?)\??$/i.test(low)){showPressure('tensions');setInput("");return;}
+    if(/^(decay|prune)\s*(\d*)$/i.test(low)){
+      const m=low.match(/(\d+)/);const thresh=m?parseInt(m[1]):1;
+      const r=engine.decay(thresh);save();
+      addMsg('system',`Pruned ${r.edgesRemoved} edges (threshold ≤ ${thresh}).`);
+      setInput("");return;}
+    if(/^(forget|remove|delete)\s+(\w+)$/i.test(low)){
+      const w=low.match(/\s+(\w+)$/)[1];engine.forget(w);save();
+      addMsg('system',`Forgot "${w}". All references removed.`);setInput("");return;}
+    if(/^(unlearn|disconnect|separate)\s+(\w+)\s+(and|from)\s+(\w+)$/i.test(low)){
+      const m=low.match(/(\w+)\s+(?:and|from)\s+(\w+)$/);
+      const r=engine.unlearn(m[1],m[2]);save();
+      addMsg('system',`Weakened ${r.edgesWeakened} edges between ${m[1]} and ${m[2]}.`);
+      setInput("");return;}
+    if(/^collapse\s+(\w+)$/i.test(low)){
+      const w=low.match(/collapse\s+(\w+)/)[1];const r=engine.collapse(w);save();
+      if(!r.ok)addMsg('system',`Collapse "${w}": ${r.reason}`);
+      else addMsg('system',`Collapsed "${w}": kept ${r.kept}, pruned ${r.pruned}`,<div className="mt-1 text-[10px] text-gray-400">
+        Surviving: {r.surviving.join(', ')}<br/>Removed: {r.removed.map(c=>c.join(',')).join(' | ')}
+      </div>);setInput("");return;}
 
-    // RESET
-    else if(low==='reset'){ IDB.del('engine').then(()=>location.reload()); }
+    // ══════════════════════════════════════════════════════════
+    // PERTURBATION: score the input against the graph
+    // ══════════════════════════════════════════════════════════
+    const score = tokens.length>=2 ? engine.scoreSentence(raw) : null;
+    const co = score ? score.coherence : 0;
+    const depths = tokens.map(w=>({word:w,...engine.depth(w)}));
+    const known = depths.filter(d=>d.level!=='unborn');
+    const deep = depths.filter(d=>d.level==='structured'||d.level==='deep');
+    const hasBlank = raw.includes('_');
+    const structural = /\b(break\s*down|compare|between|versus|vs|analyze|decompose|types|difference|similarities|list|steps|classify)\b/i.test(raw);
 
-    // FEED
-    else if(low.startsWith('feed:') || low.startsWith('feed ')){
-      const text = txt.substring(txt.indexOf(':')+1 < 6 ? 5 : txt.indexOf(':')+1).trim();
-      const r = engine.feedText(text); save();
-      addMsg('system', `Fed ${r.sentences} sentences, ${r.tokens} tokens. Vocab: ${Object.keys(engine.nodes).length}`);
-    }
+    // Aperture: the coherence score IS the measurement
+    let ap = 'spoon'; // low coherence → exploring → give context
+    if(co>0.4 || (content.length<=2 && deep.length>0)) ap='fork'; // fluent → give the fact
+    if(structural && content.length>=2) ap='knife'; // structural words → dissect
 
-    // EXPLORE
-    else if(low.startsWith('explore ')){
-      const w = low.split(/\s+/)[1];
-      const node = engine.nodes[w];
-      if(!node){ addMsg('system',`"${w}" is unborn.`); }
+    // ── Blank → fill it (fork: they know the domain, want precision) ──
+    if(hasBlank){
+      const r=engine.query(raw);
+      if(!r.ok){addMsg('system',r.reason);}
       else {
-        const d = engine.depth(w);
-        const topNbr = Object.entries(node.neighbors).sort((a,b)=>b[1]-a[1]).slice(0,10);
-        const topNext = Object.entries(node.next).sort((a,b)=>b[1]-a[1]).slice(0,8);
-        const topPrev = Object.entries(node.prev).sort((a,b)=>b[1]-a[1]).slice(0,5);
-        const sim = engine.similar(w,5);
-        const p = engine.pressureOf(w);
-        addMsg('system', `Explore: ${w}`, <div className="mt-2 space-y-2 text-[10px]">
-          <div className="flex items-center gap-2"><DepthBadge word={w}/><span className="text-gray-500">freq:{node.freq} | pressure:{p?.pressure}</span></div>
-          <div className="bg-[#0d1117] p-2 rounded">
-            <div className="text-[#48b89a] mb-1">Neighbors ({Object.keys(node.neighbors).length})</div>
-            <div className="flex flex-wrap gap-1">{topNbr.map(([n,c])=><span key={n} className="px-1 bg-[#1a2130] rounded">{n}<span className="text-gray-600">:{c}</span></span>)}</div>
-          </div>
-          <div className="bg-[#0d1117] p-2 rounded">
-            <div className="text-[#4a8db7] mb-1">Next words</div>
-            <div className="flex flex-wrap gap-1">{topNext.map(([n,c])=><span key={n} className="px-1 bg-[#1a2130] rounded">{n}<span className="text-gray-600">:{c}</span></span>)}</div>
-          </div>
-          {topPrev.length>0 && <div className="bg-[#0d1117] p-2 rounded">
-            <div className="text-[#d4a843] mb-1">Prev words</div>
-            <div className="flex flex-wrap gap-1">{topPrev.map(([n,c])=><span key={n} className="px-1 bg-[#1a2130] rounded">{n}<span className="text-gray-600">:{c}</span></span>)}</div>
-          </div>}
-          {sim.length>0 && <div className="bg-[#0d1117] p-2 rounded">
-            <div className="text-gray-400 mb-1">Similar</div>
-            {sim.map(s=><div key={s.word} className="flex items-center gap-1"><DepthBadge word={s.word}/><span>{s.word}</span><span className="text-gray-600">{(s.similarity*100).toFixed(1)}%</span></div>)}
-          </div>}
+        const n = ap==='fork'?3:5;
+        addMsg('system',r.filled,<div className="mt-2 text-[10px] space-y-1">
+          <div className="text-gray-500">coherence: {r.coherence.toFixed(3)}</div>
+          {r.candidates.slice(0,n).map((c,i)=><div key={c.word} className="flex items-center gap-2">
+            <span className={`w-4 text-right ${i===0?'text-[#48b89a]':'text-gray-600'}`}>{i+1}</span>
+            <span className="w-24">{c.word}</span>
+            <div className="flex-1 bar-bg h-2 rounded-full"><div className="bar-green h-full rounded-full" style={{width:Math.min(100,c.total*200)+"%"}}></div></div>
+            {ap!=='fork'&&<span className="text-gray-600 w-20">{Object.entries(c.signals).map(([k,v])=>k+':'+v.toFixed(2)).join(' ')}</span>}
+          </div>)}
         </div>);
       }
+      setInput("");return;
     }
 
-    // SIMILAR
-    else if(low.startsWith('similar ')){
-      const w = low.split(/\s+/)[1];
-      const sim = engine.similar(w,10);
-      if(!sim.length) addMsg('system',`"${w}" unknown or no similar words.`);
-      else addMsg('system', `Similar to "${w}":`, <div className="mt-1 space-y-1 text-[10px]">
-        {sim.map(s=><div key={s.word} className="flex items-center gap-2"><DepthBadge word={s.word}/><span className="w-24">{s.word}</span><div className="flex-1 bar-bg h-2 rounded-full"><div className="bar-green h-full rounded-full" style={{width:(s.similarity*100)+"%"}}></div></div><span className="text-gray-500 w-12">{(s.similarity*100).toFixed(1)}%</span></div>)}
+    // ── Single token → explore it ──
+    if(tokens.length===1){
+      showExplore(tokens[0],ap);
+      setInput("");return;
+    }
+
+    // ── Two content words → compare them ──
+    if(content.length===2 && tokens.length<=6){
+      showCompare(content[0],content[1],ap);
+      setInput("");return;
+    }
+
+    // ── 3+ tokens: the coherence tells us what they want ──
+
+    // High coherence → this fits the graph. They speak the domain.
+    // Feed as lesson (directed teaching with decay + scoring).
+    if(tokens.length>=5 && co>0.3){
+      const r=teacher.lesson(raw);save();
+      addMsg('system',`Lesson #${r.lesson}`,<div className="mt-1 text-[10px] text-gray-400">
+        +{r.newWords} words | {r.fed.sentences} sentences | decayed: {r.decayed}
+        {r.newVacuums.length>0&&<span className="text-red-400"> | new vacuums: {r.newVacuums.join(', ')}</span>}
       </div>);
+      setInput("");return;
     }
 
-    // COMPARE
-    else if(low.startsWith('compare ')&&low.includes(' and ')){
-      const parts=txt.replace(/compare\s+/i,'').split(/\s+and\s+/);
-      const a=parts[0].trim().toLowerCase(), b=parts[1].trim().toLowerCase();
-      const r=engine.compare(a,b);
-      addMsg('system', `Compare: ${a} vs ${b}`, <div className="mt-2 space-y-1 text-[10px]">
-        <div className="flex gap-2 mb-2"><DepthBadge word={a}/><span className="text-gray-500">vs</span><DepthBadge word={b}/><span className="text-[#48b89a] ml-auto">{(r.similarity*100).toFixed(1)}% ({r.depth})</span></div>
-        {r.signals.neighborOverlap!==undefined && <Bar label="neighbors" value={r.signals.neighborOverlap} color="bar-green"/>}
-        {r.signals.expectsAB!==undefined && <Bar label={a+"->"+b} value={r.signals.expectsAB} color="bar-blue"/>}
-        {r.signals.expectsBA!==undefined && <Bar label={b+"->"+a} value={r.signals.expectsBA} color="bar-yellow"/>}
-        {r.signals.trajectoryAB!==undefined && <Bar label="traj A->B" value={r.signals.trajectoryAB} color="bar-blue"/>}
-        {r.signals.trajectoryBA!==undefined && <Bar label="traj B->A" value={r.signals.trajectoryBA} color="bar-yellow"/>}
-        {r.signals.indirectAB!==undefined && <Bar label="indirect" value={r.signals.indirectAB} color="bar-green"/>}
-        {r.signals.posSim!==undefined && <Bar label="position" value={r.signals.posSim} color="bar-green"/>}
-        <Bar label="edit" value={r.signals.editSim} color="bar-green"/>
-        <Bar label="ocr" value={r.signals.ocrSim} color="bar-green"/>
-      </div>);
+    // Low coherence, mostly unknown → new territory. Feed it.
+    if(tokens.length>=3 && known.length<tokens.length*0.5){
+      const r=engine.feedText(raw);save();
+      addMsg('system',`Learned ${r.sentences} sentences, ${r.tokens} tokens. Vocab: ${engine.stats().vocab}`);
+      setInput("");return;
     }
 
-    // AFFINITY
-    else if(low.startsWith('affinity ')&&low.includes(' and ')){
-      const parts=txt.replace(/affinity\s+/i,'').split(/\s+and\s+/);
-      const a=parts[0].trim(), b=parts[1].trim();
-      const r=engine.affinity(a,b);
-      if(!r.known){ addMsg('system',`One or both words unknown.`); }
-      else addMsg('system', `Affinity: ${a} <-> ${b}`, <div className="mt-2 space-y-1 text-[10px]">
-        <div className="text-[#48b89a] mb-1">Mutual: {(r.mutual*100).toFixed(1)}% | Asym: {(r.asym*100).toFixed(1)}%</div>
-        <Bar label="orbit" value={r.orbit} color="bar-green"/>
-        <Bar label={"pull "+a+"->"} value={r.pullAB} color="bar-blue"/>
-        <Bar label={"pull "+b+"->"} value={r.pullBA} color="bar-yellow"/>
-        <Bar label={"ind "+a+"->"} value={r.indAB} color="bar-blue"/>
-        <Bar label={"ind "+b+"->"} value={r.indBA} color="bar-yellow"/>
-        <Bar label="charSim" value={r.charSim} color="bar-green"/>
-        <Bar label="expOvlp" value={r.expOvlp} color="bar-green"/>
-        <Bar label="posAlign" value={r.posAlign} color="bar-green"/>
-      </div>);
-    }
-
-    // QUERY
-    else if(low.startsWith('query:') || low.startsWith('query ')){
-      const q = txt.substring(txt.indexOf(':')+1 < 7 ? 6 : txt.indexOf(':')+1).trim();
-      const r = engine.query(q);
-      if(!r.ok){ addMsg('system', r.reason); }
-      else addMsg('system', `Query: ${q}`, <div className="mt-2 text-[10px] space-y-1">
-        <div className="text-[#48b89a] text-sm mb-1">{r.filled}</div>
-        <div className="text-gray-500">Coherence: {r.coherence.toFixed(3)}</div>
-        {r.candidates.map((c,i)=><div key={c.word} className="flex items-center gap-2">
-          <span className={`w-4 text-right ${i===0?'text-[#48b89a]':'text-gray-600'}`}>{i+1}</span>
-          <span className="w-24">{c.word}</span>
-          <div className="flex-1 bar-bg h-2 rounded-full"><div className="bar-green h-full rounded-full" style={{width:Math.min(100,c.total*200)+"%"}}></div></div>
-          <span className="text-gray-600 w-20">{Object.entries(c.signals).map(([k,v])=>k+':'+v.toFixed(2)).join(' ')}</span>
-        </div>)}
-      </div>);
-    }
-
-    // PATH
-    else if(low.startsWith('path ')&&(low.includes(' to ')||low.includes(' -> '))){
-      const parts=txt.replace(/path\s+/i,'').split(/\s+to\s+|\s*->\s*/);
-      const a=parts[0].trim(), b=parts[1].trim();
-      const r=engine.path(a,b);
-      if(!r.ok){ addMsg('system', r.reason); }
-      else addMsg('system', `Path: ${a} -> ${b}`, <div className="mt-2 text-[10px]">
-        <div className="text-[#48b89a] text-sm mb-1">{r.text}</div>
-        <div className="text-gray-500">Energy: {r.energy.toFixed(3)} | Coherence: {r.coherence.toFixed(3)} | Hops: {r.words.length}</div>
-        <div className="flex items-center gap-1 mt-1 flex-wrap">
-          {r.words.map((w,i)=><React.Fragment key={i}>{i>0&&<span className="text-gray-600">-></span>}<DepthBadge word={w}/></React.Fragment>)}
-        </div>
-      </div>);
-    }
-
-    // GENERATE
-    else if(low.startsWith('generate')){
-      const w = low.split(/\s+/)[1] || null;
-      const r = engine.generate(w);
-      addMsg('system', `Generate from "${w||'random'}":`, <div className="mt-1 text-[10px]">
-        <div className="text-[#48b89a] text-sm">{r.text}</div>
-        <div className="text-gray-500 mt-1">Coherence: {r.coherence?.toFixed(3)||'n/a'}</div>
-      </div>);
-    }
-
-    // SCORE
-    else if(low.startsWith('score:')||low.startsWith('score ')){
-      const s = txt.substring(txt.indexOf(':')+1 < 7 ? 6 : txt.indexOf(':')+1).trim();
-      const r = engine.scoreSentence(s);
-      addMsg('system', `Score: "${s}"`, <div className="mt-2 bg-[#0d1117] p-3 rounded text-[10px]">
+    // Medium coherence, has known words → score it and show the walk
+    // The user is between domains or testing coherence
+    if(tokens.length>=3 && score){
+      // Show the score walk — this IS the response
+      addMsg('system',null,<div className="mt-1 bg-[#0d1117] p-3 rounded text-[10px]">
         <div className="flex justify-between mb-2 text-[#48b89a]">
-          <span>Coherence: {r.coherence.toFixed(3)}</span><span>Mean Surprise: {r.meanSurprise.toFixed(3)}</span>
+          <span>coherence: {score.coherence.toFixed(3)}</span>
+          <span className="text-gray-500">{ap==='fork'?'fork':'spoon'}</span>
         </div>
-        <div className="space-y-1">{r.steps.map((st,i)=><div key={i} className="flex items-center gap-1">
+        <div className="space-y-1">{score.steps.map((st,i)=><div key={i} className="flex items-center gap-1">
           <span className="w-24 truncate text-gray-400">{st.word}{st.afGate>0.1?<span className="text-yellow-500 ml-0.5">*</span>:''}</span>
           <div className="flex-1 bar-bg h-2.5 rounded-full"><div className={`h-full rounded-full ${st.surprise<0.3?'bar-green':st.surprise<0.7?'bar-yellow':'bar-red'}`} style={{width:Math.max(2,st.surprise*100)+"%"}}></div></div>
           <span className="w-10 text-gray-600">{st.surprise.toFixed(2)}</span>
         </div>)}</div>
       </div>);
+      // Also feed it — every input is a perturbation
+      engine.feed(raw);save();
+      setInput("");return;
     }
 
-    // CORRECT
-    else if(low.startsWith('correct ')){
-      const w = txt.substring(8).trim();
-      const r = engine.correct(w);
-      addMsg('system', `Correct: "${w}"`, <div className="mt-1 text-[10px] space-y-1">
-        <div className="text-gray-500">Confidence: {r.confidence.toFixed(3)}</div>
-        {r.candidates.map((c,i)=><div key={c.word} className="flex items-center gap-2">
-          <span className={i===0?'text-[#48b89a]':'text-gray-500'}>{c.word}</span>
-          <span className="text-gray-600">{(c.score*100).toFixed(1)}%</span>
-        </div>)}
-      </div>);
+    // Fallback: feed whatever it is
+    if(tokens.length>=2){
+      const r=engine.feedText(raw);save();
+      addMsg('system',`Learned ${r.sentences} sentences, ${r.tokens} tokens.`);
+      setInput("");return;
     }
 
-    // PRESSURE / VACUUMS / SURPLUSES / BRIDGES / TENSIONS
-    else if(low==='pressure'||low==='vacuums'||low==='surpluses'||low==='bridges'||low==='tensions'){
-      let items;
-      if(low==='pressure') items=engine.pressure().slice(0,15);
-      else if(low==='vacuums') items=engine.vacuums(10);
-      else if(low==='surpluses') items=engine.surpluses(10);
-      else if(low==='bridges') items=engine.bridges(10);
-      else items=engine.tensions(10);
-
-      if(low==='tensions'){
-        addMsg('system', `Tensions (${items.length} split words):`, <div className="mt-1 text-[10px] space-y-1">
-          {items.map(t=><div key={t.word} className="bg-[#0d1117] p-2 rounded">
-            <span className="text-[#e05252]">{t.word}</span> <span className="text-gray-500">({t.components} clusters, tension:{t.tension.toFixed(2)})</span>
-            <div className="flex gap-2 mt-1">{t.clusters.map((c,i)=><span key={i} className="text-gray-400">[{c.join(', ')}]</span>)}</div>
-          </div>)}
-          {!items.length && <span className="text-gray-500">No tensions detected.</span>}
-        </div>);
-      } else {
-        const maxP = Math.max(...items.map(p=>Math.abs(p.pressure||0)),1);
-        addMsg('system', low.charAt(0).toUpperCase()+low.slice(1)+':', <div className="mt-1 text-[10px] space-y-1">
-          {items.map(p=><div key={p.word} className="flex items-center gap-1">
-            <DepthBadge word={p.word}/>
-            <span className="w-20 truncate">{p.word}</span>
-            <div className="flex-1 bar-bg h-2 rounded-full"><div className={`h-full rounded-full ${p.pressure<0?'bar-red':'bar-green'}`} style={{width:Math.max(2,Math.abs(p.pressure)/maxP*100)+"%"}}></div></div>
-            <span className="w-10 text-gray-500">{p.pressure}</span>
-            <span className="w-14 text-gray-600">cl:{p.closure?.toFixed(2)}</span>
-          </div>)}
-          {!items.length && <span className="text-gray-500">None found.</span>}
-        </div>);
-      }
-    }
-
-    // DIAGNOSE
-    else if(low==='diagnose'){
-      const d=teacher.diagnose();
-      addMsg('system','Diagnosis:', <div className="mt-2 text-[10px] space-y-2">
-        <div className="bg-[#0d1117] p-2 rounded"><span className="text-[#48b89a] block mb-1">Needs</span>{d.needs.map((n,i)=><div key={i} className="text-gray-400">- {n}</div>)}</div>
-        {d.starved.length>0 && <div className="bg-[#0d1117] p-2 rounded"><span className="text-red-400 block mb-1">Starved (predicted but thin)</span><div className="flex flex-wrap gap-1">{d.starved.map(s=><span key={s.word} className="px-1 bg-[#1a2130] rounded">{s.word}<span className="text-gray-600"> deficit:{s.deficit}</span></span>)}</div></div>}
-        {d.underexposed.length>0 && <div className="bg-[#0d1117] p-2 rounded"><span className="text-blue-400 block mb-1">Underexposed (freq>3, shallow)</span><div className="flex flex-wrap gap-1">{d.underexposed.map(s=><span key={s.word} className="px-1 bg-[#1a2130] rounded">{s.word}<span className="text-gray-600"> f:{s.freq}</span></span>)}</div></div>}
-      </div>);
-    }
-
-    // PLAN
-    else if(low==='plan'){
-      const p=teacher.plan();
-      addMsg('system','Teaching Plan:', <div className="mt-2 space-y-1 text-[10px]">
-        {p.steps.map((s,i)=><div key={i} className="bg-[#0d1117] p-2 border-l-2 border-[#48b89a] rounded-r">
-          <span className="text-[#48b89a]">P{s.priority}</span> <span className="text-gray-300">{s.action}</span>
-          <div className="text-gray-500 mt-0.5">{s.instruction}</div>
-        </div>)}
-        {!p.steps.length && <span className="text-gray-500">No steps needed.</span>}
-      </div>);
-    }
-
-    // LESSON
-    else if(low.startsWith('lesson:')||low.startsWith('lesson ')){
-      const text=txt.substring(txt.indexOf(':')+1<8?7:txt.indexOf(':')+1).trim();
-      const r=teacher.lesson(text); save();
-      addMsg('system',`Lesson #${r.lesson}`, <div className="mt-1 text-[10px] text-gray-400">
-        +{r.newWords} words | {r.fed.sentences} sentences | decayed: {r.decayed}
-        {r.newVacuums.length>0 && <span className="text-red-400"> | new vacuums: {r.newVacuums.join(', ')}</span>}
-      </div>);
-    }
-
-    // DRILL
-    else if(low.startsWith('drill:')||low.startsWith('drill ')){
-      const s=txt.substring(txt.indexOf(':')+1<7?6:txt.indexOf(':')+1).trim();
-      const r=teacher.drill(s); save();
-      addMsg('system',`Drill: asymmetry ${r.asymmetry.toFixed(3)}`, <div className="mt-1 text-[10px]">
-        <div className="text-gray-400">Forward: {r.forwardCoherence.toFixed(3)} | Backward: {r.backwardCoherence.toFixed(3)}</div>
-        <div className={r.learned?'text-[#48b89a]':'text-[#e05252]'}>{r.learned?'Direction learned':'Not yet learned'}</div>
-      </div>);
-    }
-
-    // CYCLE
-    else if(low.startsWith('cycle:')||low.startsWith('cycle ')){
-      const text=txt.substring(txt.indexOf(':')+1<7?6:txt.indexOf(':')+1).trim();
-      const r=teacher.cycle(text); save();
-      addMsg('system','Cycle complete.', <div className="mt-1 text-[10px] text-gray-400">
-        Vocab: {r.before.vocab} -> {r.after.vocab} | Decayed: {r.lesson.decayed}
-        {r.drill && <span> | Drill asym: {r.drill.asymmetry.toFixed(3)}</span>}
-      </div>);
-    }
-
-    // SPONTANEOUS
-    else if(low==='spontaneous'){
-      const r=teacher.spontaneous(); save();
-      addMsg('system',`Spontaneous #${r.lesson}`, <div className="mt-1 text-[10px] space-y-1">
-        {r.generated.map((g,i)=><div key={i} className="text-gray-400"><span className="text-[#48b89a]">{g.type}</span> [{g.word||g.from}]: {g.sentence}</div>)}
-        {r.drill && <div className="text-gray-400">Drill asym: {r.drill.asymmetry.toFixed(3)}</div>}
-        <div className="text-gray-500">Decayed: {r.decayed} | Vocab: {r.vocab}</div>
-      </div>);
-    }
-
-    // TEACH CORRECT
-    else if(low.startsWith('teach correct ')&&low.includes(' and ')){
-      const args=txt.replace(/teach correct /i,'').split(' and ');
-      let ctx=null,wordB=args[1];
-      if(wordB.includes(':')){const sp=wordB.split(':');wordB=sp[0].trim();ctx=sp.slice(1).join(':').trim();}
-      const r=teacher.correctAssociation(args[0].trim(),wordB,ctx); save();
-      addMsg('system',`Corrected: ${args[0].trim()} <-> ${wordB}`, <div className="mt-1 text-[10px] text-gray-400">
-        Affinity: {r.before.toFixed(3)} -> {r.after.toFixed(3)} | Weakened: {r.weakened?'yes':'no'}
-      </div>);
-    }
-
-    // HISTORY
-    else if(low==='history'){
-      const h=teacher.history();
-      addMsg('system',`Lessons: ${h.lessons} | Corrections: ${h.corrections}`, <div className="mt-1 text-[10px] text-gray-500 max-h-40 overflow-y-auto whitespace-pre-wrap">{JSON.stringify(h.log.slice(-5),null,1)}</div>);
-    }
-
-    // UNLEARN
-    else if(low.startsWith('unlearn ')&&low.includes(' and ')){
-      const parts=txt.replace(/unlearn /i,'').split(' and ');
-      const r=engine.unlearn(parts[0].trim(),parts[1].trim()); save();
-      addMsg('system',`Unlearn: weakened ${r.edgesWeakened} edges between ${parts[0].trim()} and ${parts[1].trim()}.`);
-    }
-
-    // FORGET
-    else if(low.startsWith('forget ')){
-      const w=txt.substring(7).trim();engine.forget(w); save();
-      addMsg('system',`Forgot "${w}". Node and all references removed.`);
-    }
-
-    // DECAY
-    else if(low.startsWith('decay')){
-      const thresh=parseInt(low.replace('decay','').trim())||1;
-      const r=engine.decay(thresh); save();
-      addMsg('system',`Decay (threshold <= ${thresh}): removed ${r.edgesRemoved} edges.`);
-    }
-
-    // COLLAPSE
-    else if(low.startsWith('collapse ')){
-      const w=txt.substring(9).trim();
-      const r=engine.collapse(w); save();
-      if(!r.ok) addMsg('system',`Collapse "${w}": ${r.reason}`);
-      else addMsg('system',`Collapsed "${w}": kept ${r.kept}, pruned ${r.pruned}`, <div className="mt-1 text-[10px] text-gray-400">
-        Surviving: {r.surviving.join(', ')}<br/>Removed: {r.removed.map(c=>c.join(',')).join(' | ')}
-      </div>);
-    }
-
-    // SINGLE WORD -> explore
-    else if(low.match(/^[a-z]+$/) && engine.nodes[low]){
-      exec('explore '+low);return;
-    }
-
-    // FALLBACK: try to feed
-    else if(txt.trim().split(/\s+/).length >= 3){
-      const r=engine.feedText(txt.trim()); save();
-      addMsg('system',`Fed: ${r.sentences} sentences, ${r.tokens} tokens.`);
-    }
-
-    else { addMsg('system',"Unknown command. Type 'help'."); }
-
+    addMsg('system',`"${raw}" — not enough signal.`);
     setInput("");
   },[]);
 
@@ -689,10 +614,32 @@ Forgetting:
 
         {/* INPUT */}
         <div className="p-3 bg-[#0a0e14] border-t border-[#1a2130] shrink-0">
-          <input type="text" value={input} onChange={e=>setInput(e.target.value)}
-            onKeyDown={e=>{if(e.key==='Enter'){exec(input);setInput('');}}}
-            placeholder="feed text, explore word, query: doctor _ patient, or 'help'"
-            className="w-full bg-[#0e1219] border border-[#1a2130] rounded-lg py-2.5 px-3 text-sm text-[#a8b4c4] focus:outline-none focus:border-[#48b89a]"/>
+          <div className="flex gap-2">
+            <input type="text" value={input} onChange={e=>setInput(e.target.value)}
+              onKeyDown={e=>{if(e.key==='Enter'){exec(input);setInput('');}}}
+              placeholder="type a word, paste text, ask anything..."
+              className="flex-1 bg-[#0e1219] border border-[#1a2130] rounded-lg py-2.5 px-3 text-sm text-[#a8b4c4] focus:outline-none focus:border-[#48b89a]"/>
+            <label className="flex items-center gap-1 px-3 py-2 bg-[#0e1219] border border-[#1a2130] rounded-lg cursor-pointer hover:border-[#48b89a] text-[10px] text-gray-500 hover:text-[#48b89a] shrink-0">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+              Upload
+              <input type="file" multiple accept=".txt,.text,.md,.csv,.json,.html,.xml,.log,.srt,.sub,.rtf" className="hidden" onChange={async e=>{
+                const files=[...e.target.files];if(!files.length)return;
+                addMsg('user',`Uploading ${files.length} file${files.length>1?'s':''}...`);
+                let totalSent=0,totalTok=0,totalFiles=0;
+                for(const f of files){
+                  try{
+                    const text=await f.text();
+                    if(!text.trim()){addMsg('system',`${f.name}: empty, skipped.`);continue;}
+                    const r=engine.feedText(text);
+                    totalSent+=r.sentences;totalTok+=r.tokens;totalFiles++;
+                    addMsg('system',`${f.name}: ${r.sentences} sentences, ${r.tokens} tokens`);
+                  }catch(err){addMsg('system',`${f.name}: error — ${err.message}`);}
+                }
+                if(totalFiles>0){save();addMsg('system',`Done. Fed ${totalFiles} file${totalFiles>1?'s':''}: ${totalSent} sentences, ${totalTok} tokens. Vocab: ${engine.stats().vocab}`);}
+                e.target.value='';
+              }}/>
+            </label>
+          </div>
           <div className="flex gap-2 mt-2 text-[10px] text-gray-600 justify-center flex-wrap">
             {['diagnose','plan','spontaneous','stats','vacuums','tensions','decay 1'].map(c=>
               <button key={c} className="hover:text-[#48b89a]" onClick={()=>{exec(c);}}>{c}</button>
