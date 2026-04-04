@@ -521,6 +521,42 @@ stats · plan · diagnose · history · reset`);
       setInput("");return;
     }
 
+    // ── Question detection: route to speak/path/identity ──
+    const isQuestion = /^(tell|what|who|how|why|where|when|explain|describe|talk|speak|say)\b/i.test(raw) || raw.endsWith('?');
+    if(isQuestion && content.length>=1){
+      const topic = content[0]; // main topic word
+      const topic2 = content.length>=2 ? content[1] : null;
+
+      // Try path between two content words first
+      if(topic2 && engine.nodes[topic] && engine.nodes[topic2]){
+        const p = engine.path(topic, topic2);
+        if(p.ok && p.words.length>=3){
+          addMsg('shifu', p.text, <div className="mt-2 text-[10px] space-y-1">
+            <div className="text-gray-500">path coherence: {p.coherence.toFixed(3)} | energy: {p.energy.toFixed(1)}</div>
+            {p.steps?.slice(0,8).map((st,i)=><div key={i} className="flex items-center gap-1">
+              <span className="w-20 truncate text-gray-400">{st.word}</span>
+              <div className="flex-1 bar-bg h-2 rounded-full"><div className={`h-full rounded-full ${st.surprise<0.3?'bar-green':st.surprise<0.7?'bar-yellow':'bar-red'}`} style={{width:Math.max(2,st.surprise*100)+"%"}}></div></div>
+            </div>)}
+          </div>);
+          setInput("");return;
+        }
+      }
+
+      // Speak on the topic — multiple sentences from paths
+      if(engine.nodes[topic]){
+        const sentences = engine.speak(topic, 4, 12);
+        const id = typeof engine.identity === 'function' ? engine.identity(topic, 5) : [];
+        addMsg('shifu', null, <div className="space-y-2">
+          {sentences.map((s,i)=><div key={i} className="text-gray-300 text-sm">{s.text} <span className="text-gray-600 text-[10px]">({s.coherence.toFixed(3)})</span></div>)}
+          {id.length>0 && <div className="mt-2 pt-2 border-t border-gray-800 text-[10px]">
+            <span className="text-gray-500">identity: </span>
+            {id.map(x=><span key={x.word} className="mr-2">{x.word}<span className="text-gray-600">({x.heat.toFixed(2)})</span></span>)}
+          </div>}
+        </div>);
+        setInput("");return;
+      }
+    }
+
     // ── 3+ tokens: the coherence tells us what they want ──
 
     // High coherence → this fits the graph. They speak the domain.

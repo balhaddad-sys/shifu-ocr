@@ -34,7 +34,7 @@
 
   <script>
 // ═══════════════════════════════════════════════════════════════
-// SHIFU v2.0 — THE EMBRYO ENGINE (complete, from core/engine.js)
+// SHIFU v2.0 — THE EMBRYO ENGINE (JS fallback, WASM preferred)
 // ═══════════════════════════════════════════════════════════════
 const VERSION="2.0.0";
 const OCR={"0,o":.1,"1,l":.2,"1,i":.2,"5,s":.3,"8,b":.3,"6,g":.4,"l,i":.2,"m,n":.4,"u,v":.5,"c,e":.5,"r,n":.3,"d,o":.3,"f,t":.4,"h,b":.4,"a,e":.4,"a,o":.4,"u,n":.4,"e,i":.4,"f,l":.4,"s,e":.5,"b,d":.4};
@@ -155,10 +155,17 @@ deserialize(json){const d=JSON.parse(json);this.sentenceCount=d.sentenceCount||0
 // ═══════════════════════════════════════════════════════════════
 class Teacher {
   constructor(engine){this.engine=engine;this.log=[];this.corrections=0;this.lessons=0;}
+  // Helper: get word list (works with both JS nodes and WASM wordList)
+  _words(){return this.engine.wordList?this.engine.wordList():Object.keys(this.engine.nodes||{});}
+  _freq(w){return this.engine.nodeFreq?this.engine.nodeFreq(w):(this.engine.nodes?.[w]?.freq||0);}
+  _hasNode(w){return this.engine.hasNode?this.engine.hasNode(w):!!(this.engine.nodes?.[w]);}
+  _vocabSize(){return this.engine.vocabSize?this.engine.vocabSize():(this.engine.nodes?Object.keys(this.engine.nodes).length:0);}
+  _next(w){return this.engine.nodeNext?this.engine.nodeNext(w):(this.engine.nodes?.[w]?.next||null);}
+  _nbrKeys(w){return this.engine.nodeNeighborKeys?this.engine.nodeNeighborKeys(w):Object.keys(this.engine.nodes?.[w]?.neighbors||{});}
   diagnose(){
     const vacs=this.engine.vacuums(10),surps=this.engine.surpluses(10),brs=this.engine.bridges(10),st=this.engine.stats();
-    const underexposed=[];for(const[w,n]of Object.entries(this.engine.nodes)){const d=this.engine.depth(w);if(n.freq>=3&&d.level==="shallow")underexposed.push({word:w,freq:n.freq,evidence:d.evidence});}underexposed.sort((a,b)=>b.freq-a.freq);
-    const starved=[];for(const[w,n]of Object.entries(this.engine.nodes)){if(n.freq<2)continue;const p=this.engine.pressureOf(w);if(p&&p.pressure<0&&p.inbound>=3)starved.push({word:w,inbound:p.inbound,actual:p.actual,deficit:p.inbound-p.actual});}starved.sort((a,b)=>b.deficit-a.deficit);
+    const underexposed=[];for(const w of this._words()){const f=this._freq(w);const d=this.engine.depth(w);if(f>=3&&d.level==="shallow")underexposed.push({word:w,freq:f,evidence:d.evidence});}underexposed.sort((a,b)=>b.freq-a.freq);
+    const starved=[];for(const w of this._words()){if(this._freq(w)<2)continue;const p=this.engine.pressureOf(w);if(p&&p.pressure<0&&p.inbound>=3)starved.push({word:w,inbound:p.inbound,actual:p.actual,deficit:p.inbound-p.actual});}starved.sort((a,b)=>b.deficit-a.deficit);
     return{vocab:st.vocab,depths:st.depths,vacuums:vacs,surpluses:surps,bridges:brs,underexposed:underexposed.slice(0,10),starved:starved.slice(0,10),needs:this._prescribe(vacs,underexposed,starved,brs,st)};}
   _prescribe(vacs,underexposed,starved,bridges,st){
     const needs=[];if(st.vocab===0){needs.push("Empty engine. Feed any text to begin.");return needs;}
@@ -174,27 +181,27 @@ class Teacher {
     if(diag.starved.length>0){const t=diag.starved.slice(0,3).map(s=>s.word);steps.push({priority:1,action:"feed_targeted",targets:t,instruction:"Feed sentences with: "+t.join(", ")});}
     if(diag.underexposed.length>0){const t=diag.underexposed.slice(0,5).map(u=>u.word);steps.push({priority:2,action:"reinforce",targets:t,instruction:"Reinforce shallow words: "+t.join(", ")});}
     if(diag.bridges.length>0){const t=diag.bridges.slice(0,3).map(b=>b.word);steps.push({priority:3,action:"investigate_bridges",targets:t,instruction:"Check bridges for contamination: "+t.join(", ")});}
-    const structured=Object.entries(this.engine.nodes).filter(([w])=>{const d=this.engine.depth(w);return d.level==="structured"||d.level==="deep";}).map(([w])=>w).slice(0,5);
+    const structured=this._words().filter(w=>{const d=this.engine.depth(w);return d.level==="structured"||d.level==="deep";}).slice(0,5);
     if(structured.length>=2)steps.push({priority:4,action:"drill",targets:structured,instruction:"Contrastive drills on: "+structured.slice(0,3).join(", ")});
     if(diag.vocab>100)steps.push({priority:5,action:"decay",instruction:"Run decay(1) to prune noise."});
     return{diagnosis:diag,steps};}
   cycle(text,domain="general"){const before=this.diagnose();const lessonResult=this.lesson(text,domain);const sents=text.split(/[.!?\n]+/).map(s=>s.trim()).filter(s=>s.length>10);let drillResult=null;if(sents.length>0)drillResult=this.drill(sents[0]);const after=this.diagnose();return{before:{vocab:before.vocab,depths:before.depths,needs:before.needs},lesson:lessonResult,drill:drillResult,after:{vocab:after.vocab,depths:after.depths,needs:after.needs}};}
   spontaneous(){
-    const eng=this.engine;if(Object.keys(eng.nodes).length<10)return{action:"wait",reason:"too few words"};
+    const eng=this.engine;if(this._vocabSize()<10)return{action:"wait",reason:"too few words"};
     const diag=this.diagnose();const actions=[];
     for(const s of diag.starved.slice(0,3)){const g=this._walkFrom(s.word,8);if(g){eng.feed(g);actions.push({type:"reinforce",word:s.word,sentence:g});}}
     for(const u of diag.underexposed.slice(0,3)){const g=this._walkFrom(u.word,8);if(g){eng.feed(g);actions.push({type:"reinforce",word:u.word,sentence:g});}}
     if(diag.surpluses.length>0&&diag.vacuums.length>0){const src=diag.surpluses[0].word,dst=diag.vacuums[0].word;const b=this._walkBetween(src,dst,10);if(b){eng.feed(b);actions.push({type:"bridge",from:src,to:dst,sentence:b});}}
-    const structured=Object.keys(eng.nodes).filter(w=>{const d=eng.depth(w);return d.level==="structured"||d.level==="deep";});
+    const structured=this._words().filter(w=>{const d=eng.depth(w);return d.level==="structured"||d.level==="deep";});
     let drillResult=null;if(structured.length>=2){const a=structured[Math.floor(Math.random()*structured.length)];const s=this._walkFrom(a,6);if(s)drillResult=this.drill(s);}
     const decayed=eng.decay(1);this.lessons++;
-    const result={action:"spontaneous",lesson:this.lessons,generated:actions,drill:drillResult,decayed:decayed.edgesRemoved,vocab:Object.keys(eng.nodes).length};
+    const result={action:"spontaneous",lesson:this.lessons,generated:actions,drill:drillResult,decayed:decayed.edgesRemoved,vocab:this._vocabSize()};
     this.log.push(result);return result;}
-  _walkFrom(start,maxLen){const eng=this.engine,node=eng.nodes[start];if(!node)return null;const words=[start];let current=start;
-    for(let i=0;i<maxLen-1;i++){const nd=eng.nodes[current];if(!nd||!nd.next||!Object.keys(nd.next).length)break;const entries=Object.entries(nd.next);const total=entries.reduce((s,[,w])=>s+w,0);let r=Math.random()*total,picked=entries[0][0];for(const[word,weight]of entries){r-=weight;if(r<=0){picked=word;break;}}if(words.includes(picked)&&words.length>2)break;words.push(picked);current=picked;}
+  _walkFrom(start,maxLen){const eng=this.engine;if(!this._hasNode(start))return null;const words=[start];let current=start;
+    for(let i=0;i<maxLen-1;i++){const nx=this._next(current);if(!nx||!Object.keys(nx).length)break;const entries=Object.entries(nx);const total=entries.reduce((s,[,w])=>s+w,0);let r=Math.random()*total,picked=entries[0][0];for(const[word,weight]of entries){r-=weight;if(r<=0){picked=word;break;}}if(words.includes(picked)&&words.length>2)break;words.push(picked);current=picked;}
     return words.length>=3?words.join(" "):null;}
-  _walkBetween(src,dst,maxLen){const eng=this.engine;if(!eng.nodes[src]||!eng.nodes[dst])return null;const words=[src];let current=src;
-    for(let i=0;i<maxLen-1;i++){const nd=eng.nodes[current];if(!nd?.next)break;if(nd.next[dst]){words.push(dst);break;}const dstNb=new Set(Object.keys(eng.nodes[dst]?.neighbors||{}));let bestWord=null,bestScore=-1;for(const[c,weight]of Object.entries(nd.next)){if(words.includes(c))continue;const cNb=Object.keys(eng.nodes[c]?.neighbors||{});const overlap=cNb.filter(w=>dstNb.has(w)).length;const score=overlap+weight*0.1;if(score>bestScore){bestScore=score;bestWord=c;}}if(!bestWord)break;words.push(bestWord);current=bestWord;}
+  _walkBetween(src,dst,maxLen){const eng=this.engine;if(!this._hasNode(src)||!this._hasNode(dst))return null;const words=[src];let current=src;
+    for(let i=0;i<maxLen-1;i++){const nx=this._next(current);if(!nx)break;if(nx[dst]){words.push(dst);break;}const dstNb=new Set(this._nbrKeys(dst));let bestWord=null,bestScore=-1;for(const[c,weight]of Object.entries(nx)){if(words.includes(c))continue;const cNb=this._nbrKeys(c);const overlap=cNb.filter(w=>dstNb.has(w)).length;const score=overlap+weight*0.1;if(score>bestScore){bestScore=score;bestWord=c;}}if(!bestWord)break;words.push(bestWord);current=bestWord;}
     return words.length>=3?words.join(" "):null;}
   history(){return{lessons:this.lessons,corrections:this.corrections,log:this.log.slice(-20)};}
 }
@@ -267,7 +274,7 @@ function App() {
   // ─── Auto-teach loop (silent background) ───────────────
   useEffect(()=>{
     if(autoTeach){
-      const st=autoStatsRef.current;st.rounds=0;st.generated=0;st.decayed=0;st.drills=0;st.vocabStart=Object.keys(engine.nodes).length;
+      const st=autoStatsRef.current;st.rounds=0;st.generated=0;st.decayed=0;st.drills=0;st.vocabStart=engine.stats().vocab;
       addMsg('system','Auto-teach started. Teaching silently in the background...');
       autoRef.current = setInterval(()=>{
         const r = teacher.spontaneous();
@@ -279,7 +286,7 @@ function App() {
     } else {
       if(autoRef.current){clearInterval(autoRef.current);
         const st=autoStatsRef.current;if(st.rounds>0){save();
-          const vocabNow=Object.keys(engine.nodes).length;
+          const vocabNow=engine.stats().vocab;
           addMsg('system',`Auto-teach stopped.`,<div className="mt-1 text-[10px] text-gray-400">
             {st.rounds} rounds | {st.generated} sentences generated | {st.drills} drills | {st.decayed} edges decayed<br/>
             Vocab: {st.vocabStart} -> {vocabNow} (+{vocabNow-st.vocabStart})
@@ -295,19 +302,19 @@ function App() {
 
   // ─── Render helpers (aperture-scaled) ────────────────────
   const showExplore = (w, ap) => {
-    const node=engine.nodes[w];
+    const node=engine.nodeData?engine.nodeData(w):(engine.nodes?.[w]||null);
     if(!node){addMsg('system',`"${w}" — unborn. I haven't seen this word yet.`);return;}
     const p=engine.pressureOf(w);
     // Fork: compact. Spoon: full context. Knife: structural.
     const nbrN = ap==='fork'?5:10, nxtN = ap==='fork'?3:8;
-    const topNbr=Object.entries(node.neighbors).sort((a,b)=>b[1]-a[1]).slice(0,nbrN);
-    const topNext=Object.entries(node.next).sort((a,b)=>b[1]-a[1]).slice(0,nxtN);
-    const topPrev=ap!=='fork'?Object.entries(node.prev).sort((a,b)=>b[1]-a[1]).slice(0,5):[];
+    const topNbr=Object.entries(node.neighbors||{}).sort((a,b)=>b[1]-a[1]).slice(0,nbrN);
+    const topNext=Object.entries(node.next||{}).sort((a,b)=>b[1]-a[1]).slice(0,nxtN);
+    const topPrev=ap!=='fork'?Object.entries(node.prev||{}).sort((a,b)=>b[1]-a[1]).slice(0,5):[];
     const sim=ap!=='fork'?engine.similar(w,5):[];
     addMsg('system',w,<div className="mt-2 space-y-2 text-[10px]">
       <div className="flex items-center gap-2"><DepthBadge word={w}/><span className="text-gray-500">freq:{node.freq} | pressure:{p?.pressure}</span></div>
       <div className="bg-[#0d1117] p-2 rounded">
-        <div className="text-[#48b89a] mb-1">Neighbors ({Object.keys(node.neighbors).length})</div>
+        <div className="text-[#48b89a] mb-1">Neighbors ({Object.keys(node.neighbors||{}).length})</div>
         <div className="flex flex-wrap gap-1">{topNbr.map(([n,c])=><span key={n} className="px-1 bg-[#1a2130] rounded">{n}<span className="text-gray-600">:{c}</span></span>)}</div>
       </div>
       <div className="bg-[#0d1117] p-2 rounded">
@@ -514,6 +521,42 @@ stats · plan · diagnose · history · reset`);
       setInput("");return;
     }
 
+    // ── Question detection: route to speak/path/identity ──
+    const isQuestion = /^(tell|what|who|how|why|where|when|explain|describe|talk|speak|say)\b/i.test(raw) || raw.endsWith('?');
+    if(isQuestion && content.length>=1){
+      const topic = content[0]; // main topic word
+      const topic2 = content.length>=2 ? content[1] : null;
+
+      // Try path between two content words first
+      if(topic2 && engine.nodes[topic] && engine.nodes[topic2]){
+        const p = engine.path(topic, topic2);
+        if(p.ok && p.words.length>=3){
+          addMsg('shifu', p.text, <div className="mt-2 text-[10px] space-y-1">
+            <div className="text-gray-500">path coherence: {p.coherence.toFixed(3)} | energy: {p.energy.toFixed(1)}</div>
+            {p.steps?.slice(0,8).map((st,i)=><div key={i} className="flex items-center gap-1">
+              <span className="w-20 truncate text-gray-400">{st.word}</span>
+              <div className="flex-1 bar-bg h-2 rounded-full"><div className={`h-full rounded-full ${st.surprise<0.3?'bar-green':st.surprise<0.7?'bar-yellow':'bar-red'}`} style={{width:Math.max(2,st.surprise*100)+"%"}}></div></div>
+            </div>)}
+          </div>);
+          setInput("");return;
+        }
+      }
+
+      // Speak on the topic — multiple sentences from paths
+      if(engine.nodes[topic]){
+        const sentences = engine.speak(topic, 4, 12);
+        const id = typeof engine.identity === 'function' ? engine.identity(topic, 5) : [];
+        addMsg('shifu', null, <div className="space-y-2">
+          {sentences.map((s,i)=><div key={i} className="text-gray-300 text-sm">{s.text} <span className="text-gray-600 text-[10px]">({s.coherence.toFixed(3)})</span></div>)}
+          {id.length>0 && <div className="mt-2 pt-2 border-t border-gray-800 text-[10px]">
+            <span className="text-gray-500">identity: </span>
+            {id.map(x=><span key={x.word} className="mr-2">{x.word}<span className="text-gray-600">({x.heat.toFixed(2)})</span></span>)}
+          </div>}
+        </div>);
+        setInput("");return;
+      }
+    }
+
     // ── 3+ tokens: the coherence tells us what they want ──
 
     // High coherence → this fits the graph. They speak the domain.
@@ -530,7 +573,7 @@ stats · plan · diagnose · history · reset`);
     // Low coherence, mostly unknown → new territory. Feed it.
     if(tokens.length>=3 && known.length<tokens.length*0.5){
       const r=engine.feedText(raw);save();
-      addMsg('system',`Learned ${r.sentences} sentences, ${r.tokens} tokens. Vocab: ${Object.keys(engine.nodes).length}`);
+      addMsg('system',`Learned ${r.sentences} sentences, ${r.tokens} tokens. Vocab: ${engine.stats().vocab}`);
       setInput("");return;
     }
 
@@ -615,41 +658,20 @@ stats · plan · diagnose · history · reset`);
             <label className="flex items-center gap-1 px-3 py-2 bg-[#0e1219] border border-[#1a2130] rounded-lg cursor-pointer hover:border-[#48b89a] text-[10px] text-gray-500 hover:text-[#48b89a] shrink-0">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
               Upload
-              <input type="file" multiple accept=".txt,.text,.md,.csv,.json,.html,.xml,.log,.srt,.sub,.rtf,.pdf,.doc" className="hidden" onChange={async e=>{
+              <input type="file" multiple accept=".txt,.text,.md,.csv,.json,.html,.xml,.log,.srt,.sub,.rtf" className="hidden" onChange={async e=>{
                 const files=[...e.target.files];if(!files.length)return;
                 addMsg('user',`Uploading ${files.length} file${files.length>1?'s':''}...`);
                 let totalSent=0,totalTok=0,totalFiles=0;
                 for(const f of files){
                   try{
-                    let text='';
-                    if(f.name.toLowerCase().endsWith('.pdf')){
-                      addMsg('system',`Extracting text from ${f.name}...`);
-                      const pdfjsLib=await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs');
-                      pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs';
-                      const buf=await f.arrayBuffer();
-                      const pdf=await pdfjsLib.getDocument({data:buf}).promise;
-                      const pages=[];
-                      for(let i=1;i<=pdf.numPages;i++){const pg=await pdf.getPage(i);const c=await pg.getTextContent();pages.push(c.items.map(it=>it.str).join(' '));}
-                      text=pages.join('\n');
-                    }else{text=await f.text();}
-                    if(!text.trim()){addMsg('system',`${f.name}: empty or unreadable, skipped.`);continue;}
-                    // Batch feed — process in chunks so UI doesn't freeze
-                    const sents=text.split(/[.!?\n]+/).map(s=>s.trim()).filter(s=>s.length>5);
-                    const BATCH=200;let fTok=0,fSent=0;
-                    for(let b=0;b<sents.length;b+=BATCH){
-                      const chunk=sents.slice(b,b+BATCH);
-                      for(const s of chunk){fTok+=engine.feed(s);fSent++;}
-                      // Breathe — let UI update
-                      if(b+BATCH<sents.length){
-                        addMsg('system',`${f.name}: ${fSent}/${sents.length} sentences...`);
-                        await new Promise(r=>setTimeout(r,0));
-                      }
-                    }
-                    totalSent+=fSent;totalTok+=fTok;totalFiles++;
-                    addMsg('system',`${f.name}: ${fSent} sentences, ${fTok} tokens`);
+                    const text=await f.text();
+                    if(!text.trim()){addMsg('system',`${f.name}: empty, skipped.`);continue;}
+                    const r=engine.feedText(text);
+                    totalSent+=r.sentences;totalTok+=r.tokens;totalFiles++;
+                    addMsg('system',`${f.name}: ${r.sentences} sentences, ${r.tokens} tokens`);
                   }catch(err){addMsg('system',`${f.name}: error — ${err.message}`);}
                 }
-                if(totalFiles>0){save();addMsg('system',`Done. Fed ${totalFiles} file${totalFiles>1?'s':''}: ${totalSent} sentences, ${totalTok} tokens. Vocab: ${Object.keys(engine.nodes).length}`);}
+                if(totalFiles>0){save();addMsg('system',`Done. Fed ${totalFiles} file${totalFiles>1?'s':''}: ${totalSent} sentences, ${totalTok} tokens. Vocab: ${engine.stats().vocab}`);}
                 e.target.value='';
               }}/>
             </label>
