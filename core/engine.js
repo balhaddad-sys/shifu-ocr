@@ -49,11 +49,10 @@ bridges(k=10){return this.pressure().filter(p=>p.closure<.3&&p.freq>=3).slice(0,
 // ─── Tensions: words with split neighborhoods (phase conflict) ────
 // Finds words where neighbors form 2+ disconnected clusters.
 // Filters out high-frequency function words that connect everything.
-tensions(k=10){const results=[];for(const[w,nd]of Object.entries(this.nodes)){if(nd.freq<3)continue;
-  // Only consider content neighbors (not top-30% frequency words)
-  let maxFreq=0;for(const n of Object.values(this.nodes))if(n.freq>maxFreq)maxFreq=n.freq;const freqThresh=maxFreq*0.3;
+tensions(k=10){let maxFreq=0;for(const n of Object.values(this.nodes))if(n.freq>maxFreq)maxFreq=n.freq;const freqThresh=maxFreq*0.3;
+  const results=[];for(const[w,nd]of Object.entries(this.nodes)){if(nd.freq<3)continue;
   const nbrs=Object.keys(nd.neighbors).filter(n=>this.nodes[n]&&this.nodes[n].freq<freqThresh);
-  if(nbrs.length<4)continue;
+  if(nbrs.length<4||nbrs.length>80)continue; // skip huge hubs — too expensive, too generic
   const adj={};for(const n of nbrs)adj[n]=[];
   for(let i=0;i<nbrs.length;i++)for(let j=i+1;j<nbrs.length;j++){if(this.nodes[nbrs[i]]?.neighbors[nbrs[j]]){adj[nbrs[i]].push(nbrs[j]);adj[nbrs[j]].push(nbrs[i]);}}
   const visited=new Set();const components=[];
@@ -119,32 +118,35 @@ correct(garbled,k=5){const g=garbled.toLowerCase(),cands=new Set();for(let d=-2;
 // ─── Similar: 2-hop neighborhood, not universe scan. O(nbrs²) not O(V). ──
 similar(w,k=8){const wl=w.toLowerCase(),node=this.nodes[wl];if(!node)return[];const cands=new Set();for(const nb of Object.keys(node.neighbors)){cands.add(nb);const nbNode=this.nodes[nb];if(nbNode)for(const nb2 of Object.keys(nbNode.neighbors))cands.add(nb2);}for(const nb of Object.keys(node.next||{}))cands.add(nb);for(const nb of Object.keys(node.prev||{}))cands.add(nb);cands.delete(wl);const out=[];for(const c of cands){if(!this.nodes[c])continue;out.push({word:c,...this.compare(wl,c)});}return out.sort((a,b)=>b.similarity-a.similarity).slice(0,k);}
 // ─── Path: least-action sentence generation (Dijkstra) ───────────
-// Cost of edge A→B = -log(P(B|A)) where P(B|A) = nx[B] / sum(nx).
-// High next count = low cost = syntactic highway.
-// Low next count = high cost = brick wall.
-// The path of least surprise IS the sentence.
+// Cost of edge A→B = -log(P(B|A)) * resistance(B).
+// Each molecule has its own energy barrier to disturb.
+// Deep words = heavy molecules = high resistance = expensive to route through.
+// Rare words = light molecules = low resistance = cheap detours.
+// resistance(B) = 1 / log2(freq+2). Logarithmic because energy scales
+// with structure, not linearly with exposure count.
 path(start,goal,maxLen=15){
   const sl=start.toLowerCase(),gl=goal.toLowerCase();
   if(!this.nodes[sl]||!this.nodes[gl])return{ok:false,reason:"unknown word"};
-  // Dijkstra: cost = surprise = -log(P(next))
   const dist={},prev={},visited=new Set();
   dist[sl]=0;prev[sl]=null;
-  // Priority queue (simple: sort each iteration — fine for path lengths <20)
   const pq=[sl];
   while(pq.length){
     pq.sort((a,b)=>(dist[a]||Infinity)-(dist[b]||Infinity));
     const u=pq.shift();
     if(visited.has(u))continue;visited.add(u);
-    if(u===gl)break; // found it
+    if(u===gl)break;
     const nd=this.nodes[u];if(!nd||!nd.next)continue;
     const total=Object.values(nd.next).reduce((s,v)=>s+v,0);
-    // Reconstruct path length so far
     let pathLen=0;let trace=u;while(prev[trace]){pathLen++;trace=prev[trace];}
     if(pathLen>=maxLen)continue;
     for(const[nb,cnt]of Object.entries(nd.next)){
       if(visited.has(nb))continue;
       const prob=cnt/total;
-      const cost=-Math.log(prob+1e-10); // surprise
+      const surprise=-Math.log(prob+1e-10);
+      // Each node's resistance: how much energy it takes to disturb this molecule
+      const nbFreq=this.nodes[nb]?.freq||1;
+      const resistance=1/Math.log2(nbFreq+2);
+      const cost=surprise*resistance;
       const newDist=dist[u]+cost;
       if(newDist<(dist[nb]??Infinity)){dist[nb]=newDist;prev[nb]=u;pq.push(nb);}
     }
@@ -169,6 +171,42 @@ generate(startWord,maxLen=12){
     words.push(pick);used.add(pick);w=pick;}
   const text=words.join(' ');const score=this.scoreSentence(text);
   return{words,text,coherence:score.coherence};}
+// ─── Query: fill-in-the-blank from graph structure ───────────────
+// "doctor prescribed _ for seizure" → finds best word for the blank.
+// Combines: forward expectation (word before → next table),
+//           backward expectation (word after → prev table),
+//           trajectory (word 2 before → next2 table),
+//           neighborhood support (all context words' neighbors vote).
+// No neural network. Just the edges that exist.
+query(raw,k=5){
+  // Tokenize but preserve _ as a placeholder
+  const ws=raw.toLowerCase().replace(/_+/g,' BLANK ').match(/[a-z0-9]+|BLANK/g)||[];
+  const blankIdx=ws.indexOf('BLANK');if(blankIdx===-1)return{ok:false,reason:"use _ for the blank"};
+  const before=blankIdx>0?ws[blankIdx-1]:null;
+  const after=blankIdx<ws.length-1?ws[blankIdx+1]:null;
+  const before2=blankIdx>1?ws[blankIdx-2]:null;
+  const context=ws.filter(w=>w!=='BLANK');
+  const scores={};
+  const addScore=(w,val,src)=>{if(w==='BLANK'||context.includes(w))return;scores[w]??={word:w,total:0,signals:{}};scores[w].total+=val;scores[w].signals[src]=(scores[w].signals[src]||0)+val;};
+  // Signal 1: forward expectation — what does the word before predict?
+  if(before&&this.nodes[before]?.next){const nd=this.nodes[before];const total=Object.values(nd.next).reduce((s,v)=>s+v,0);
+    if(total>0)for(const[w,cnt]of Object.entries(nd.next))addScore(w,(cnt/total)*0.35,'fwd');}
+  // Signal 2: backward expectation — what does the word after expect before it?
+  if(after&&this.nodes[after]?.prev){const nd=this.nodes[after];const total=Object.values(nd.prev).reduce((s,v)=>s+v,0);
+    if(total>0)for(const[w,cnt]of Object.entries(nd.prev))addScore(w,(cnt/total)*0.25,'bwd');}
+  // Signal 3: trajectory — does word_before2 → word_before → ? predict anything?
+  if(before2&&before&&this.nodes[before2]?.next2?.[before]){const nx2=this.nodes[before2].next2[before];const total=Object.values(nx2).reduce((s,v)=>s+v,0);
+    if(total>0)for(const[w,cnt]of Object.entries(nx2))addScore(w,(cnt/total)*0.20,'traj');}
+  // Signal 4: neighborhood support — do context words' neighbors vote for any candidate?
+  const nbrVotes={};for(const cw of context){const nd=this.nodes[cw];if(!nd?.neighbors)continue;
+    for(const[nb,cnt]of Object.entries(nd.neighbors)){if(context.includes(nb)||nb==='BLANK')continue;nbrVotes[nb]=(nbrVotes[nb]||0)+cnt;}}
+  const maxVote=Math.max(...Object.values(nbrVotes),1);
+  for(const[w,v]of Object.entries(nbrVotes))addScore(w,(v/maxVote)*0.20,'nbr');
+  const ranked=Object.values(scores).sort((a,b)=>b.total-a.total).slice(0,k);
+  if(!ranked.length)return{ok:false,reason:"not enough data to fill blank"};
+  const filled=ws.map(w=>w==='BLANK'?ranked[0].word:w).join(' ');
+  const score=this.scoreSentence(filled);
+  return{ok:true,blank:blankIdx,candidates:ranked,filled,coherence:score.coherence};}
 stats(){const v=Object.keys(this.nodes).length,depths={unborn:0,surface:0,shallow:0,forming:0,structured:0,deep:0};for(const w of Object.keys(this.nodes))depths[this.depth(w).level]++;return{version:VERSION,vocab:v,sentences:this.sentenceCount,tokens:this.tokenCount,depths};}
 serialize(){return JSON.stringify({version:VERSION,nodes:Object.fromEntries(Object.entries(this.nodes).map(([w,n])=>[w,{chars:n.chars,freq:n.freq,firstSeen:n.firstSeen,lastSeen:n.lastSeen,positions:n.positions.slice(-200),gaps:n.gaps.slice(-100),sentLengths:n.sentLengths.slice(-100),neighbors:n.neighbors,next:n.next,prev:n.prev,next2:n.next2}])),sentenceCount:this.sentenceCount,tokenCount:this.tokenCount});}
 static deserialize(json){const d=JSON.parse(json),e=new ShifuEmbryo();e.sentenceCount=d.sentenceCount||0;e.tokenCount=d.tokenCount||0;for(const[w,n]of Object.entries(d.nodes||{})){e.nodes[w]={chars:n.chars||w,freq:n.freq||0,firstSeen:n.firstSeen,lastSeen:n.lastSeen,positions:n.positions||[],gaps:n.gaps||[],sentLengths:n.sentLengths||[],neighbors:n.neighbors||{},next:n.next||{},prev:n.prev||{},next2:n.next2||{}};e._idx(w);}return e;}}
